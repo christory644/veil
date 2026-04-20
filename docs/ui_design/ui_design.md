@@ -2,7 +2,10 @@
 
 ## Layout Overview
 
-Veil's UI consists of three main regions:
+Veil's UI consists of two main regions representing two conceptual spaces:
+
+- **Workspaces** = **Userspace** — The user's terminal environment: panes, splits, directories, running processes
+- **Conversations** = **Agent space** — All AI agent session history, grouped by harness, with progressive metadata
 
 ```
 ┌──────────────┬──────────────────────────────────────────┐
@@ -70,6 +73,7 @@ Lists all open workspaces. Each entry shows contextual metadata:
 - **PR status** — Linked PR number/status (if detected)
 - **Notification badge** — Unread notification indicator
 - **Active indicator** — `●` for focused, `○` for background
+- **Agent indicator** — Small icon/badge if an AI agent is running in one of the workspace's panes
 
 **Interactions:**
 - Click or `Cmd+1-9` to switch workspaces
@@ -79,7 +83,7 @@ Lists all open workspaces. Each entry shows contextual metadata:
 
 ### Tab 2: Conversations (`Conv`)
 
-Displays conversation session history from AI agent harnesses, grouped by harness:
+Displays conversation session history from AI agent harnesses, grouped by harness. This is the **agent space** view — a temporal lens into all AI sessions, past and present.
 
 ```
 ┌──────────────┐
@@ -87,45 +91,67 @@ Displays conversation session history from AI agent harnesses, grouped by harnes
 ├──────────────┤
 │              │
 │ ▼ Claude Code│
+│   [+]        │
 │              │
-│  "Fix auth   │
+│  ● "Fix auth │
 │   middleware" │
-│   api-server │
+│   feat/auth  │
+│   PR #142    │
 │   2h ago     │
 │              │
-│  "Add user   │
+│  ○ "Add user │
 │   migration" │
-│   api-server │
+│   feat/users │
+│   PR #138 ✓  │
 │   yesterday  │
 │              │
-│  "Debug CI   │
+│  ○ "Debug CI │
 │   pipeline"  │
-│   infra      │
+│   main       │
 │   2 days ago │
 │              │
 │ ▶ Codex (3)  │
+│   [+]        │
 │              │
 │ ▶ OpenCode(1)│
+│   [+]        │
 │              │
 └──────────────┘
 ```
 
 **Conversation entry fields:**
-- **Title/Preview** — First message summary or auto-generated title
-- **Associated workspace/project** — Which project directory this session belongs to
+- **Title** — Meaningful name (agent-provided or heuristically extracted, never raw session IDs)
+- **Branch** — Git branch the conversation was/is associated with
+- **PR status** — PR number with live state badge (open, merged ✓, closed)
 - **Timestamp** — Relative time (2h ago, yesterday, etc.)
-- **Status** — Active, completed, or interrupted
+- **Active indicator** — `●` for live/running sessions, `○` for completed/historical
+- **Plan indicator** — Icon if a finalized plan is associated with this session
+
+Note: The agent harness identification comes from the group hierarchy (parent header), not repeated on each entry.
 
 **Group headers:**
 - Agent harness name with count of sessions
 - Collapsible (`▼` expanded, `▶` collapsed)
 - Sorted by most recent activity within each group
+- `[+]` button to start a new session with that agent
 
 **Interactions:**
-- Click to navigate to the workspace where this session ran (or offer to open one)
+- Click active conversation → navigate to the workspace/pane where it's running
+- Click historical conversation → show session details (plan, branch, PR, preview) with option to start a new session in same project
 - Search/filter across all conversations (`/` to focus search)
 - Scroll through history (lazy-loaded, most recent first)
 - Keyboard: `j/k` or arrow keys to navigate entries, `Enter` to select
+- `[+]` or keybinding to start a new agent session (opens/creates a workspace pane and launches the agent)
+
+**Progressive metadata:**
+Conversation entries enrich over time as the agent works. A newly started session shows only title + working directory. As the agent creates branches, opens PRs, or finalizes plans, those appear automatically in the entry without user action.
+
+**Live state awareness:**
+Historical metadata is cross-referenced with current state:
+- Branch deleted → shown dimmed with "(deleted)"
+- PR merged → green merged badge
+- PR closed → red closed badge
+- Directory no longer exists → warning indicator
 
 ## Tab Switching
 

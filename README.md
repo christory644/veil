@@ -66,4 +66,4 @@ Veil reads session history from multiple AI coding agents via a pluggable adapte
 
 ## License
 
-TBD
+Dual-licensed under [MIT](LICENSE-MIT) and [Apache-2.0](LICENSE-APACHE) (at your option).
