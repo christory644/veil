@@ -53,20 +53,20 @@ Follow the Red-Green-Refactor cycle for every unit of work. The commit log must 
 1. Write a test that describes the behavior you want.
 2. Run the test. Confirm it fails for the RIGHT reason (missing implementation, not typo).
 3. Run the quality gate: `cargo fmt && cargo clippy --all-targets --all-features -- -D warnings`
-4. **Commit**: `test: <describe the expected behavior>`
+4. **Commit**: `test(VEI-XX): <describe the expected behavior>` (replace VEI-XX with the actual issue number)
 
 **GREEN — Make it pass:**
 1. Write the MINIMAL code to make the test pass.
 2. Run the full quality gate (fmt, clippy, test, build). ALL must pass.
 3. If this change needs documentation, include it in the same commit (inline comments, doc comments, or markdown if architectural).
-4. **Commit**: `feat: <what it does>` or `fix: <what was broken>`
+4. **Commit**: `feat(VEI-XX): <what it does>` or `fix(VEI-XX): <what was broken>`
 
 **REFACTOR — Clean up:**
 1. Look at the code you just wrote and the surrounding code. Refactor for clarity.
 2. Split files that exceed ~300 lines into modules.
 3. Reduce cyclomatic complexity. Extract functions. Improve names.
 4. Run the full quality gate. ALL must pass.
-5. **Commit**: `refactor: <what was improved>`
+5. **Commit**: `refactor(VEI-XX): <what was improved>`
 
 ### Critical rules:
 - NO production code without a failing test first.
@@ -85,8 +85,21 @@ After implementing the full task:
 3. Run `cargo test` — ALL tests must pass (not just the ones you wrote).
 4. Run `cargo build` — the whole workspace must compile.
 5. Verify no source file exceeds ~300 lines. If any do, refactor and split them.
-6. If all pass: push to remote.
-7. If any fail: fix and re-validate. Do NOT push broken code.
+6. If any fail: fix and re-validate. Do NOT push broken code.
+
+## Phase 4.5: Code Review
+
+Before pushing, run CodeRabbit for automated code review:
+
+1. Note the commit hash from BEFORE you started this task (from your `git log` in Phase 0).
+2. Run: `coderabbit review --plain --type committed --base-commit <that-commit-hash>`
+3. Read the feedback carefully.
+4. Fix any legitimate issues identified (code quality, bugs, missing tests, naming, etc.).
+5. Run the quality gate again after fixes.
+6. If coderabbit found issues and you fixed them, run coderabbit again to verify.
+7. Once clean: push to remote.
+
+Do NOT skip this step. Do NOT dismiss feedback without addressing it. This is your continuous code review loop.
 
 ## Phase 5: Update Linear
 

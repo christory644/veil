@@ -71,13 +71,23 @@ If any check fails, fix the issue before committing. Never create a separate com
 
 ## TDD Commit Cadence
 
-Every unit of work produces 2-3 commits that tell the TDD story:
+Every unit of work produces 2-3 commits that tell the TDD story. **Include the Linear issue number in the parenthetical** so commits are traceable to tasks:
 
-1. `test: <describe the behavior>` — The failing test (RED). Commit this so the log shows what you intended.
-2. `feat: <what it does>` or `fix: <what was broken>` — The minimal implementation to pass (GREEN). Include any doc changes that belong with this code change.
-3. `refactor: <what was improved>` — Clean up, split large files, reduce complexity (REFACTOR). This step is NOT optional — every task should include refactoring.
+1. `test(VEI-14): <describe the behavior>` — The failing test (RED). Commit this so the log shows what you intended.
+2. `feat(VEI-14): <what it does>` or `fix(VEI-14): <what was broken>` — The minimal implementation to pass (GREEN). Include any doc changes that belong with this code change.
+3. `refactor(VEI-14): <what was improved>` — Clean up, split large files, reduce complexity (REFACTOR). This step is NOT optional — every task should include refactoring.
 
 This cadence produces an auditable commit log. Never create standalone `docs:`, `style:`, or `chore:` commits.
+
+## Code Review Gate
+
+Before pushing completed work, run CodeRabbit for automated code review:
+
+```bash
+coderabbit review --plain --type committed --base-commit <commit-before-task-started>
+```
+
+Read the feedback, fix any issues identified, then push. This creates a continuous code review loop that catches quality issues before they accumulate. Do NOT skip this step or dismiss feedback without addressing it.
 
 ## Linear Integration
 
