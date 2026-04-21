@@ -93,13 +93,16 @@ Before pushing, run CodeRabbit for automated code review:
 
 1. Note the commit hash from BEFORE you started this task (from your `git log` in Phase 0).
 2. Run: `coderabbit review --plain --type committed --base-commit <that-commit-hash>`
-3. Read the feedback carefully.
-4. Fix any legitimate issues identified (code quality, bugs, missing tests, naming, etc.).
-5. Run the quality gate again after fixes.
-6. If coderabbit found issues and you fixed them, run coderabbit again to verify.
-7. Once clean: push to remote.
+3. Read the feedback carefully and evaluate each item:
+   - **Fix** issues about: logic errors, missing edge cases, unsafe misuse, error handling gaps, missing test coverage, API design problems, resource leaks.
+   - **Ignore** feedback about: formatting (cargo fmt handles it), clippy lints (already gated), purely stylistic preferences that don't affect correctness, or suggestions that conflict with the project's established patterns.
+   - When ignoring feedback, briefly note WHY in your commit message or comment — "coderabbit suggested X, skipped because Y" — so the reasoning is auditable.
+4. Fix legitimate issues. Run the quality gate again after fixes.
+5. Run coderabbit again after fixing to verify the review is clean.
+6. Repeat steps 3-5 until no actionable feedback remains.
+7. Push to remote.
 
-Do NOT skip this step. Do NOT dismiss feedback without addressing it. This is your continuous code review loop.
+**Judgment call**: CodeRabbit is a useful reviewer but not infallible. Most of its feedback will be valid — take it seriously and default to fixing. But ~10-20% may be generic, overly pedantic, or wrong for this codebase. You are allowed to disagree, but you must justify it. The bar for ignoring is "this feedback doesn't apply" not "this is inconvenient to fix."
 
 ## Phase 5: Update Linear
 

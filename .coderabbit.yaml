@@ -1,0 +1,54 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+
+language: en-US
+tone_instructions: >
+  Be direct and technical. Skip compliments. Focus on correctness, safety,
+  and idiomatic Rust. Do not comment on formatting, import order, or style
+  choices that cargo fmt and clippy already handle.
+
+reviews:
+  profile: chill
+  high_level_summary: true
+  auto_review:
+    enabled: true
+    drafts: false
+
+  path_instructions:
+    - path: "crates/**/*.rs"
+      instructions: >
+        This is a Rust workspace. Review for: unsafe misuse, error handling
+        (thiserror in libraries, anyhow in binaries), proper use of ownership
+        and borrowing, missing derives, public API documentation, and
+        unnecessary allocations. Do not flag formatting — cargo fmt handles
+        that. Do not flag clippy lints — clippy runs with -D warnings before
+        every commit. Focus on logic errors, missing edge cases, API design,
+        and test coverage gaps.
+
+    - path: "crates/veil-ghostty/**/*.rs"
+      instructions: >
+        This crate wraps libghosty via C FFI. Pay close attention to: unsafe
+        blocks (must be justified and minimal), null pointer handling, lifetime
+        correctness across the FFI boundary, catch_unwind around FFI calls,
+        and raw pointers not escaping this crate.
+
+    - path: "crates/veil-aggregator/**/*.rs"
+      instructions: >
+        This crate handles SQLite persistence and file watching. Review for:
+        SQL injection (use parameterized queries only), proper transaction
+        handling, file watcher resource cleanup, and error propagation from
+        rusqlite.
+
+    - path: "crates/veil-pty/**/*.rs"
+      instructions: >
+        Cross-platform PTY abstraction. Review for: platform-specific safety
+        (libc on Unix, winapi on Windows), file descriptor leaks, proper
+        signal handling, and that platform differences are abstracted cleanly.
+
+  path_filters:
+    - "!vendor/**"
+    - "!target/**"
+    - "!*.lock"
+    - "!ralph-logs/**"
+
+chat:
+  auto_reply: true

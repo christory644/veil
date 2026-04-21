@@ -87,7 +87,7 @@ Before pushing completed work, run CodeRabbit for automated code review:
 coderabbit review --plain --type committed --base-commit <commit-before-task-started>
 ```
 
-Read the feedback, fix any issues identified, then push. This creates a continuous code review loop that catches quality issues before they accumulate. Do NOT skip this step or dismiss feedback without addressing it.
+Read the feedback and fix legitimate issues (logic errors, missing tests, unsafe misuse, resource leaks, API design problems). Ignore feedback about formatting or clippy lints — those are already gated. If you disagree with a suggestion, note why in your commit message. Default to fixing; the bar for ignoring is "doesn't apply," not "inconvenient." After fixing, run coderabbit again and iterate until clean. Then push.
 
 ## Linear Integration
 
