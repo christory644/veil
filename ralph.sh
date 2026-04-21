@@ -11,6 +11,22 @@ PROMPT_FILE="${SCRIPT_DIR}/PROMPT.md"
 LOG_DIR="${SCRIPT_DIR}/ralph-logs"
 MAX_ITERATIONS="${1:-0}"  # 0 = infinite
 
+# Claude personal config — claude-personal is a shell alias, so we
+# invoke claude directly with the config dir env var.
+# We also skip the cmux wrapper (if present) to avoid hook injection
+# in the autonomous loop — find the real claude binary on PATH.
+export CLAUDE_CONFIG_DIR="${HOME}/.claude-personal"
+find_real_claude() {
+    local skip_dir="/Applications/cmux.app/Contents/Resources/bin"
+    local IFS=:
+    for d in $PATH; do
+        [[ "$d" == "$skip_dir" ]] && continue
+        [[ -x "$d/claude" ]] && printf '%s' "$d/claude" && return 0
+    done
+    return 1
+}
+CLAUDE_BIN="$(find_real_claude || command -v claude)"
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -28,11 +44,13 @@ if [[ ! -f "${PROMPT_FILE}" ]]; then
     exit 1
 fi
 
-# Verify claude-personal is available
-if ! command -v claude-personal &> /dev/null; then
-    echo -e "${RED}ERROR: claude-personal command not found${NC}"
+# Verify claude is available
+if [[ -z "${CLAUDE_BIN}" ]]; then
+    echo -e "${RED}ERROR: claude command not found${NC}"
     exit 1
 fi
+echo -e "${GREEN}Using claude at: ${CLAUDE_BIN}${NC}"
+echo -e "${GREEN}Config dir: ${CLAUDE_CONFIG_DIR}${NC}"
 
 iteration=0
 start_time=$(date +%s)
@@ -87,7 +105,7 @@ while true; do
     set +e
     (
         cd "${SCRIPT_DIR}"
-        cat "${PROMPT_FILE}" | claude-personal \
+        cat "${PROMPT_FILE}" | "${CLAUDE_BIN}" \
             --print \
             --dangerously-skip-permissions \
             --model opus \
