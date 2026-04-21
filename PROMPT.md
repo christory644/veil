@@ -11,7 +11,7 @@ Read these files to understand what you are building:
 - `docs/ui_design/ui_design.md`
 
 ### 0b. Study the operational guide
-Read `AGENTS.md` for build commands, conventions, and project structure.
+Read `AGENTS.md` for build commands, conventions, project structure, and the quality gate.
 
 ### 0c. Study the current state
 - Run `cargo build 2>&1` to see if the project compiles. If there is no Cargo.toml yet, that means project scaffolding is the first task.
@@ -29,10 +29,11 @@ Query Linear for the next task to work on:
 2. Check each issue's `blockedBy` relationships — skip any issue that is blocked by an incomplete issue.
 3. Select the HIGHEST PRIORITY UNBLOCKED issue.
 4. Move the selected issue to "In Progress" status in Linear.
+5. **Leave a comment** on the issue explaining that you are starting work.
 
 If no unblocked issues exist, look for blocked issues whose blockers you can resolve within this iteration.
 
-If ALL issues are done, update AGENTS.md with any operational learnings and commit. Then exit.
+If ALL issues are done, exit cleanly.
 
 ## Phase 2: Investigate
 
@@ -42,45 +43,61 @@ Before implementing, search the codebase thoroughly:
 - Read related files to understand the current architecture.
 - If the task involves a crate that doesn't exist yet, check if the Cargo workspace is set up.
 
-## Phase 3: Implement (using Superpowers TDD)
+## Phase 3: Implement (Strict TDD)
 
-Follow the Superpowers test-driven-development methodology:
+Follow the Red-Green-Refactor cycle for every unit of work. The commit log must tell the TDD story.
 
 ### For each unit of work:
-1. **RED**: Write a failing test that describes the behavior you want.
-2. **Verify RED**: Run the test. Confirm it fails for the RIGHT reason (missing implementation, not typo).
-3. **GREEN**: Write the MINIMAL code to make the test pass.
-4. **Verify GREEN**: Run the test. Confirm it passes. Confirm all other tests still pass.
-5. **REFACTOR**: Clean up if needed, keeping tests green.
-6. **Commit**: Make an atomic git commit with a conventional commit message.
+
+**RED — Write the failing test:**
+1. Write a test that describes the behavior you want.
+2. Run the test. Confirm it fails for the RIGHT reason (missing implementation, not typo).
+3. Run the quality gate: `cargo fmt && cargo clippy --all-targets --all-features -- -D warnings`
+4. **Commit**: `test: <describe the expected behavior>`
+
+**GREEN — Make it pass:**
+1. Write the MINIMAL code to make the test pass.
+2. Run the full quality gate (fmt, clippy, test, build). ALL must pass.
+3. If this change needs documentation, include it in the same commit (inline comments, doc comments, or markdown if architectural).
+4. **Commit**: `feat: <what it does>` or `fix: <what was broken>`
+
+**REFACTOR — Clean up:**
+1. Look at the code you just wrote and the surrounding code. Refactor for clarity.
+2. Split files that exceed ~300 lines into modules.
+3. Reduce cyclomatic complexity. Extract functions. Improve names.
+4. Run the full quality gate. ALL must pass.
+5. **Commit**: `refactor: <what was improved>`
 
 ### Critical rules:
 - NO production code without a failing test first.
 - If you write code before the test, DELETE IT and start over.
 - No placeholder implementations. No TODO stubs. Real implementations only.
-- Use `cargo test -p <crate>` after each change to validate.
-- Use `cargo clippy --all-targets -p <crate> -- -D warnings` to check for issues.
+- The quality gate (fmt, clippy, test, build) must pass before EVERY commit. Zero exceptions.
+- Never create standalone `docs:`, `style:`, or `chore:` commits. Documentation ships with the code change. Formatting is handled by the quality gate.
+- Every task must include refactoring. It is not optional. TDD is Red-Green-REFACTOR.
+- Aim for comprehensive test coverage. No code path should exist without a test that exercises it.
 
-## Phase 4: Validate & Commit
+## Phase 4: Final Validation
 
-After implementing:
-1. Run `cargo build` — the whole workspace must compile.
-2. Run `cargo test` — ALL tests must pass (not just the ones you wrote).
-3. Run `cargo clippy --all-targets --all-features -- -D warnings` — no warnings.
-4. Run `cargo fmt --check` — formatting must be clean.
-5. If all pass: commit with a conventional commit message, push to remote.
-6. If any fail: fix the issue and re-validate. Do NOT commit broken code.
+After implementing the full task:
+1. Run `cargo fmt` — apply formatting.
+2. Run `cargo clippy --all-targets --all-features -- -D warnings` — zero warnings.
+3. Run `cargo test` — ALL tests must pass (not just the ones you wrote).
+4. Run `cargo build` — the whole workspace must compile.
+5. Verify no source file exceeds ~300 lines. If any do, refactor and split them.
+6. If all pass: push to remote.
+7. If any fail: fix and re-validate. Do NOT push broken code.
 
 ## Phase 5: Update Linear
 
-After successfully completing and pushing:
+After successfully pushing:
 1. Move the Linear issue to "Done" status.
-2. If you discovered additional work that needs to be done (missing features, bugs, edge cases), create NEW Linear issues in the Veil-term team with:
+2. **Leave a comment** on the issue summarizing: what was implemented, what tests were added, what was refactored, and any follow-up work identified.
+3. If you discovered additional work (missing features, bugs, edge cases), create NEW Linear issues in the Veil-term team with:
    - Clear title and description
    - Appropriate label (Feature, Bug, or Improvement)
    - Priority (1=Urgent, 2=High, 3=Medium, 4=Low)
    - `blockedBy` relationships if applicable
-3. If you updated AGENTS.md with operational learnings, commit and push that too.
 
 ## Phase 6: Exit
 
@@ -102,6 +119,10 @@ After completing the task, updating Linear, and pushing all changes, exit cleanl
 
 99999999. When writing tests, test BEHAVIOR not implementation. No mocking unless absolutely necessary.
 
-999999999. Capture operational learnings in AGENTS.md. If you discover a new build command, a gotcha, or a pattern that works well, add it to AGENTS.md so future iterations benefit.
+999999999. No source file should exceed ~300 lines. If a file is growing past this, split it into modules as part of the refactor step. Large files create context problems for future iterations.
 
 9999999999. Use parallel subagents for file reading and searching. Use only 1 subagent for build/test operations to avoid backpressure.
+
+99999999999. Do NOT modify AGENTS.md during implementation. It is a stable reference document, not a journal. If you discover something worth documenting, put it in a code comment or a doc comment where it's relevant.
+
+999999999999. Documentation belongs near the code. Inline comments for implementation details, doc comments for public APIs, markdown only for large architectural concepts in `docs/`. Never create standalone documentation commits.
