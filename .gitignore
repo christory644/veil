@@ -27,6 +27,9 @@ Thumbs.db
 .env.local
 .direnv/
 
+# Worktrees
+.worktrees/
+
 # Nix
 .nix-*
 result
