@@ -21,6 +21,11 @@ tokio = { workspace = true }
 wgpu = { workspace = true }
 bytemuck = { workspace = true }
 pollster = { workspace = true }
+swash = { workspace = true }
+rustybuzz = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

@@ -7,6 +7,7 @@
 //! `FocusManager`). All real logic lives in veil-core; this file is the minimal
 //! platform glue.
 
+mod font;
 mod frame;
 mod quad_builder;
 mod renderer;

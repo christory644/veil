@@ -36,6 +36,8 @@ proptest = "1"
 wgpu = "24"
 bytemuck = { version = "1", features = ["derive"] }
 pollster = "0.4"
+swash = "0.2"
+rustybuzz = "0.20"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
