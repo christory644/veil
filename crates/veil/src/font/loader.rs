@@ -46,6 +46,13 @@ impl FontData {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("no font path provided and no bundled default"))?;
 
+        if config.size_pt <= 0.0 {
+            anyhow::bail!("font size_pt must be positive, got {}", config.size_pt);
+        }
+        if config.dpi <= 0.0 {
+            anyhow::bail!("font dpi must be positive, got {}", config.dpi);
+        }
+
         let data = std::fs::read(path)
             .map_err(|e| anyhow::anyhow!("failed to read font file {}: {e}", path.display()))?;
 

@@ -12,6 +12,10 @@ use crate::font::rasterizer::RasterizedGlyph;
 /// Padding in pixels between glyphs to prevent texture filtering artifacts.
 const PADDING: u32 = 1;
 
+/// Maximum atlas dimension (width or height) in pixels.
+/// Prevents runaway growth if an unexpectedly large glyph is inserted.
+const MAX_ATLAS_DIMENSION: u32 = 16384;
+
 /// UV coordinates for a glyph within the atlas texture.
 /// Normalized to [0.0, 1.0] range.
 #[derive(Debug, Clone, Copy)]
@@ -84,6 +88,10 @@ impl GlyphAtlas {
     /// Returns the `AtlasRegion` where the glyph was placed.
     /// If the glyph is already in the atlas, returns the existing region.
     /// If there is no room, grows the atlas and retries.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the glyph dimensions exceed `MAX_ATLAS_DIMENSION` (16384).
     #[allow(clippy::cast_precision_loss)] // Atlas pixel coords fit comfortably in f32.
     pub fn insert(&mut self, glyph: &RasterizedGlyph) -> AtlasRegion {
         // Return existing entry if already packed.
@@ -106,6 +114,18 @@ impl GlyphAtlas {
             self.entries.insert(glyph.glyph_id, region);
             self.dirty = true;
             return region;
+        }
+
+        assert!(
+            glyph.width <= MAX_ATLAS_DIMENSION && glyph.height <= MAX_ATLAS_DIMENSION,
+            "glyph dimensions {}x{} exceed maximum atlas dimension {MAX_ATLAS_DIMENSION}",
+            glyph.width,
+            glyph.height,
+        );
+
+        // Ensure atlas is wide enough for the glyph (grow() only doubles height).
+        while glyph.width > self.width {
+            self.grow_width();
         }
 
         // Find placement using shelf packing.
@@ -174,6 +194,33 @@ impl GlyphAtlas {
         self.shelves.push(Shelf { y: new_y, x: glyph_w + PADDING, height: glyph_h });
 
         Some((0, new_y))
+    }
+
+    /// Grow the atlas by doubling its width. Copies existing rows into
+    /// the wider bitmap and rescales U coordinates.
+    #[allow(clippy::cast_precision_loss)] // Atlas dimensions fit comfortably in f32.
+    fn grow_width(&mut self) {
+        let old_width = self.width;
+        let new_width = old_width * 2;
+
+        let mut new_bitmap = vec![0u8; (new_width * self.height) as usize];
+        // Copy each row from the old bitmap into the wider one.
+        for row in 0..self.height {
+            let src_start = (row * old_width) as usize;
+            let src_end = src_start + old_width as usize;
+            let dst_start = (row * new_width) as usize;
+            let dst_end = dst_start + old_width as usize;
+            new_bitmap[dst_start..dst_end].copy_from_slice(&self.bitmap[src_start..src_end]);
+        }
+        self.bitmap = new_bitmap;
+        self.width = new_width;
+
+        // Rescale U coordinates: u_new = u_old * old_width / new_width
+        let scale = old_width as f32 / new_width as f32;
+        for region in self.entries.values_mut() {
+            region.u_min *= scale;
+            region.u_max *= scale;
+        }
     }
 
     /// Grow the atlas by doubling its height. Copies existing bitmap data
