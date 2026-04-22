@@ -34,28 +34,31 @@ impl FocusManager {
     }
 
     /// Set focus to a terminal surface.
-    pub fn focus_surface(&mut self, _id: SurfaceId) {
-        todo!()
+    pub fn focus_surface(&mut self, id: SurfaceId) {
+        self.current = Some(FocusTarget::Surface(id));
     }
 
     /// Set focus to the sidebar.
     pub fn focus_sidebar(&mut self) {
-        todo!()
+        self.current = Some(FocusTarget::Sidebar);
     }
 
     /// True if focus is on any surface.
     pub fn is_surface_focused(&self) -> bool {
-        todo!()
+        matches!(self.current, Some(FocusTarget::Surface(_)))
     }
 
     /// Get the focused surface ID, if any.
     pub fn focused_surface(&self) -> Option<SurfaceId> {
-        todo!()
+        match self.current {
+            Some(FocusTarget::Surface(id)) => Some(id),
+            _ => None,
+        }
     }
 
     /// Clear focus (e.g., during workspace transitions).
     pub fn clear(&mut self) {
-        todo!()
+        self.current = None;
     }
 }
 
@@ -80,11 +83,19 @@ pub enum KeyRoute {
 
 /// Route a key event: check global shortcuts first, then forward to focus target.
 pub fn route_key_event(
-    _input: &KeyInput,
-    _registry: &KeybindingRegistry,
-    _focus: &FocusManager,
+    input: &KeyInput,
+    registry: &KeybindingRegistry,
+    focus: &FocusManager,
 ) -> KeyRoute {
-    todo!()
+    if let Some(action) = registry.lookup(input) {
+        return KeyRoute::Action(action.clone());
+    }
+
+    match focus.current() {
+        Some(FocusTarget::Surface(id)) => KeyRoute::ForwardToSurface(id),
+        Some(FocusTarget::Sidebar) => KeyRoute::ForwardToSidebar,
+        None => KeyRoute::Unhandled,
+    }
 }
 
 #[cfg(test)]
