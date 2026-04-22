@@ -78,7 +78,7 @@ fn render_workspace_entry(ui: &mut egui::Ui, entry: &WorkspaceEntryData) -> bool
 ///
 /// Counts unacknowledged notifications per workspace from `state.notifications`.
 pub fn extract_workspace_entries(state: &AppState) -> Vec<WorkspaceEntryData<'_>> {
-    let active_id = state.active_workspace_id.unwrap_or(WorkspaceId::new(0));
+    let active_id = state.active_workspace_id;
 
     state
         .workspaces
@@ -95,7 +95,7 @@ pub fn extract_workspace_entries(state: &AppState) -> Vec<WorkspaceEntryData<'_>
                 name: &ws.name,
                 working_directory: &ws.working_directory,
                 branch: ws.branch.as_deref(),
-                is_active: ws.id == active_id,
+                is_active: active_id == Some(ws.id),
                 notification_count,
             }
         })
@@ -483,5 +483,21 @@ mod tests {
         assert_eq!(entries.len(), 1, "should have one entry");
         let entry = entries.iter().find(|e| e.id == ws_id).unwrap();
         assert_eq!(entry.branch, None);
+    }
+
+    #[test]
+    fn extract_entries_no_active_workspace_marks_none_active() {
+        let mut state = AppState::new();
+        state.create_workspace("ws1".to_string(), PathBuf::from("/tmp/ws1"));
+        state.create_workspace("ws2".to_string(), PathBuf::from("/tmp/ws2"));
+        // Force active_workspace_id to None
+        state.active_workspace_id = None;
+
+        let entries = extract_workspace_entries(&state);
+        assert_eq!(entries.len(), 2, "should have two entries");
+        assert!(
+            entries.iter().all(|e| !e.is_active),
+            "no workspace should be marked active when active_workspace_id is None"
+        );
     }
 }
