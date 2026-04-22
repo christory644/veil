@@ -16,6 +16,8 @@ veil-aggregator = { path = "../veil-aggregator" }
 veil-socket = { path = "../veil-socket" }
 anyhow.workspace = true
 tracing.workspace = true
+winit = { workspace = true }
+tokio = { workspace = true }
 
 [lints]
 workspace = true

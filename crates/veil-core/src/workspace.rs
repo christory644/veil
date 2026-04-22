@@ -323,7 +323,7 @@ mod tests {
             PaneNode::Split { direction, .. } => {
                 assert_eq!(*direction, SplitDirection::Vertical);
             }
-            _ => panic!("expected split node after vertical split"),
+            PaneNode::Leaf { .. } => panic!("expected split node after vertical split"),
         }
     }
 
@@ -339,7 +339,7 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             WorkspaceError::PaneNotFound(id) => assert_eq!(id, PaneId::new(999)),
-            other => panic!("expected PaneNotFound, got {other:?}"),
+            other @ WorkspaceError::LastPane => panic!("expected PaneNotFound, got {other:?}"),
         }
     }
 
@@ -425,7 +425,7 @@ mod tests {
         assert!(found.is_some());
         match found.unwrap() {
             PaneNode::Leaf { pane_id, .. } => assert_eq!(*pane_id, PaneId::new(3)),
-            _ => panic!("expected leaf node"),
+            PaneNode::Split { .. } => panic!("expected leaf node"),
         }
     }
 
@@ -460,7 +460,7 @@ mod tests {
                 assert!(*ratio > 0.0, "ratio must be > 0.0");
                 assert!(*ratio < 1.0, "ratio must be < 1.0");
             }
-            _ => panic!("expected split node"),
+            PaneNode::Leaf { .. } => panic!("expected split node"),
         }
     }
 
