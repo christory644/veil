@@ -84,7 +84,10 @@ use std::path::PathBuf;
 pub fn log_dir() -> Option<PathBuf> {
     let base = dirs::data_dir()?;
     let dir = base.join("veil").join("logs");
-    std::fs::create_dir_all(&dir).ok()?;
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("veil-tracing: failed to create log directory {}: {e}", dir.display());
+        return None;
+    }
     Some(dir)
 }
 ```
@@ -184,7 +187,7 @@ Install a custom panic hook that ensures tracing buffers are flushed before the 
 
 The panic hook is installed inside `init()`. It:
 1. Captures the previous panic hook (the default one)
-2. On panic: emits a `tracing::error!` with the panic info (location, message, backtrace)
+2. On panic: emits a `tracing::error!` with the panic info (location, message, backtrace), wrapped in `std::panic::catch_unwind` to prevent infinite recursion if the tracing subsystem itself panics (e.g., bug in the JSON formatter, file writer, or env filter)
 3. Drops or explicitly flushes the file writer guard (this is handled by the guard's Drop impl, but we want to ensure it happens before the default panic hook's abort)
 4. Calls the previous panic hook so the user still sees the standard panic output
 

@@ -49,7 +49,10 @@ pub struct TracingGuard {
 pub fn log_dir() -> Option<PathBuf> {
     let base = dirs::data_dir()?;
     let dir = base.join("veil").join("logs");
-    std::fs::create_dir_all(&dir).ok()?;
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("veil-tracing: failed to create log directory {}: {e}", dir.display());
+        return None;
+    }
     Some(dir)
 }
 
@@ -171,11 +174,16 @@ fn install_panic_hook() {
             panic_info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()));
         let message = panic_message(panic_info.payload());
 
-        tracing::error!(
-            panic.message = %message,
-            panic.location = location.as_deref().unwrap_or("unknown"),
-            "panic occurred"
-        );
+        // Wrap tracing::error! in catch_unwind to prevent infinite recursion
+        // if the tracing subsystem itself panics (e.g., bug in the JSON
+        // formatter, file writer, or env filter).
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            tracing::error!(
+                panic.message = %message,
+                panic.location = location.as_deref().unwrap_or("unknown"),
+                "panic occurred"
+            );
+        }));
 
         previous_hook(panic_info);
     }));
