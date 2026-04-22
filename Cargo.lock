@@ -3292,6 +3292,7 @@ dependencies = [
  "veil-ghostty",
  "veil-pty",
  "veil-socket",
+ "veil-tracing",
  "veil-ui",
  "wgpu 24.0.5",
  "winit",

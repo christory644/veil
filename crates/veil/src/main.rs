@@ -125,7 +125,9 @@ impl ApplicationHandler for VeilApp {
 }
 
 fn main() -> anyhow::Result<()> {
-    println!("veil v{}", env!("CARGO_PKG_VERSION"));
+    let _tracing_guard = veil_tracing::init();
+
+    tracing::info!("veil v{}", env!("CARGO_PKG_VERSION"));
 
     let event_loop = EventLoop::new()?;
     let mut app = VeilApp::new();

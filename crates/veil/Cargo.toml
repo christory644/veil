@@ -14,6 +14,7 @@ veil-ui = { path = "../veil-ui" }
 veil-pty = { path = "../veil-pty" }
 veil-aggregator = { path = "../veil-aggregator" }
 veil-socket = { path = "../veil-socket" }
+veil-tracing = { path = "../veil-tracing" }
 anyhow.workspace = true
 tracing.workspace = true
 winit = { workspace = true }
