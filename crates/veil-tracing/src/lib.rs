@@ -3,10 +3,9 @@
 //! This crate configures the `tracing` subscriber stack with two output layers:
 //!
 //! - **stderr**: human-readable, ANSI-colored format for development
-//! - **file**: structured JSON logs to `~/.local/share/veil/logs/` for diagnostics
+//! - **file**: structured JSON logs to the platform data directory for diagnostics
 //!
-//! It also installs a panic hook that emits panic info as a tracing event, and
-//! on Unix, registers a signal handler for SIGABRT (best-effort crash safety).
+//! It also installs a panic hook that emits panic info as a tracing event.
 //!
 //! # Usage
 //!
@@ -38,8 +37,11 @@ pub struct TracingGuard {
 
 /// Resolve the log directory path.
 ///
-/// Returns `~/.local/share/veil/logs/` on macOS/Linux,
-/// or the platform equivalent via `dirs::data_dir()`.
+/// Returns the platform data directory (via `dirs::data_dir()`) with `veil/logs/` appended:
+/// - Linux: `~/.local/share/veil/logs/`
+/// - macOS: `~/Library/Application Support/veil/logs/`
+/// - Windows: `C:\Users\<user>\AppData\Roaming\veil\logs\`
+///
 /// Creates the directory if it does not exist.
 ///
 /// Returns `None` if the data directory cannot be determined
@@ -65,7 +67,6 @@ pub fn log_dir() -> Option<PathBuf> {
 /// - Reads `VEIL_LOG` env var for level filtering (falls back to
 ///   INFO in release, DEBUG in debug builds)
 /// - Installs a panic hook that logs panic info via tracing
-/// - On Unix, registers a signal handler for SIGABRT
 ///
 /// # Panics
 ///
@@ -101,9 +102,6 @@ pub fn init() -> TracingGuard {
     tracing_subscriber::registry().with(env_filter).with(stderr_layer).with(file_layer).init();
 
     install_panic_hook();
-
-    #[cfg(unix)]
-    install_signal_handlers();
 
     TracingGuard { _file_guard: file_guard }
 }
@@ -178,26 +176,6 @@ fn install_panic_hook() {
 
         previous_hook(panic_info);
     }));
-}
-
-/// Install best-effort signal handlers for crash signals (Unix only).
-///
-/// Registers a flag-based handler for SIGABRT (e.g., from C assertion failures
-/// in FFI code). When the signal arrives, the flag is set atomically
-/// (async-signal-safe), and then the OS default handler terminates the process.
-///
-/// SIGSEGV is **not** registered because `signal-hook` forbids it (it is in the
-/// forbidden signals list alongside SIGKILL, SIGSTOP, SIGILL, and SIGFPE).
-/// For SIGSEGV, the OS default handler (core dump) provides the best diagnostics.
-#[cfg(unix)]
-fn install_signal_handlers() {
-    use std::sync::atomic::AtomicBool;
-    use std::sync::Arc;
-
-    let flag = Arc::new(AtomicBool::new(false));
-    if signal_hook::flag::register(signal_hook::consts::SIGABRT, Arc::clone(&flag)).is_err() {
-        eprintln!("veil-tracing: failed to register SIGABRT handler");
-    }
 }
 
 #[cfg(test)]
@@ -288,14 +266,6 @@ mod tests {
         });
         assert!(result.is_err(), "catch_unwind should capture the panic");
         tracing::info!("after caught panic");
-    }
-
-    // ===== Signal handler (Unix) =====
-
-    #[cfg(unix)]
-    #[test]
-    fn install_signal_handlers_does_not_panic() {
-        install_signal_handlers();
     }
 
     // ===== init_test idempotency =====
