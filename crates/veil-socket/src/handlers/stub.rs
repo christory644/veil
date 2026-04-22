@@ -1,5 +1,4 @@
 //! Stub handlers that return `NOT_IMPLEMENTED` for unimplemented method groups.
-#![allow(dead_code)]
 
 use crate::rpc::RpcOutcome;
 

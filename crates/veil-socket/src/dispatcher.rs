@@ -1,5 +1,4 @@
 //! Method dispatcher — routes parsed JSON-RPC requests to handler functions.
-#![allow(dead_code)]
 
 use std::sync::Arc;
 use tokio::sync::Mutex;

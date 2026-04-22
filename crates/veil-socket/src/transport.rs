@@ -1,5 +1,4 @@
 //! Cross-platform socket transport abstraction.
-#![allow(dead_code)]
 //!
 //! On macOS/Linux the transport is a Unix domain socket. The abstraction is
 //! designed so Windows named pipe support can be added later without changing
@@ -94,7 +93,6 @@ impl SocketListener {
 }
 
 impl Drop for SocketListener {
-    #[allow(unused_must_use)]
     fn drop(&mut self) {
         // Remove the socket file on drop.
         if let Some(p) = self.path.as_path() {

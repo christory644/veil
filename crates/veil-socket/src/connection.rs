@@ -1,5 +1,4 @@
 //! Per-connection I/O handler.
-#![allow(dead_code)]
 //!
 //! Reads newline-delimited JSON from a client, dispatches each request through
 //! the `Dispatcher`, and writes the response back. One instance runs per client
@@ -111,7 +110,6 @@ async fn write_json<T: serde::Serialize>(
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::items_after_statements)]
 mod tests {
     use super::*;
     use crate::dispatcher::Dispatcher;
@@ -119,6 +117,7 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    use tokio::net::UnixStream;
     use veil_core::lifecycle::ShutdownSignal;
     use veil_core::state::AppState;
 
@@ -133,7 +132,6 @@ mod tests {
     /// For each request line, writes it to the server and reads back one response
     /// line. Returns all responses in order.
     async fn exchange(requests: &[&str], dispatcher: Arc<Dispatcher>) -> Vec<String> {
-        use tokio::net::UnixStream;
         let (client_stream, server_stream) = UnixStream::pair().expect("unix pair");
         let (server_read, server_write) = server_stream.into_split();
         let server_reader = tokio::io::BufReader::new(server_read);
@@ -195,7 +193,6 @@ mod tests {
 
     #[tokio::test]
     async fn notification_request_produces_no_response() {
-        use tokio::net::UnixStream;
         let (client_stream, server_stream) = UnixStream::pair().expect("unix pair");
         let (server_read, server_write) = server_stream.into_split();
         let server_reader = tokio::io::BufReader::new(server_read);
@@ -250,7 +247,6 @@ mod tests {
 
     #[tokio::test]
     async fn client_disconnect_returns_cleanly() {
-        use tokio::net::UnixStream;
         let (client_stream, server_stream) = UnixStream::pair().expect("unix pair");
         let (server_read, server_write) = server_stream.into_split();
         let server_reader = tokio::io::BufReader::new(server_read);
@@ -277,7 +273,6 @@ mod tests {
     #[tokio::test]
     async fn response_is_newline_terminated() {
         let dispatcher = make_dispatcher();
-        use tokio::net::UnixStream;
         let (client_stream, server_stream) = UnixStream::pair().expect("unix pair");
         let (server_read, server_write) = server_stream.into_split();
         let server_reader = tokio::io::BufReader::new(server_read);

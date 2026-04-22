@@ -1,5 +1,4 @@
 //! Socket server actor.
-#![allow(dead_code)]
 //!
 //! Binds the socket, accepts connections in a loop, spawns per-connection
 //! tasks, and handles graceful shutdown.

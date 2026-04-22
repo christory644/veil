@@ -1,5 +1,4 @@
 //! Workspace method handlers for the JSON-RPC socket API.
-#![allow(dead_code)]
 //!
 //! Each handler receives `Arc<Mutex<AppState>>`, JSON params, and the request
 //! ID. It locks state, calls the appropriate `AppState` method, and returns an
@@ -14,11 +13,6 @@ use veil_core::workspace::WorkspaceId;
 use crate::rpc::{ErrorResponse, RpcOutcome};
 
 // ── Helper ─────────────────────────────────────────────────────────────────────
-
-/// Extract the inner u64 from a `WorkspaceId`.
-pub(crate) fn workspace_id_as_u64(id: WorkspaceId) -> u64 {
-    id.as_u64()
-}
 
 /// Map a `StateError` to an `RpcOutcome::Err`.
 fn map_state_error(id: serde_json::Value, ws_id: u64, err: StateError) -> RpcOutcome {
@@ -333,7 +327,7 @@ mod tests {
         create_ws(&state, "ws2", "/tmp/b").await;
         let ws_id = {
             let guard = state.lock().await;
-            workspace_id_as_u64(guard.workspaces[0].id)
+            guard.workspaces[0].id.as_u64()
         };
 
         let result = select(&state, json!({"id": ws_id}), json!(1)).await;
@@ -348,14 +342,14 @@ mod tests {
 
         let second_id = {
             let guard = state.lock().await;
-            workspace_id_as_u64(guard.workspaces[1].id)
+            guard.workspaces[1].id.as_u64()
         };
 
         select(&state, json!({"id": second_id}), json!(1)).await;
 
         let guard = state.lock().await;
         let active = guard.active_workspace_id.expect("should have active");
-        assert_eq!(workspace_id_as_u64(active), second_id);
+        assert_eq!(active.as_u64(), second_id);
     }
 
     #[tokio::test]
@@ -386,7 +380,7 @@ mod tests {
         create_ws(&state, "toclose", "/tmp").await;
         let ws_id = {
             let guard = state.lock().await;
-            workspace_id_as_u64(guard.workspaces[0].id)
+            guard.workspaces[0].id.as_u64()
         };
         let result = close(&state, json!({"id": ws_id}), json!(1)).await;
         assert!(matches!(result, RpcOutcome::Ok(_)));
@@ -398,7 +392,7 @@ mod tests {
         create_ws(&state, "toclose", "/tmp").await;
         let ws_id = {
             let guard = state.lock().await;
-            workspace_id_as_u64(guard.workspaces[0].id)
+            guard.workspaces[0].id.as_u64()
         };
         close(&state, json!({"id": ws_id}), json!(1)).await;
         let guard = state.lock().await;
@@ -433,7 +427,7 @@ mod tests {
         create_ws(&state, "original", "/tmp").await;
         let ws_id = {
             let guard = state.lock().await;
-            workspace_id_as_u64(guard.workspaces[0].id)
+            guard.workspaces[0].id.as_u64()
         };
         let result = rename(&state, json!({"id": ws_id, "name": "renamed"}), json!(1)).await;
         match result {
@@ -451,7 +445,7 @@ mod tests {
         create_ws(&state, "original", "/tmp").await;
         let ws_id = {
             let guard = state.lock().await;
-            workspace_id_as_u64(guard.workspaces[0].id)
+            guard.workspaces[0].id.as_u64()
         };
         rename(&state, json!({"id": ws_id, "name": "updated"}), json!(1)).await;
         let guard = state.lock().await;
@@ -484,7 +478,7 @@ mod tests {
         create_ws(&state, "ws", "/tmp").await;
         let ws_id = {
             let guard = state.lock().await;
-            workspace_id_as_u64(guard.workspaces[0].id)
+            guard.workspaces[0].id.as_u64()
         };
         let result = rename(&state, json!({"id": ws_id}), json!(1)).await;
         match result {
