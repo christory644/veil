@@ -3376,6 +3376,7 @@ name = "veil-tracing"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "libc",
  "tempfile",
  "tracing",
  "tracing-appender",

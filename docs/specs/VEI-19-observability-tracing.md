@@ -73,8 +73,10 @@ use std::path::PathBuf;
 
 /// Resolve the log directory path.
 ///
-/// Returns `~/.local/share/veil/logs/` on macOS/Linux,
-/// or the platform equivalent via `dirs::data_dir()`.
+/// Returns the platform data directory (via `dirs::data_dir()`) with `veil/logs/` appended:
+/// - Linux: `~/.local/share/veil/logs/`
+/// - macOS: `~/Library/Application Support/veil/logs/`
+/// - Windows: `C:\Users\<user>\AppData\Roaming\veil\logs\`
 /// Creates the directory if it does not exist.
 ///
 /// Returns `None` if the data directory cannot be determined
@@ -207,13 +209,13 @@ Install signal handlers for SIGSEGV and SIGABRT that perform best-effort flush o
 
 This is Unix-only (`#[cfg(unix)]`). Windows crash handling is deferred.
 
-Uses the `signal-hook` crate (lightweight, safe signal handler registration) to register handlers for:
+Uses `libc::sigaction` directly to register handlers for:
 - `SIGSEGV` -- segmentation fault (likely from FFI)
 - `SIGABRT` -- abort (e.g., from C assertion failure)
 
-The handler is minimal and async-signal-safe: it writes a fixed message to stderr and calls `_exit(128 + signal_number)`. It cannot flush the tracing file appender (file I/O is not async-signal-safe), but the non-blocking appender's background thread may have already flushed recent events.
+The handler is minimal and async-signal-safe: it uses `write(2)` to emit a fixed message to stderr and calls `_exit(128 + signal_number)`. It cannot flush the tracing file appender (file I/O is not async-signal-safe), but the non-blocking appender's background thread may have already flushed recent events. Handlers are installed with `SA_RESETHAND` to restore default behavior after one invocation, avoiding infinite loops if the handler itself faults.
 
-**Alternative considered:** Using `libc::signal` directly. Rejected in favor of `signal-hook` for safety and portability.
+**Alternative considered:** Using `signal-hook` crate. Rejected because `signal-hook` places `SIGSEGV` on its forbidden signals list — crash signals require direct `sigaction` registration.
 
 **Functions:**
 
@@ -226,13 +228,13 @@ fn install_signal_handlers();
 ```
 
 **Dependencies:**
-- Add `signal-hook = "0.3"` to workspace and veil-tracing dependencies, gated behind `#[cfg(unix)]`.
+- Uses `libc` (already a workspace dependency), gated behind `#[cfg(unix)]`.
 
 **Cargo.toml addition for veil-tracing:**
 
 ```toml
 [target.'cfg(unix)'.dependencies]
-signal-hook = "0.3"
+libc.workspace = true
 ```
 
 **Tests:**
@@ -344,12 +346,11 @@ mod tests {
 |----------|-----------|---------|--------|
 | workspace `Cargo.toml` | `tracing-subscriber` | `0.3` (features: `env-filter`, `json`, `fmt`, `std`) | Subscriber registry, formatting layers, environment filter |
 | workspace `Cargo.toml` | `tracing-appender` | `0.2` | Non-blocking file appender with daily rotation |
-| workspace `Cargo.toml` | `signal-hook` | `0.3` | Safe signal handler registration (Unix) |
 | veil-tracing `Cargo.toml` | `tracing` | (workspace) | Core tracing macros |
 | veil-tracing `Cargo.toml` | `tracing-subscriber` | (workspace) | Subscriber layers |
 | veil-tracing `Cargo.toml` | `tracing-appender` | (workspace) | File appender |
 | veil-tracing `Cargo.toml` | `dirs` | (workspace) | Platform data directory resolution |
-| veil-tracing `Cargo.toml` (unix) | `signal-hook` | (workspace) | Signal handlers |
+| veil-tracing `Cargo.toml` (unix) | `libc` | (workspace) | Signal handler registration via `sigaction` |
 | veil `Cargo.toml` | `veil-tracing` | `{ path = "../veil-tracing" }` | Init call from main |
 
 **Existing dependencies already available:**

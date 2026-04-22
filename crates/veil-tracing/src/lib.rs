@@ -103,6 +103,9 @@ pub fn init() -> TracingGuard {
 
     install_panic_hook();
 
+    #[cfg(unix)]
+    install_signal_handlers();
+
     TracingGuard { _file_guard: file_guard }
 }
 
@@ -176,6 +179,63 @@ fn install_panic_hook() {
 
         previous_hook(panic_info);
     }));
+}
+
+/// Install best-effort signal handlers for crash signals (Unix only).
+///
+/// Registers handlers for `SIGSEGV` and `SIGABRT` that write a short diagnostic
+/// message to stderr and exit with code `128 + signal_number`. The handlers are
+/// async-signal-safe — they perform no heap allocation or file I/O, so they
+/// cannot flush the tracing file appender. However, the non-blocking appender's
+/// background thread may have already flushed recent events.
+///
+/// Uses `libc::sigaction` directly because `signal-hook` places `SIGSEGV` on its
+/// forbidden signals list (crash signals require special handling that the safe
+/// `signal-hook` API does not support).
+///
+/// If handler registration fails for a signal, a warning is emitted via
+/// `tracing::warn!` and execution continues — signal handler installation is
+/// best-effort.
+#[cfg(unix)]
+fn install_signal_handlers() {
+    /// Async-signal-safe handler: writes a fixed message to stderr and exits.
+    ///
+    /// Only uses `write(2)` and `_exit(2)`, both of which are
+    /// async-signal-safe per POSIX.
+    extern "C" fn signal_handler(sig: libc::c_int) {
+        let msg: &[u8] = match sig {
+            libc::SIGSEGV => b"veil: caught SIGSEGV (segmentation fault), exiting\n",
+            libc::SIGABRT => b"veil: caught SIGABRT (abort), exiting\n",
+            _ => b"veil: caught fatal signal, exiting\n",
+        };
+        // SAFETY: write(2) is async-signal-safe. STDERR_FILENO (2) is always valid.
+        unsafe {
+            libc::write(libc::STDERR_FILENO, msg.as_ptr().cast(), msg.len());
+            libc::_exit(128 + sig);
+        }
+    }
+
+    for &sig in &[libc::SIGSEGV, libc::SIGABRT] {
+        // SAFETY: We're registering a valid extern "C" function as a signal handler
+        // via sigaction. The handler is async-signal-safe. The zeroed sigaction struct
+        // is filled with sa_sigaction pointing to our handler and SA_RESETHAND so the
+        // default behavior is restored after one invocation (avoiding infinite loops
+        // if our handler itself faults).
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = signal_handler as libc::sighandler_t;
+            action.sa_flags = libc::SA_RESETHAND;
+
+            if libc::sigaction(sig, &raw const action, std::ptr::null_mut()) != 0 {
+                let err = std::io::Error::last_os_error();
+                tracing::warn!(
+                    signal = sig,
+                    error = %err,
+                    "failed to register signal handler"
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -266,6 +326,21 @@ mod tests {
         });
         assert!(result.is_err(), "catch_unwind should capture the panic");
         tracing::info!("after caught panic");
+    }
+
+    // ===== Signal handler =====
+
+    #[cfg(unix)]
+    #[test]
+    fn install_signal_handlers_does_not_panic() {
+        install_signal_handlers();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_signal_handlers_is_idempotent() {
+        install_signal_handlers();
+        install_signal_handlers();
     }
 
     // ===== init_test idempotency =====
