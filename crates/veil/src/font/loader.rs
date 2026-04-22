@@ -40,39 +40,82 @@ impl FontData {
     ///
     /// Reads the file, parses font tables, extracts metrics at the
     /// configured size and DPI.
-    pub fn load(_config: &FontConfig) -> anyhow::Result<Self> {
-        Err(anyhow::anyhow!("not yet implemented"))
+    pub fn load(config: &FontConfig) -> anyhow::Result<Self> {
+        let path = config
+            .path
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no font path provided and no bundled default"))?;
+
+        let data = std::fs::read(path)
+            .map_err(|e| anyhow::anyhow!("failed to read font file {}: {e}", path.display()))?;
+
+        if data.is_empty() {
+            anyhow::bail!("font file is empty: {}", path.display());
+        }
+
+        let font_ref = swash::FontRef::from_index(&data, 0)
+            .ok_or_else(|| anyhow::anyhow!("failed to parse font file: {}", path.display()))?;
+
+        let size_px = config.size_pt * config.dpi / 72.0;
+
+        let metrics = font_ref.metrics(&[]).scale(size_px);
+        let ascent = metrics.ascent;
+        let descent = metrics.descent;
+        let leading = metrics.leading;
+        let cell_height = ascent + descent + leading;
+
+        // Get cell width from the advance of 'M', falling back to space.
+        let charmap = font_ref.charmap();
+        let glyph_metrics = font_ref.glyph_metrics(&[]).scale(size_px);
+
+        let cell_width = {
+            let m_id = charmap.map('M');
+            if m_id != 0 {
+                glyph_metrics.advance_width(m_id)
+            } else {
+                let space_id = charmap.map(' ');
+                if space_id != 0 {
+                    glyph_metrics.advance_width(space_id)
+                } else {
+                    // Last resort: estimate from average width
+                    size_px * 0.6
+                }
+            }
+        };
+
+        Ok(Self { data, index: 0, size_px, cell_width, cell_height, ascent, descent })
     }
 
     /// Create a swash `FontRef` borrowing from the internal data.
     /// Used by the shaper and rasterizer.
     pub fn font_ref(&self) -> swash::FontRef<'_> {
-        unimplemented!()
+        swash::FontRef::from_index(&self.data, self.index as usize)
+            .expect("FontData was constructed from valid font data")
     }
 
     /// Cell width in pixels.
     pub fn cell_width(&self) -> f32 {
-        unimplemented!()
+        self.cell_width
     }
 
     /// Cell height in pixels.
     pub fn cell_height(&self) -> f32 {
-        unimplemented!()
+        self.cell_height
     }
 
     /// Ascent in pixels (baseline to top of cell).
     pub fn ascent(&self) -> f32 {
-        unimplemented!()
+        self.ascent
     }
 
     /// Descent in pixels (positive downward).
     pub fn descent(&self) -> f32 {
-        unimplemented!()
+        self.descent
     }
 
     /// Font size in pixels.
     pub fn size_px(&self) -> f32 {
-        unimplemented!()
+        self.size_px
     }
 
     /// Raw font data bytes.
