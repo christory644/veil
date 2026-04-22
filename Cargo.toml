@@ -10,6 +10,7 @@ members = [
     "crates/veil-socket",
     "crates/veil-scaffold-tests",
     "crates/veil-e2e",
+    "crates/veil-tracing",
 ]
 
 [workspace.package]
@@ -46,6 +47,9 @@ rustybuzz = "0.20"
 egui = "0.34"
 egui-wgpu = "0.34"
 egui-winit = { version = "0.34", default-features = false }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt", "std"] }
+tracing-appender = "0.2"
+signal-hook = "0.3"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
