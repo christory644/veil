@@ -10,6 +10,8 @@ pub mod layout;
 pub mod lifecycle;
 pub mod message;
 pub mod navigation;
+pub mod notification;
+pub mod osc_parse;
 pub mod session;
 pub mod state;
 pub mod workspace;

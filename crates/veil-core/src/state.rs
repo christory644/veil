@@ -288,6 +288,50 @@ impl AppState {
         self.workspaces.swap(idx_a, idx_b);
         Ok(())
     }
+
+    // ================================================================
+    // VEI-18: New notification store delegation methods
+    // ================================================================
+
+    /// Add a notification with full source and metadata via the notification store.
+    pub fn add_notification_with_source(
+        &mut self,
+        workspace_id: WorkspaceId,
+        surface_id: Option<SurfaceId>,
+        message: String,
+        title: Option<String>,
+        source: crate::notification::NotificationSource,
+    ) -> crate::notification::NotificationId {
+        todo!()
+    }
+
+    /// Dismiss (remove) a notification by its `NotificationId`.
+    pub fn dismiss_notification(&mut self, id: crate::notification::NotificationId) -> bool {
+        todo!()
+    }
+
+    /// Clear all notifications for a workspace.
+    pub fn clear_workspace_notifications(&mut self, workspace_id: WorkspaceId) {
+        todo!()
+    }
+
+    /// Clear all notifications.
+    pub fn clear_all_notifications(&mut self) {
+        todo!()
+    }
+
+    /// Get unread notification count for a workspace.
+    pub fn unread_notification_count(&self, workspace_id: WorkspaceId) -> usize {
+        todo!()
+    }
+
+    /// Get the latest notification for a workspace.
+    pub fn latest_notification(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Option<&crate::notification::Notification> {
+        todo!()
+    }
 }
 
 impl Default for AppState {
@@ -888,5 +932,236 @@ mod proptests {
                 prev = current;
             }
         }
+    }
+}
+
+// ================================================================
+// VEI-18: Unit 4 — AppState notification store integration tests
+// ================================================================
+
+#[cfg(test)]
+mod notification_integration_tests {
+    use super::*;
+    use crate::notification::{NotificationId, NotificationSource};
+
+    // --- add_notification_with_source ---
+
+    #[test]
+    fn add_notification_with_source_returns_valid_id() {
+        let mut state = AppState::new();
+        let ws_id = state.create_workspace("ws".to_string(), PathBuf::from("/tmp"));
+        let notif_id = state.add_notification_with_source(
+            ws_id,
+            None,
+            "hello".to_string(),
+            None,
+            NotificationSource::Internal,
+        );
+        // The ID should be valid (non-zero or specific value depends on impl)
+        let _ = notif_id.as_u64();
+    }
+
+    #[test]
+    fn add_notification_with_source_creates_entry_in_store() {
+        let mut state = AppState::new();
+        let ws_id = state.create_workspace("ws".to_string(), PathBuf::from("/tmp"));
+        state.add_notification_with_source(
+            ws_id,
+            None,
+            "test message".to_string(),
+            None,
+            NotificationSource::Internal,
+        );
+        let latest = state.latest_notification(ws_id);
+        assert!(latest.is_some(), "notification should exist in store after adding");
+        assert_eq!(latest.unwrap().message, "test message");
+    }
+
+    #[test]
+    fn add_notification_with_osc_source() {
+        let mut state = AppState::new();
+        let ws_id = state.create_workspace("ws".to_string(), PathBuf::from("/tmp"));
+        let source =
+            NotificationSource::Osc { sequence_type: crate::notification::OscSequenceType::Osc9 };
+        state.add_notification_with_source(
+            ws_id,
+            None,
+            "osc notification".to_string(),
+            None,
+            source,
+        );
+        let latest = state.latest_notification(ws_id);
+        assert!(latest.is_some());
+        assert!(
+            matches!(latest.unwrap().source, NotificationSource::Osc { .. }),
+            "source should be Osc"
+        );
+    }
+
+    #[test]
+    fn add_notification_with_title_and_surface_id() {
+        let mut state = AppState::new();
+        let ws_id = state.create_workspace("ws".to_string(), PathBuf::from("/tmp"));
+        let surface_id = state.workspace(ws_id).unwrap().layout.surface_ids()[0];
+        state.add_notification_with_source(
+            ws_id,
+            Some(surface_id),
+            "body".to_string(),
+            Some("Title".to_string()),
+            NotificationSource::SocketApi,
+        );
+        let latest = state.latest_notification(ws_id);
+        assert!(latest.is_some());
+        let notif = latest.unwrap();
+        assert_eq!(notif.title.as_deref(), Some("Title"));
+        assert_eq!(notif.surface_id, Some(surface_id));
+    }
+
+    // --- dismiss_notification ---
+
+    #[test]
+    fn dismiss_notification_removes_entry() {
+        let mut state = AppState::new();
+        let ws_id = state.create_workspace("ws".to_string(), PathBuf::from("/tmp"));
+        let notif_id = state.add_notification_with_source(
+            ws_id,
+            None,
+            "to dismiss".to_string(),
+            None,
+            NotificationSource::Internal,
+        );
+        let result = state.dismiss_notification(notif_id);
+        assert!(result, "dismiss should return true");
+        assert!(
+            state.latest_notification(ws_id).is_none(),
+            "notification should be gone after dismiss"
+        );
+    }
+
+    #[test]
+    fn dismiss_notification_nonexistent_returns_false() {
+        let mut state = AppState::new();
+        let result = state.dismiss_notification(NotificationId::new(999));
+        assert!(!result);
+    }
+
+    // --- clear_workspace_notifications ---
+
+    #[test]
+    fn clear_workspace_notifications_removes_all_for_workspace() {
+        let mut state = AppState::new();
+        let ws1 = state.create_workspace("ws1".to_string(), PathBuf::from("/tmp/1"));
+        let ws2 = state.create_workspace("ws2".to_string(), PathBuf::from("/tmp/2"));
+        state.add_notification_with_source(
+            ws1,
+            None,
+            "ws1 notif".to_string(),
+            None,
+            NotificationSource::Internal,
+        );
+        state.add_notification_with_source(
+            ws2,
+            None,
+            "ws2 notif".to_string(),
+            None,
+            NotificationSource::Internal,
+        );
+
+        state.clear_workspace_notifications(ws1);
+
+        assert!(state.latest_notification(ws1).is_none(), "ws1 notifications should be cleared");
+        assert!(state.latest_notification(ws2).is_some(), "ws2 notifications should remain");
+    }
+
+    // --- clear_all_notifications ---
+
+    #[test]
+    fn clear_all_notifications_empties_everything() {
+        let mut state = AppState::new();
+        let ws1 = state.create_workspace("ws1".to_string(), PathBuf::from("/tmp/1"));
+        let ws2 = state.create_workspace("ws2".to_string(), PathBuf::from("/tmp/2"));
+        state.add_notification_with_source(
+            ws1,
+            None,
+            "notif 1".to_string(),
+            None,
+            NotificationSource::Internal,
+        );
+        state.add_notification_with_source(
+            ws2,
+            None,
+            "notif 2".to_string(),
+            None,
+            NotificationSource::Internal,
+        );
+
+        state.clear_all_notifications();
+
+        assert!(state.latest_notification(ws1).is_none());
+        assert!(state.latest_notification(ws2).is_none());
+    }
+
+    // --- unread_notification_count ---
+
+    #[test]
+    fn unread_count_delegates_to_store() {
+        let mut state = AppState::new();
+        let ws_id = state.create_workspace("ws".to_string(), PathBuf::from("/tmp"));
+        state.add_notification_with_source(
+            ws_id,
+            None,
+            "notif 1".to_string(),
+            None,
+            NotificationSource::Internal,
+        );
+        state.add_notification_with_source(
+            ws_id,
+            None,
+            "notif 2".to_string(),
+            None,
+            NotificationSource::Internal,
+        );
+
+        assert_eq!(state.unread_notification_count(ws_id), 2);
+    }
+
+    #[test]
+    fn unread_count_zero_for_empty_workspace() {
+        let mut state = AppState::new();
+        let ws_id = state.create_workspace("ws".to_string(), PathBuf::from("/tmp"));
+        assert_eq!(state.unread_notification_count(ws_id), 0);
+    }
+
+    // --- latest_notification ---
+
+    #[test]
+    fn latest_notification_returns_most_recent() {
+        let mut state = AppState::new();
+        let ws_id = state.create_workspace("ws".to_string(), PathBuf::from("/tmp"));
+        state.add_notification_with_source(
+            ws_id,
+            None,
+            "first".to_string(),
+            None,
+            NotificationSource::Internal,
+        );
+        state.add_notification_with_source(
+            ws_id,
+            None,
+            "second".to_string(),
+            None,
+            NotificationSource::Internal,
+        );
+
+        let latest = state.latest_notification(ws_id);
+        assert!(latest.is_some());
+        assert_eq!(latest.unwrap().message, "second");
+    }
+
+    #[test]
+    fn latest_notification_none_for_no_notifications() {
+        let mut state = AppState::new();
+        let ws_id = state.create_workspace("ws".to_string(), PathBuf::from("/tmp"));
+        assert!(state.latest_notification(ws_id).is_none());
     }
 }

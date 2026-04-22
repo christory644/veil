@@ -265,3 +265,102 @@ mod tests {
         assert!(result.is_err());
     }
 }
+
+// ================================================================
+// VEI-18: Unit 4 — StateUpdate notification source integration tests
+//
+// These tests verify that the new notification types (NotificationSource,
+// Notification, NotificationStore) integrate correctly with the channel
+// infrastructure. They construct the types and process them through
+// AppState methods. Once the StateUpdate enum is enriched with the
+// additional fields, these tests will also cover the channel round-trip.
+// ================================================================
+
+#[cfg(test)]
+mod notification_channel_tests {
+    use super::*;
+    use crate::notification::{NotificationSource, OscSequenceType};
+    use crate::workspace::{SurfaceId, WorkspaceId};
+
+    #[tokio::test]
+    async fn state_update_notification_with_osc_source_applied_to_state() {
+        let channels = Channels::new(16);
+        let Channels { state_tx, mut state_rx, .. } = channels;
+
+        // Send existing NotificationReceived through channel
+        state_tx
+            .send(StateUpdate::NotificationReceived {
+                workspace_id: WorkspaceId::new(1),
+                message: "osc alert".to_string(),
+            })
+            .await
+            .expect("send should succeed");
+
+        let msg = state_rx.recv().await.expect("should receive message");
+
+        // Apply to AppState using the new method (tests store integration)
+        let mut state = crate::state::AppState::new();
+        let ws_id = state.create_workspace("ws".to_string(), std::path::PathBuf::from("/tmp"));
+
+        match msg {
+            StateUpdate::NotificationReceived { message, .. } => {
+                let source = NotificationSource::Osc { sequence_type: OscSequenceType::Osc9 };
+                state.add_notification_with_source(ws_id, None, message, None, source);
+            }
+            _ => panic!("unexpected message"),
+        }
+
+        let latest = state.latest_notification(ws_id);
+        assert!(latest.is_some());
+        assert_eq!(latest.unwrap().message, "osc alert");
+    }
+
+    #[tokio::test]
+    async fn state_update_notification_with_socket_source_applied_to_state() {
+        let channels = Channels::new(16);
+        let Channels { state_tx, mut state_rx, .. } = channels;
+
+        state_tx
+            .send(StateUpdate::NotificationReceived {
+                workspace_id: WorkspaceId::new(1),
+                message: "socket notification".to_string(),
+            })
+            .await
+            .expect("send should succeed");
+
+        let msg = state_rx.recv().await.expect("should receive message");
+
+        let mut state = crate::state::AppState::new();
+        let ws_id = state.create_workspace("ws".to_string(), std::path::PathBuf::from("/tmp"));
+
+        match msg {
+            StateUpdate::NotificationReceived { message, .. } => {
+                state.add_notification_with_source(
+                    ws_id,
+                    None,
+                    message,
+                    None,
+                    NotificationSource::SocketApi,
+                );
+            }
+            _ => panic!("unexpected message"),
+        }
+
+        let latest = state.latest_notification(ws_id);
+        assert!(latest.is_some());
+        assert_eq!(latest.unwrap().message, "socket notification");
+        assert!(matches!(latest.unwrap().source, NotificationSource::SocketApi));
+    }
+
+    #[test]
+    fn notification_source_types_are_constructible() {
+        // Verify all source variants can be constructed and compared
+        let osc = NotificationSource::Osc { sequence_type: OscSequenceType::Osc9 };
+        let socket = NotificationSource::SocketApi;
+        let internal = NotificationSource::Internal;
+
+        assert_ne!(osc, socket);
+        assert_ne!(socket, internal);
+        assert_ne!(osc, internal);
+    }
+}
