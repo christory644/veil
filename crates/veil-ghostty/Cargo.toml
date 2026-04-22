@@ -10,6 +10,7 @@ authors.workspace = true
 [dependencies]
 veil-core = { path = "../veil-core" }
 tracing.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true
