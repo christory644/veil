@@ -92,7 +92,7 @@ jobs:
           fi
       - name: Run integration tests
         if: steps.check-zig.outputs.available == 'true'
-        run: cargo test --all-targets --features integration
+        run: cargo test --all-targets
       - name: Skip integration tests (no Zig)
         if: steps.check-zig.outputs.available != 'true'
         run: echo "Skipping integration tests — Zig not available"

@@ -280,12 +280,14 @@ impl SessionStore {
 
         // First, query the FTS table for matching rowids and their ranks.
         // We query the FTS table directly so the `rank` column is available.
+        // Use bm25() explicitly because the `rank` hidden column can be NULL
+        // with contentless FTS5 tables on some SQLite builds.
         let mut fts_stmt = self.conn.prepare(
-            "SELECT rowid, rank FROM sessions_fts WHERE sessions_fts MATCH ?1 ORDER BY rank",
+            "SELECT rowid, bm25(sessions_fts) FROM sessions_fts WHERE sessions_fts MATCH ?1 ORDER BY bm25(sessions_fts)",
         )?;
         let fts_rows = fts_stmt.query_map(rusqlite::params![sanitized], |row| {
             let rowid: i64 = row.get(0)?;
-            let rank: f64 = row.get(1)?;
+            let rank: f64 = row.get::<_, Option<f64>>(1)?.unwrap_or(0.0);
             Ok((rowid, rank))
         })?;
 
