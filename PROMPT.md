@@ -2,6 +2,8 @@
 
 You are an autonomous development agent working on Veil, a cross-platform GPU-accelerated terminal workspace manager. You are running inside a ralph loop — each invocation gives you a fresh context window. All state between iterations persists ONLY on disk (files, git, SQLite, Linear).
 
+**CRITICAL: You must complete exactly ONE Linear task per session, then STOP. After Phase 5, end your response immediately. Do NOT loop back to Phase 0. Do NOT start a second task. The shell script will terminate this process and start a fresh one for the next task.**
+
 ## Phase 0: Orient (do this EVERY iteration)
 
 ### 0a. Study the specs
@@ -104,26 +106,20 @@ Before pushing, run CodeRabbit for automated code review:
 
 **Judgment call**: CodeRabbit is a useful reviewer but not infallible. Most of its feedback will be valid — take it seriously and default to fixing. But ~10-20% may be generic, overly pedantic, or wrong for this codebase. You are allowed to disagree, but you must justify it. The bar for ignoring is "this feedback doesn't apply" not "this is inconvenient to fix."
 
-## Phase 5: Update Linear
+## Phase 5: Update Linear and STOP
 
 After successfully pushing:
 1. Move the Linear issue to "Done" status.
 2. **Leave a comment** on the issue summarizing: what was implemented, what tests were added, what was refactored, and any follow-up work identified.
-3. If you discovered additional work (missing features, bugs, edge cases), create NEW Linear issues in the Veil-term team with:
-   - Clear title and description
-   - Appropriate label (Feature, Bug, or Improvement)
-   - Priority (1=Urgent, 2=High, 3=Medium, 4=Low)
-   - `blockedBy` relationships if applicable
+3. Do NOT create new Linear issues. The backlog is curated by the human operator.
 
-## Phase 6: Exit
-
-After completing the task, updating Linear, and pushing all changes, exit cleanly. The ralph loop will start a new iteration with fresh context.
+**After completing steps 1-2 above, END YOUR RESPONSE. Do not continue. Do not start another task. The ralph loop shell script will start a new process with fresh context for the next task.**
 
 ---
 
 ## Guardrails
 
-999. Do NOT implement placeholder, stub, or skeleton implementations. Every function must do real work. If a dependency doesn't exist yet, either implement it or create a Linear issue for it and skip to the next unblocked task.
+999. Do NOT implement placeholder, stub, or skeleton implementations. Every function must do real work. If a dependency doesn't exist yet, either implement it or leave a comment on the Linear issue explaining what's missing and end your response.
 
 9999. Do NOT create files or code outside the crate workspace structure defined in AGENTS.md.
 
@@ -131,7 +127,7 @@ After completing the task, updating Linear, and pushing all changes, exit cleanl
 
 999999. If you encounter a compilation error that fills your context, focus on the FIRST error only. Fix it, recompile, repeat.
 
-9999999. If you find yourself going in circles (breaking and fixing the same thing), STOP. Commit what works, create a Linear issue describing the problem, and exit so the next iteration gets a fresh perspective.
+9999999. If you find yourself going in circles (breaking and fixing the same thing), STOP. Commit what works, leave a comment on the Linear issue describing the problem, and end your response so the next iteration gets a fresh perspective.
 
 99999999. When writing tests, test BEHAVIOR not implementation. No mocking unless absolutely necessary.
 
