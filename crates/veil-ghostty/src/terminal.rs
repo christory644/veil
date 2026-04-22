@@ -2,7 +2,7 @@
 
 use std::panic::catch_unwind;
 
-use crate::error::GhosttyError;
+use crate::error::{check_result, GhosttyError};
 use crate::ffi;
 
 /// Configuration for creating a new terminal.
@@ -57,15 +57,17 @@ impl Terminal {
 
         let result = catch_unwind(|| {
             let mut handle: ffi::GhosttyTerminal = std::ptr::null_mut();
+            // SAFETY: passing null allocator (use default), valid out-pointer,
+            // and a fully-initialized options struct.
             let code =
                 unsafe { ffi::ghostty_terminal_new(std::ptr::null(), &raw mut handle, options) };
-            (code, handle)
-        })
-        .map_err(|_| GhosttyError::Panic)?;
-
-        let (code, handle) = result;
-        crate::error::check_result(code)?;
-        Ok(Self { handle })
+            check_result(code)?;
+            Ok(Self { handle })
+        });
+        match result {
+            Ok(inner) => inner,
+            Err(_) => Err(GhosttyError::Panic),
+        }
     }
 
     /// Write VT-encoded data to the terminal for processing.
@@ -75,8 +77,10 @@ impl Terminal {
         let handle = self.handle;
         let ptr = data.as_ptr();
         let len = data.len();
-        let _ = catch_unwind(move || unsafe {
-            ffi::ghostty_terminal_vt_write(handle, ptr, len);
+        let _ = catch_unwind(move || {
+            // SAFETY: handle is valid (owned by self), ptr/len come from a
+            // valid slice that outlives this call.
+            unsafe { ffi::ghostty_terminal_vt_write(handle, ptr, len) };
         });
     }
 
@@ -93,19 +97,25 @@ impl Terminal {
         }
 
         let handle = self.handle;
-        let code = catch_unwind(move || unsafe {
-            ffi::ghostty_terminal_resize(handle, cols, rows, cell_width_px, cell_height_px)
-        })
-        .map_err(|_| GhosttyError::Panic)?;
-
-        crate::error::check_result(code)
+        let result = catch_unwind(move || {
+            // SAFETY: handle is valid (owned by self), dimensions validated above.
+            let code = unsafe {
+                ffi::ghostty_terminal_resize(handle, cols, rows, cell_width_px, cell_height_px)
+            };
+            check_result(code)
+        });
+        match result {
+            Ok(inner) => inner,
+            Err(_) => Err(GhosttyError::Panic),
+        }
     }
 
     /// Perform a full terminal reset (RIS).
     pub fn reset(&mut self) {
         let handle = self.handle;
-        let _ = catch_unwind(move || unsafe {
-            ffi::ghostty_terminal_reset(handle);
+        let _ = catch_unwind(move || {
+            // SAFETY: handle is valid (owned by self).
+            unsafe { ffi::ghostty_terminal_reset(handle) };
         });
     }
 
@@ -131,38 +141,13 @@ impl Terminal {
 
     /// Query whether the cursor is visible (DEC mode 25).
     pub fn cursor_visible(&self) -> Result<bool, GhosttyError> {
-        let mut value: bool = false;
-        let handle = self.handle;
-        let value_ptr = &raw mut value;
-        let code = catch_unwind(move || unsafe {
-            ffi::ghostty_terminal_get(
-                handle,
-                ffi::GHOSTTY_TERMINAL_DATA_CURSOR_VISIBLE,
-                value_ptr.cast::<std::ffi::c_void>(),
-            )
-        })
-        .map_err(|_| GhosttyError::Panic)?;
-
-        crate::error::check_result(code)?;
-        Ok(value)
+        self.get_bool(ffi::GHOSTTY_TERMINAL_DATA_CURSOR_VISIBLE)
     }
 
     /// Query which screen is currently active.
     pub fn active_screen(&self) -> Result<Screen, GhosttyError> {
-        let mut value: i32 = 0;
-        let handle = self.handle;
-        let value_ptr = &raw mut value;
-        let code = catch_unwind(move || unsafe {
-            ffi::ghostty_terminal_get(
-                handle,
-                ffi::GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN,
-                value_ptr.cast::<std::ffi::c_void>(),
-            )
-        })
-        .map_err(|_| GhosttyError::Panic)?;
-
-        crate::error::check_result(code)?;
-        match value {
+        let raw = self.get_i32(ffi::GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN)?;
+        match raw {
             ffi::GHOSTTY_TERMINAL_SCREEN_PRIMARY => Ok(Screen::Primary),
             ffi::GHOSTTY_TERMINAL_SCREEN_ALTERNATE => Ok(Screen::Alternate),
             _ => Err(GhosttyError::InvalidValue),
@@ -188,55 +173,114 @@ impl Terminal {
         self.handle
     }
 
-    /// Helper: query a u16 value from the terminal.
-    fn get_u16(&self, data: i32) -> Result<u16, GhosttyError> {
-        let mut value: u16 = 0;
-        let handle = self.handle;
-        let value_ptr = &raw mut value;
-        let code = catch_unwind(move || unsafe {
-            ffi::ghostty_terminal_get(handle, data, value_ptr.cast::<std::ffi::c_void>())
-        })
-        .map_err(|_| GhosttyError::Panic)?;
+    // ---- Private helpers ----
 
-        crate::error::check_result(code)?;
-        Ok(value)
+    /// Query a `u16` value from the terminal.
+    fn get_u16(&self, data: i32) -> Result<u16, GhosttyError> {
+        let handle = self.handle;
+        let result = catch_unwind(move || {
+            let mut value: u16 = 0;
+            // SAFETY: handle is valid (owned by self), out-pointer is valid
+            // and correctly sized for the requested data type.
+            let code = unsafe {
+                ffi::ghostty_terminal_get(handle, data, (&raw mut value).cast::<std::ffi::c_void>())
+            };
+            check_result(code)?;
+            Ok(value)
+        });
+        match result {
+            Ok(inner) => inner,
+            Err(_) => Err(GhosttyError::Panic),
+        }
     }
 
-    /// Helper: query a string value (`GhosttyString`) from the terminal.
-    ///
-    /// The C API returns a borrowed `GhosttyString` pointer. We copy the
-    /// bytes into an owned `String` immediately so the caller doesn't need
-    /// to worry about lifetime constraints.
-    fn get_string(&self, data: i32) -> Result<String, GhosttyError> {
-        let mut gs = ffi::GhosttyString { ptr: std::ptr::null(), len: 0 };
+    /// Query a `bool` value from the terminal.
+    fn get_bool(&self, data: i32) -> Result<bool, GhosttyError> {
         let handle = self.handle;
-        let gs_ptr = &raw mut gs;
-        let code = catch_unwind(move || unsafe {
-            ffi::ghostty_terminal_get(handle, data, gs_ptr.cast::<std::ffi::c_void>())
-        })
-        .map_err(|_| GhosttyError::Panic)?;
-
-        // NoValue means no title/pwd has been set -- return empty string.
-        if code == ffi::GHOSTTY_NO_VALUE {
-            return Ok(String::new());
+        let result = catch_unwind(move || {
+            let mut value: bool = false;
+            // SAFETY: handle is valid (owned by self), out-pointer is valid
+            // and correctly sized for the requested data type.
+            let code = unsafe {
+                ffi::ghostty_terminal_get(handle, data, (&raw mut value).cast::<std::ffi::c_void>())
+            };
+            check_result(code)?;
+            Ok(value)
+        });
+        match result {
+            Ok(inner) => inner,
+            Err(_) => Err(GhosttyError::Panic),
         }
-        crate::error::check_result(code)?;
+    }
 
-        if gs.ptr.is_null() || gs.len == 0 {
-            return Ok(String::new());
+    /// Query an `i32` value from the terminal.
+    fn get_i32(&self, data: i32) -> Result<i32, GhosttyError> {
+        let handle = self.handle;
+        let result = catch_unwind(move || {
+            let mut value: i32 = 0;
+            // SAFETY: handle is valid (owned by self), out-pointer is valid
+            // and correctly sized for the requested data type.
+            let code = unsafe {
+                ffi::ghostty_terminal_get(handle, data, (&raw mut value).cast::<std::ffi::c_void>())
+            };
+            check_result(code)?;
+            Ok(value)
+        });
+        match result {
+            Ok(inner) => inner,
+            Err(_) => Err(GhosttyError::Panic),
         }
+    }
 
-        let bytes = unsafe { std::slice::from_raw_parts(gs.ptr, gs.len) };
-        String::from_utf8(bytes.to_vec()).map_err(|_| GhosttyError::InvalidValue)
+    /// Query a string value (`GhosttyString`) from the terminal.
+    ///
+    /// The C API returns a borrowed `GhosttyString` pointer valid until the
+    /// next `vt_write` or `reset`. We copy the bytes into an owned `String`
+    /// immediately so the caller doesn't need to worry about lifetime
+    /// constraints.
+    ///
+    /// `NoValue` (returned when no title/pwd has been set) is mapped to an
+    /// empty string rather than an error, since callers typically treat
+    /// "not set" and "empty" identically.
+    fn get_string(&self, data: i32) -> Result<String, GhosttyError> {
+        let handle = self.handle;
+        let result = catch_unwind(move || {
+            let mut gs = ffi::GhosttyString { ptr: std::ptr::null(), len: 0 };
+            // SAFETY: handle is valid (owned by self), out-pointer is valid
+            // and correctly sized for `GhosttyString`.
+            let code = unsafe {
+                ffi::ghostty_terminal_get(handle, data, (&raw mut gs).cast::<std::ffi::c_void>())
+            };
+
+            // NoValue means no title/pwd has been set -- return empty string.
+            if code == ffi::GHOSTTY_NO_VALUE {
+                return Ok(String::new());
+            }
+            check_result(code)?;
+
+            if gs.ptr.is_null() || gs.len == 0 {
+                return Ok(String::new());
+            }
+
+            // SAFETY: the C API guarantees `gs.ptr` points to `gs.len` valid
+            // bytes that remain valid until the next `vt_write` or `reset`.
+            // We copy immediately so the borrow doesn't escape.
+            let bytes = unsafe { std::slice::from_raw_parts(gs.ptr, gs.len) };
+            String::from_utf8(bytes.to_vec()).map_err(|_| GhosttyError::InvalidValue)
+        });
+        match result {
+            Ok(inner) => inner,
+            Err(_) => Err(GhosttyError::Panic),
+        }
     }
 }
 
 impl Drop for Terminal {
     fn drop(&mut self) {
-        // Safety: handle is valid, only freed once via Drop.
         let handle = self.handle;
-        let _ = catch_unwind(move || unsafe {
-            ffi::ghostty_terminal_free(handle);
+        let _ = catch_unwind(move || {
+            // SAFETY: handle is valid and only freed once via Drop.
+            unsafe { ffi::ghostty_terminal_free(handle) };
         });
     }
 }

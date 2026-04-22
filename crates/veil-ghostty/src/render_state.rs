@@ -84,6 +84,7 @@ impl RenderState {
     pub fn new() -> Result<Self, GhosttyError> {
         let result = catch_unwind(|| {
             let mut handle: ffi::GhosttyRenderState = std::ptr::null_mut();
+            // SAFETY: passing null allocator (use default) and valid out-pointer.
             let code = unsafe { ffi::ghostty_render_state_new(std::ptr::null(), &raw mut handle) };
             check_result(code)?;
             Ok(Self { handle })
@@ -102,6 +103,7 @@ impl RenderState {
         let state_handle = self.handle;
         let term_handle = terminal.handle();
         let result = catch_unwind(move || {
+            // SAFETY: both handles are valid (owned by self and terminal).
             let code = unsafe { ffi::ghostty_render_state_update(state_handle, term_handle) };
             check_result(code)
         });
@@ -113,27 +115,12 @@ impl RenderState {
 
     /// Query the current dirty state.
     pub fn dirty(&self) -> Result<DirtyState, GhosttyError> {
-        let state_handle = self.handle;
-        let result = catch_unwind(move || {
-            let mut value: i32 = 0;
-            let code = unsafe {
-                ffi::ghostty_render_state_get(
-                    state_handle,
-                    ffi::GHOSTTY_RENDER_STATE_DATA_DIRTY,
-                    (&raw mut value).cast::<std::ffi::c_void>(),
-                )
-            };
-            check_result(code)?;
-            match value {
-                ffi::GHOSTTY_RENDER_STATE_DIRTY_FALSE => Ok(DirtyState::Clean),
-                ffi::GHOSTTY_RENDER_STATE_DIRTY_PARTIAL => Ok(DirtyState::Partial),
-                ffi::GHOSTTY_RENDER_STATE_DIRTY_FULL => Ok(DirtyState::Full),
-                other => Err(GhosttyError::Unknown(other)),
-            }
-        });
-        match result {
-            Ok(inner) => inner,
-            Err(_) => Err(GhosttyError::Panic),
+        let raw = self.get_i32(ffi::GHOSTTY_RENDER_STATE_DATA_DIRTY)?;
+        match raw {
+            ffi::GHOSTTY_RENDER_STATE_DIRTY_FALSE => Ok(DirtyState::Clean),
+            ffi::GHOSTTY_RENDER_STATE_DIRTY_PARTIAL => Ok(DirtyState::Partial),
+            ffi::GHOSTTY_RENDER_STATE_DIRTY_FULL => Ok(DirtyState::Full),
+            other => Err(GhosttyError::Unknown(other)),
         }
     }
 
@@ -146,6 +133,8 @@ impl RenderState {
         };
         let state_handle = self.handle;
         let result = catch_unwind(move || {
+            // SAFETY: handle is valid (owned by self), value pointer is valid
+            // and correctly typed for the dirty option.
             let code = unsafe {
                 ffi::ghostty_render_state_set(
                     state_handle,
@@ -197,10 +186,14 @@ impl RenderState {
     pub fn colors(&self) -> Result<RenderColors, GhosttyError> {
         let state_handle = self.handle;
         let result = catch_unwind(move || {
+            // SAFETY: zeroed memory is valid for GhosttyRenderStateColors
+            // (all fields are numeric/bool/array-of-numeric).
             let mut colors = ffi::GhosttyRenderStateColors {
                 size: std::mem::size_of::<ffi::GhosttyRenderStateColors>(),
                 ..unsafe { std::mem::zeroed() }
             };
+            // SAFETY: handle is valid (owned by self), out-pointer is valid
+            // and `size` is set so the C API knows the struct layout.
             let code =
                 unsafe { ffi::ghostty_render_state_colors_get(state_handle, &raw mut colors) };
             check_result(code)?;
@@ -233,11 +226,13 @@ impl RenderState {
 
     // ---- Private helpers ----
 
-    /// Query a u16 value from the render state.
+    /// Query a `u16` value from the render state.
     fn get_u16(&self, data: i32) -> Result<u16, GhosttyError> {
         let state_handle = self.handle;
         let result = catch_unwind(move || {
             let mut value: u16 = 0;
+            // SAFETY: handle is valid (owned by self), out-pointer is valid
+            // and correctly sized for the requested data type.
             let code = unsafe {
                 ffi::ghostty_render_state_get(
                     state_handle,
@@ -254,11 +249,13 @@ impl RenderState {
         }
     }
 
-    /// Query a bool value from the render state.
+    /// Query a `bool` value from the render state.
     fn get_bool(&self, data: i32) -> Result<bool, GhosttyError> {
         let state_handle = self.handle;
         let result = catch_unwind(move || {
             let mut value: bool = false;
+            // SAFETY: handle is valid (owned by self), out-pointer is valid
+            // and correctly sized for the requested data type.
             let code = unsafe {
                 ffi::ghostty_render_state_get(
                     state_handle,
@@ -275,11 +272,13 @@ impl RenderState {
         }
     }
 
-    /// Query an i32 value from the render state.
+    /// Query an `i32` value from the render state.
     fn get_i32(&self, data: i32) -> Result<i32, GhosttyError> {
         let state_handle = self.handle;
         let result = catch_unwind(move || {
             let mut value: i32 = 0;
+            // SAFETY: handle is valid (owned by self), out-pointer is valid
+            // and correctly sized for the requested data type.
             let code = unsafe {
                 ffi::ghostty_render_state_get(
                     state_handle,
@@ -299,9 +298,9 @@ impl RenderState {
 
 impl Drop for RenderState {
     fn drop(&mut self) {
-        // Safety: handle is valid and only freed once via Drop.
         let handle = self.handle;
         let _ = catch_unwind(move || {
+            // SAFETY: handle is valid and only freed once via Drop.
             unsafe { ffi::ghostty_render_state_free(handle) };
         });
     }
