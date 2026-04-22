@@ -2,3 +2,5 @@
 #![warn(missing_docs)]
 
 //! Core types and state management for Veil.
+
+pub mod session;

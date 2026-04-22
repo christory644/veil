@@ -2,3 +2,8 @@
 #![warn(missing_docs)]
 
 //! Session aggregator and agent adapters for Veil.
+
+pub mod adapter;
+pub mod registry;
+pub mod store;
+pub mod title;

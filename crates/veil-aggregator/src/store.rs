@@ -1,0 +1,747 @@
+//! SQLite-backed session store for the aggregator.
+//!
+//! Owns the database connection, manages schema migrations, provides CRUD
+//! operations, and supports FTS5 full-text search over session metadata.
+
+use std::fmt;
+use std::path::Path;
+use veil_core::session::{AgentKind, SessionEntry, SessionId, SessionSearchResult};
+
+/// Wraps a `rusqlite::Connection` with session-specific operations.
+pub struct SessionStore {
+    conn: rusqlite::Connection,
+}
+
+/// Errors that can occur during session store operations.
+#[derive(Debug)]
+pub enum StoreError {
+    /// SQLite error.
+    Sqlite(rusqlite::Error),
+    /// Database file I/O error.
+    Io(std::io::Error),
+    /// Data conversion/serialization error.
+    DataError(String),
+    /// Schema migration failed.
+    MigrationError(String),
+}
+
+impl fmt::Display for StoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Sqlite(err) => write!(f, "SQLite error: {err}"),
+            Self::Io(err) => write!(f, "database I/O error: {err}"),
+            Self::DataError(msg) => write!(f, "data conversion error: {msg}"),
+            Self::MigrationError(msg) => write!(f, "schema migration failed: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for StoreError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Sqlite(err) => Some(err),
+            Self::Io(err) => Some(err),
+            Self::DataError(_) | Self::MigrationError(_) => None,
+        }
+    }
+}
+
+impl From<rusqlite::Error> for StoreError {
+    fn from(err: rusqlite::Error) -> Self {
+        Self::Sqlite(err)
+    }
+}
+
+impl From<std::io::Error> for StoreError {
+    fn from(err: std::io::Error) -> Self {
+        Self::Io(err)
+    }
+}
+
+impl SessionStore {
+    /// Open or create the database at the given path.
+    /// Runs migrations on first open.
+    pub fn open(path: &Path) -> Result<Self, StoreError> {
+        let conn = rusqlite::Connection::open(path)?;
+        let store = Self { conn };
+        store.run_migrations()?;
+        Ok(store)
+    }
+
+    /// Open an in-memory database (for testing).
+    pub fn open_in_memory() -> Result<Self, StoreError> {
+        let conn = rusqlite::Connection::open_in_memory()?;
+        let store = Self { conn };
+        store.run_migrations()?;
+        Ok(store)
+    }
+
+    /// Run schema migrations. Creates tables if they don't exist.
+    fn run_migrations(&self) -> Result<(), StoreError> {
+        self.conn
+            .execute_batch(
+                "
+            CREATE TABLE IF NOT EXISTS sessions (
+                id              TEXT PRIMARY KEY,
+                agent           TEXT NOT NULL,
+                title           TEXT NOT NULL,
+                working_dir     TEXT NOT NULL,
+                branch          TEXT,
+                pr_number       INTEGER,
+                pr_url          TEXT,
+                plan_content    TEXT,
+                status          TEXT NOT NULL DEFAULT 'unknown',
+                started_at      TEXT NOT NULL,
+                ended_at        TEXT,
+                indexed_at      TEXT NOT NULL
+            );
+
+            CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
+                title,
+                first_message,
+                content='',
+                tokenize='porter unicode61'
+            );
+        ",
+            )
+            .map_err(|e| StoreError::MigrationError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Insert or update a session entry.
+    /// Uses INSERT OR REPLACE -- the session ID is the natural key.
+    pub fn upsert_session(&self, _entry: &SessionEntry) -> Result<(), StoreError> {
+        // Stub: does nothing — tests will fail because data isn't persisted.
+        Ok(())
+    }
+
+    /// Batch upsert multiple sessions in a single transaction.
+    pub fn upsert_sessions(&self, _entries: &[SessionEntry]) -> Result<usize, StoreError> {
+        // Stub: returns 0 — tests will fail for non-empty inputs.
+        Ok(0)
+    }
+
+    /// Retrieve a session by ID.
+    pub fn get_session(&self, _id: &SessionId) -> Result<Option<SessionEntry>, StoreError> {
+        // Stub: always returns None — tests will fail.
+        Ok(None)
+    }
+
+    /// List all sessions, ordered by `started_at` descending.
+    pub fn list_sessions(&self) -> Result<Vec<SessionEntry>, StoreError> {
+        // Stub: returns empty — tests will fail.
+        Ok(vec![])
+    }
+
+    /// List sessions filtered by agent kind.
+    pub fn list_sessions_by_agent(
+        &self,
+        _agent: &AgentKind,
+    ) -> Result<Vec<SessionEntry>, StoreError> {
+        // Stub: returns empty — tests will fail.
+        Ok(vec![])
+    }
+
+    /// Full-text search across session titles and first messages.
+    pub fn search_sessions(&self, _query: &str) -> Result<Vec<SessionSearchResult>, StoreError> {
+        // Stub: returns empty — tests will fail.
+        Ok(vec![])
+    }
+
+    /// Delete a session by ID.
+    pub fn delete_session(&self, _id: &SessionId) -> Result<bool, StoreError> {
+        // Stub: returns false — tests will fail.
+        Ok(false)
+    }
+
+    /// Update the FTS index for a session (title + first message text).
+    pub fn update_fts(
+        &self,
+        _id: &SessionId,
+        _title: &str,
+        _first_message: Option<&str>,
+    ) -> Result<(), StoreError> {
+        // Stub: does nothing — tests will fail.
+        Ok(())
+    }
+
+    /// Count total sessions, optionally filtered by agent.
+    pub fn count_sessions(&self, _agent: Option<&AgentKind>) -> Result<usize, StoreError> {
+        // Stub: returns 0 — tests will fail.
+        Ok(0)
+    }
+
+    /// Delete all sessions (used for cache rebuild scenarios).
+    pub fn clear_all(&self) -> Result<(), StoreError> {
+        // Stub: does nothing — tests will fail.
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{TimeZone, Utc};
+    use std::path::PathBuf;
+    use veil_core::session::SessionStatus;
+
+    fn make_entry(id: &str, agent: AgentKind, title: &str) -> SessionEntry {
+        SessionEntry {
+            id: SessionId::new(id),
+            agent,
+            title: title.to_string(),
+            working_dir: PathBuf::from("/home/user/project"),
+            branch: None,
+            pr_number: None,
+            pr_url: None,
+            plan_content: None,
+            status: SessionStatus::Active,
+            started_at: Utc::now(),
+            ended_at: None,
+            indexed_at: Utc::now(),
+        }
+    }
+
+    fn make_full_entry(id: &str) -> SessionEntry {
+        SessionEntry {
+            id: SessionId::new(id),
+            agent: AgentKind::ClaudeCode,
+            title: "Full entry test".to_string(),
+            working_dir: PathBuf::from("/home/user/project"),
+            branch: Some("feature/test".to_string()),
+            pr_number: Some(42),
+            pr_url: Some("https://github.com/org/repo/pull/42".to_string()),
+            plan_content: Some("The plan content".to_string()),
+            status: SessionStatus::Completed,
+            started_at: Utc.with_ymd_and_hms(2026, 1, 15, 10, 30, 0).unwrap(),
+            ended_at: Some(Utc.with_ymd_and_hms(2026, 1, 15, 11, 45, 0).unwrap()),
+            indexed_at: Utc.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap(),
+        }
+    }
+
+    // ========================================================================
+    // Schema tests
+    // ========================================================================
+
+    #[test]
+    fn open_in_memory_succeeds() {
+        let store = SessionStore::open_in_memory();
+        assert!(store.is_ok(), "open_in_memory should succeed");
+    }
+
+    #[test]
+    fn migrations_are_idempotent() {
+        let store = SessionStore::open_in_memory().unwrap();
+        // Running migrations again should not fail
+        let result = store.run_migrations();
+        assert!(result.is_ok(), "second migration run should succeed");
+    }
+
+    #[test]
+    fn sessions_table_has_expected_columns() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let mut stmt = store.conn.prepare("PRAGMA table_info(sessions)").unwrap();
+        let columns: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+
+        let expected = [
+            "id",
+            "agent",
+            "title",
+            "working_dir",
+            "branch",
+            "pr_number",
+            "pr_url",
+            "plan_content",
+            "status",
+            "started_at",
+            "ended_at",
+            "indexed_at",
+        ];
+        for col in &expected {
+            assert!(
+                columns.contains(&col.to_string()),
+                "sessions table should have column '{col}', found: {columns:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sessions_fts_virtual_table_exists() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let result: Result<String, _> = store.conn.query_row(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='sessions_fts'",
+            [],
+            |row| row.get(0),
+        );
+        assert!(result.is_ok(), "sessions_fts virtual table should exist");
+    }
+
+    // ========================================================================
+    // CRUD tests
+    // ========================================================================
+
+    #[test]
+    fn upsert_and_get_session_round_trip() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let entry = make_full_entry("round-trip-1");
+
+        store.upsert_session(&entry).unwrap();
+        let retrieved = store.get_session(&SessionId::new("round-trip-1")).unwrap();
+
+        assert!(retrieved.is_some(), "should find the upserted session");
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.id.as_str(), "round-trip-1");
+        assert_eq!(retrieved.agent, AgentKind::ClaudeCode);
+        assert_eq!(retrieved.title, "Full entry test");
+        assert_eq!(retrieved.working_dir, PathBuf::from("/home/user/project"));
+        assert_eq!(retrieved.branch.as_deref(), Some("feature/test"));
+        assert_eq!(retrieved.pr_number, Some(42));
+        assert_eq!(retrieved.pr_url.as_deref(), Some("https://github.com/org/repo/pull/42"));
+        assert_eq!(retrieved.plan_content.as_deref(), Some("The plan content"));
+        assert_eq!(retrieved.status, SessionStatus::Completed);
+        assert_eq!(retrieved.started_at, Utc.with_ymd_and_hms(2026, 1, 15, 10, 30, 0).unwrap());
+        assert_eq!(retrieved.ended_at, Some(Utc.with_ymd_and_hms(2026, 1, 15, 11, 45, 0).unwrap()));
+    }
+
+    #[test]
+    fn upsert_with_same_id_updates_existing() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let mut entry = make_entry("update-test", AgentKind::ClaudeCode, "Original title");
+        store.upsert_session(&entry).unwrap();
+
+        entry.title = "Updated title".to_string();
+        store.upsert_session(&entry).unwrap();
+
+        let retrieved = store
+            .get_session(&SessionId::new("update-test"))
+            .unwrap()
+            .expect("should find updated session");
+        assert_eq!(retrieved.title, "Updated title");
+    }
+
+    #[test]
+    fn get_session_nonexistent_returns_none() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let result = store.get_session(&SessionId::new("does-not-exist")).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn list_sessions_ordered_by_started_at_descending() {
+        let store = SessionStore::open_in_memory().unwrap();
+
+        let mut entry1 = make_entry("s1", AgentKind::ClaudeCode, "First");
+        entry1.started_at = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+
+        let mut entry2 = make_entry("s2", AgentKind::ClaudeCode, "Second");
+        entry2.started_at = Utc.with_ymd_and_hms(2026, 6, 1, 0, 0, 0).unwrap();
+
+        let mut entry3 = make_entry("s3", AgentKind::ClaudeCode, "Third");
+        entry3.started_at = Utc.with_ymd_and_hms(2026, 3, 1, 0, 0, 0).unwrap();
+
+        store.upsert_session(&entry1).unwrap();
+        store.upsert_session(&entry2).unwrap();
+        store.upsert_session(&entry3).unwrap();
+
+        let sessions = store.list_sessions().unwrap();
+        assert_eq!(sessions.len(), 3);
+        // Should be ordered: s2 (June), s3 (March), s1 (January)
+        assert_eq!(sessions[0].id.as_str(), "s2");
+        assert_eq!(sessions[1].id.as_str(), "s3");
+        assert_eq!(sessions[2].id.as_str(), "s1");
+    }
+
+    #[test]
+    fn list_sessions_empty_database_returns_empty() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let sessions = store.list_sessions().unwrap();
+        assert!(sessions.is_empty());
+    }
+
+    #[test]
+    fn list_sessions_by_agent_filters_correctly() {
+        let store = SessionStore::open_in_memory().unwrap();
+        store.upsert_session(&make_entry("cc1", AgentKind::ClaudeCode, "CC Session 1")).unwrap();
+        store.upsert_session(&make_entry("codex1", AgentKind::Codex, "Codex Session")).unwrap();
+        store.upsert_session(&make_entry("cc2", AgentKind::ClaudeCode, "CC Session 2")).unwrap();
+
+        let cc_sessions = store.list_sessions_by_agent(&AgentKind::ClaudeCode).unwrap();
+        assert_eq!(cc_sessions.len(), 2);
+        for s in &cc_sessions {
+            assert_eq!(s.agent, AgentKind::ClaudeCode);
+        }
+
+        let codex_sessions = store.list_sessions_by_agent(&AgentKind::Codex).unwrap();
+        assert_eq!(codex_sessions.len(), 1);
+        assert_eq!(codex_sessions[0].agent, AgentKind::Codex);
+    }
+
+    #[test]
+    fn delete_session_existing_returns_true() {
+        let store = SessionStore::open_in_memory().unwrap();
+        store.upsert_session(&make_entry("del-me", AgentKind::ClaudeCode, "Delete me")).unwrap();
+
+        let deleted = store.delete_session(&SessionId::new("del-me")).unwrap();
+        assert!(deleted, "should return true for existing session");
+
+        let after = store.get_session(&SessionId::new("del-me")).unwrap();
+        assert!(after.is_none(), "session should be gone after delete");
+    }
+
+    #[test]
+    fn delete_session_nonexistent_returns_false() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let deleted = store.delete_session(&SessionId::new("never-existed")).unwrap();
+        assert!(!deleted, "should return false for nonexistent session");
+    }
+
+    #[test]
+    fn count_sessions_no_filter() {
+        let store = SessionStore::open_in_memory().unwrap();
+        store.upsert_session(&make_entry("c1", AgentKind::ClaudeCode, "S1")).unwrap();
+        store.upsert_session(&make_entry("c2", AgentKind::Codex, "S2")).unwrap();
+        store.upsert_session(&make_entry("c3", AgentKind::Aider, "S3")).unwrap();
+
+        let count = store.count_sessions(None).unwrap();
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn count_sessions_with_agent_filter() {
+        let store = SessionStore::open_in_memory().unwrap();
+        store.upsert_session(&make_entry("c1", AgentKind::ClaudeCode, "S1")).unwrap();
+        store.upsert_session(&make_entry("c2", AgentKind::ClaudeCode, "S2")).unwrap();
+        store.upsert_session(&make_entry("c3", AgentKind::Codex, "S3")).unwrap();
+
+        let count = store.count_sessions(Some(&AgentKind::ClaudeCode)).unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn clear_all_removes_all_sessions() {
+        let store = SessionStore::open_in_memory().unwrap();
+        store.upsert_session(&make_entry("x1", AgentKind::ClaudeCode, "S1")).unwrap();
+        store.upsert_session(&make_entry("x2", AgentKind::Codex, "S2")).unwrap();
+
+        // Verify they were inserted first
+        let before = store.count_sessions(None).unwrap();
+        assert_eq!(before, 2, "should have 2 sessions before clear");
+
+        store.clear_all().unwrap();
+
+        let sessions = store.list_sessions().unwrap();
+        assert!(sessions.is_empty(), "all sessions should be cleared");
+        let count = store.count_sessions(None).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    // ========================================================================
+    // Batch tests
+    // ========================================================================
+
+    #[test]
+    fn upsert_sessions_inserts_multiple() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let entries = vec![
+            make_entry("b1", AgentKind::ClaudeCode, "Batch 1"),
+            make_entry("b2", AgentKind::Codex, "Batch 2"),
+            make_entry("b3", AgentKind::Aider, "Batch 3"),
+        ];
+
+        let count = store.upsert_sessions(&entries).unwrap();
+        assert_eq!(count, 3);
+
+        let all = store.list_sessions().unwrap();
+        assert_eq!(all.len(), 3);
+    }
+
+    #[test]
+    fn upsert_sessions_empty_slice_returns_zero() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let count = store.upsert_sessions(&[]).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn upsert_sessions_mix_of_new_and_existing() {
+        let store = SessionStore::open_in_memory().unwrap();
+
+        // Insert one first
+        store.upsert_session(&make_entry("existing", AgentKind::ClaudeCode, "Original")).unwrap();
+
+        // Batch upsert with the existing one (updated) and a new one
+        let entries = vec![
+            make_entry("existing", AgentKind::ClaudeCode, "Updated"),
+            make_entry("new-one", AgentKind::Codex, "Brand New"),
+        ];
+        let count = store.upsert_sessions(&entries).unwrap();
+        assert_eq!(count, 2);
+
+        let existing =
+            store.get_session(&SessionId::new("existing")).unwrap().expect("should exist");
+        assert_eq!(existing.title, "Updated");
+
+        let new = store.get_session(&SessionId::new("new-one")).unwrap().expect("should exist");
+        assert_eq!(new.title, "Brand New");
+    }
+
+    // ========================================================================
+    // FTS5 search tests
+    // ========================================================================
+
+    #[test]
+    fn search_sessions_matching_title() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let entry = make_entry("fts1", AgentKind::ClaudeCode, "Fix authentication bug");
+        store.upsert_session(&entry).unwrap();
+        store.update_fts(&SessionId::new("fts1"), "Fix authentication bug", None).unwrap();
+
+        let results = store.search_sessions("authentication").unwrap();
+        assert!(!results.is_empty(), "should find session by title keyword");
+        assert_eq!(results[0].entry.id.as_str(), "fts1");
+    }
+
+    #[test]
+    fn search_sessions_matching_first_message() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let entry = make_entry("fts2", AgentKind::ClaudeCode, "Coding session");
+        store.upsert_session(&entry).unwrap();
+        store
+            .update_fts(
+                &SessionId::new("fts2"),
+                "Coding session",
+                Some("Help me refactor the database layer"),
+            )
+            .unwrap();
+
+        let results = store.search_sessions("refactor database").unwrap();
+        assert!(!results.is_empty(), "should find session by first message content");
+    }
+
+    #[test]
+    fn search_sessions_no_matches_returns_empty() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let entry = make_entry("fts3", AgentKind::ClaudeCode, "Fix auth");
+        store.upsert_session(&entry).unwrap();
+        store.update_fts(&SessionId::new("fts3"), "Fix auth", None).unwrap();
+
+        let results = store.search_sessions("quantum computing").unwrap();
+        assert!(results.is_empty(), "should find no matches");
+    }
+
+    #[test]
+    fn search_sessions_porter_stemming() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let entry = make_entry("fts4", AgentKind::ClaudeCode, "Running tests");
+        store.upsert_session(&entry).unwrap();
+        store.update_fts(&SessionId::new("fts4"), "Running tests", None).unwrap();
+
+        // "run" should match "Running" via porter stemmer
+        let results = store.search_sessions("run").unwrap();
+        assert!(!results.is_empty(), "porter stemmer should match 'run' to 'Running'");
+    }
+
+    #[test]
+    fn search_sessions_results_ordered_by_relevance() {
+        let store = SessionStore::open_in_memory().unwrap();
+
+        // Entry with "auth" in title only
+        let e1 = make_entry("rel1", AgentKind::ClaudeCode, "Fix auth");
+        store.upsert_session(&e1).unwrap();
+        store.update_fts(&SessionId::new("rel1"), "Fix auth", None).unwrap();
+
+        // Entry with "auth" in both title and message — should rank higher
+        let e2 = make_entry("rel2", AgentKind::ClaudeCode, "Auth middleware");
+        store.upsert_session(&e2).unwrap();
+        store
+            .update_fts(
+                &SessionId::new("rel2"),
+                "Auth middleware",
+                Some("Fix the auth token validation"),
+            )
+            .unwrap();
+
+        let results = store.search_sessions("auth").unwrap();
+        assert!(results.len() >= 2, "should find both sessions, got {}", results.len());
+        // The one with more matches should have higher relevance
+        assert!(
+            results[0].relevance >= results[1].relevance,
+            "results should be ordered by relevance"
+        );
+    }
+
+    #[test]
+    fn update_fts_and_search_round_trip() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let entry = make_entry("fts-rt", AgentKind::ClaudeCode, "Widget refactor");
+        store.upsert_session(&entry).unwrap();
+        store
+            .update_fts(
+                &SessionId::new("fts-rt"),
+                "Widget refactor",
+                Some("Restructure the widget module for better modularity"),
+            )
+            .unwrap();
+
+        let results = store.search_sessions("widget").unwrap();
+        assert!(!results.is_empty(), "FTS round-trip should work");
+        assert_eq!(results[0].entry.id.as_str(), "fts-rt");
+    }
+
+    #[test]
+    fn search_sessions_empty_query_returns_empty() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let entry = make_entry("fts-empty", AgentKind::ClaudeCode, "Some session");
+        store.upsert_session(&entry).unwrap();
+        store.update_fts(&SessionId::new("fts-empty"), "Some session", None).unwrap();
+
+        let results = store.search_sessions("").unwrap();
+        assert!(results.is_empty(), "empty query should return no results");
+    }
+
+    #[test]
+    fn search_sessions_handles_special_characters() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let entry = make_entry("fts-special", AgentKind::ClaudeCode, "Normal session");
+        store.upsert_session(&entry).unwrap();
+        store.update_fts(&SessionId::new("fts-special"), "Normal session", None).unwrap();
+
+        // These should not cause SQL injection or panics
+        let result = store.search_sessions("'; DROP TABLE sessions; --");
+        assert!(result.is_ok(), "special chars should not cause SQL error");
+
+        let result = store.search_sessions("\"unmatched quote");
+        assert!(result.is_ok(), "unmatched quotes should not cause SQL error");
+    }
+
+    // ========================================================================
+    // Data integrity tests
+    // ========================================================================
+
+    #[test]
+    fn optional_fields_store_and_retrieve_none() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let entry = make_entry("opt-none", AgentKind::ClaudeCode, "No optionals");
+        store.upsert_session(&entry).unwrap();
+
+        let retrieved =
+            store.get_session(&SessionId::new("opt-none")).unwrap().expect("should find session");
+        assert!(retrieved.branch.is_none());
+        assert!(retrieved.pr_number.is_none());
+        assert!(retrieved.pr_url.is_none());
+        assert!(retrieved.plan_content.is_none());
+        assert!(retrieved.ended_at.is_none());
+    }
+
+    #[test]
+    fn datetime_fields_round_trip_without_precision_loss() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let started = Utc.with_ymd_and_hms(2026, 3, 15, 14, 30, 45).unwrap();
+        let ended = Utc.with_ymd_and_hms(2026, 3, 15, 16, 0, 0).unwrap();
+        let indexed = Utc.with_ymd_and_hms(2026, 3, 15, 16, 5, 0).unwrap();
+
+        let mut entry = make_entry("dt-test", AgentKind::ClaudeCode, "DateTime test");
+        entry.started_at = started;
+        entry.ended_at = Some(ended);
+        entry.indexed_at = indexed;
+
+        store.upsert_session(&entry).unwrap();
+        let retrieved =
+            store.get_session(&SessionId::new("dt-test")).unwrap().expect("should find session");
+
+        assert_eq!(retrieved.started_at, started);
+        assert_eq!(retrieved.ended_at, Some(ended));
+        assert_eq!(retrieved.indexed_at, indexed);
+    }
+
+    #[test]
+    fn agent_kind_round_trips_through_text_storage() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let kinds =
+            [AgentKind::ClaudeCode, AgentKind::Codex, AgentKind::OpenCode, AgentKind::Aider];
+        for (i, kind) in kinds.iter().enumerate() {
+            let id = format!("agent-rt-{i}");
+            let entry = make_entry(&id, kind.clone(), "Agent round-trip");
+            store.upsert_session(&entry).unwrap();
+            let retrieved =
+                store.get_session(&SessionId::new(&id)).unwrap().expect("should find session");
+            assert_eq!(&retrieved.agent, kind);
+        }
+    }
+
+    #[test]
+    fn session_status_round_trips_through_text_storage() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let statuses = [
+            SessionStatus::Active,
+            SessionStatus::Completed,
+            SessionStatus::Errored,
+            SessionStatus::Unknown,
+        ];
+        for (i, status) in statuses.iter().enumerate() {
+            let id = format!("status-rt-{i}");
+            let mut entry = make_entry(&id, AgentKind::ClaudeCode, "Status test");
+            entry.status = status.clone();
+            store.upsert_session(&entry).unwrap();
+            let retrieved =
+                store.get_session(&SessionId::new(&id)).unwrap().expect("should find session");
+            assert_eq!(&retrieved.status, status);
+        }
+    }
+
+    #[test]
+    fn agent_kind_unknown_custom_round_trips() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let entry = make_entry("custom-agent", AgentKind::Unknown("MyTool".to_string()), "Custom");
+        store.upsert_session(&entry).unwrap();
+        let retrieved = store
+            .get_session(&SessionId::new("custom-agent"))
+            .unwrap()
+            .expect("should find session");
+        assert_eq!(retrieved.agent, AgentKind::Unknown("MyTool".to_string()));
+    }
+
+    // ========================================================================
+    // Error handling tests
+    // ========================================================================
+
+    #[test]
+    fn store_error_display_sqlite() {
+        let err = StoreError::Sqlite(rusqlite::Error::QueryReturnedNoRows);
+        let msg = err.to_string();
+        assert!(msg.contains("SQLite"), "should mention SQLite: {msg}");
+    }
+
+    #[test]
+    fn store_error_display_io() {
+        let err =
+            StoreError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "file not found"));
+        let msg = err.to_string();
+        assert!(msg.contains("I/O"), "should mention I/O: {msg}");
+    }
+
+    #[test]
+    fn store_error_display_data() {
+        let err = StoreError::DataError("invalid timestamp".to_string());
+        let msg = err.to_string();
+        assert!(msg.contains("invalid timestamp"), "should contain the message: {msg}");
+    }
+
+    #[test]
+    fn store_error_display_migration() {
+        let err = StoreError::MigrationError("table already exists".to_string());
+        let msg = err.to_string();
+        assert!(msg.contains("migration"), "should mention migration: {msg}");
+    }
+
+    #[test]
+    fn open_invalid_path_returns_io_or_sqlite_error() {
+        // Opening a database at a path inside a nonexistent directory should fail
+        let result = SessionStore::open(Path::new("/nonexistent/deeply/nested/dir/sessions.db"));
+        assert!(result.is_err(), "should fail for invalid path");
+    }
+}
