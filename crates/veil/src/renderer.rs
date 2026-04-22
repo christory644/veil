@@ -233,12 +233,12 @@ impl Renderer {
     /// 8. Submit and present
     ///
     /// Handles surface errors:
-    /// - `Lost`: calls `resize()` to reconfigure
+    /// - `Lost` / `Outdated`: calls `resize()` to reconfigure
     /// - `OutOfMemory`: returns `Err` (caller should exit)
     pub fn render(&mut self, frame_geometry: &FrameGeometry) -> anyhow::Result<()> {
         let output = match self.surface.get_current_texture() {
             Ok(texture) => texture,
-            Err(wgpu::SurfaceError::Lost) => {
+            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                 self.resize(self.size.0, self.size.1);
                 return Ok(());
             }
