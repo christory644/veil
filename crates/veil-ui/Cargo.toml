@@ -11,6 +11,7 @@ authors.workspace = true
 veil-core = { path = "../veil-core" }
 tracing.workspace = true
 egui.workspace = true
+chrono.workspace = true
 dirs = { workspace = true }
 
 [lints]
