@@ -3,6 +3,7 @@
 
 //! Core types and state management for Veil.
 
+pub mod config;
 pub mod focus;
 pub mod keyboard;
 pub mod layout;

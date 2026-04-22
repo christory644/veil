@@ -5,8 +5,8 @@
 
 use std::path::PathBuf;
 
+use crate::config::{AppConfig, ConfigDelta, ConfigWarning};
 use crate::session::SessionEntry;
-use crate::state::SidebarTab;
 use crate::workspace::{SurfaceId, WorkspaceId};
 
 /// Messages sent from background actors to update `AppState`.
@@ -29,8 +29,15 @@ pub enum StateUpdate {
         /// Process exit code, if available.
         exit_code: Option<i32>,
     },
-    /// Config was reloaded from disk.
-    ConfigReloaded(Box<SidebarConfig>),
+    /// Config was reloaded from disk. Contains the new full config and what changed.
+    ConfigReloaded {
+        /// The new full config.
+        config: Box<AppConfig>,
+        /// What changed from the previous config.
+        delta: ConfigDelta,
+        /// Non-fatal warnings from validation.
+        warnings: Vec<ConfigWarning>,
+    },
     /// An actor encountered a non-fatal error worth surfacing.
     ActorError {
         /// Name of the actor.
@@ -38,17 +45,6 @@ pub enum StateUpdate {
         /// Error message.
         message: String,
     },
-}
-
-/// Sidebar-related config that can be hot-reloaded.
-#[derive(Debug, Clone)]
-pub struct SidebarConfig {
-    /// Default tab to show.
-    pub default_tab: SidebarTab,
-    /// Width in pixels.
-    pub width_px: u32,
-    /// Whether sidebar is visible.
-    pub visible: bool,
 }
 
 /// Commands sent from the UI thread to background actors.
