@@ -56,7 +56,15 @@ pub fn render_sidebar(ui: &mut egui::Ui, state: &AppState) -> SidebarResponse {
                 }
             }
             SidebarTab::Conversations => {
-                ui.label("Coming soon");
+                let groups = crate::conversation_list::extract_conversation_groups(
+                    state,
+                    chrono::Utc::now(),
+                );
+                if let Some(session_id) =
+                    crate::conversation_list::render_conversations_tab(ui, &groups)
+                {
+                    response.selected_conversation = Some(session_id);
+                }
             }
         });
     });
