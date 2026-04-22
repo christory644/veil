@@ -23,6 +23,9 @@ bytemuck = { workspace = true }
 pollster = { workspace = true }
 swash = { workspace = true }
 rustybuzz = { workspace = true }
+egui = { workspace = true }
+egui-wgpu = { workspace = true }
+egui-winit = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

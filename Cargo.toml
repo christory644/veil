@@ -38,6 +38,9 @@ bytemuck = { version = "1", features = ["derive"] }
 pollster = "0.4"
 swash = "0.2"
 rustybuzz = "0.20"
+egui = "0.34"
+egui-wgpu = "0.34"
+egui-winit = { version = "0.34", default-features = false }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
