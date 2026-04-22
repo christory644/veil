@@ -9,6 +9,9 @@ use std::collections::HashMap;
 
 use crate::font::rasterizer::RasterizedGlyph;
 
+/// Padding in pixels between glyphs to prevent texture filtering artifacts.
+const PADDING: u32 = 1;
+
 /// UV coordinates for a glyph within the atlas texture.
 /// Normalized to [0.0, 1.0] range.
 #[derive(Debug, Clone, Copy)]
@@ -51,7 +54,7 @@ pub struct GlyphAtlas {
     height: u32,
     /// Packed shelves.
     shelves: Vec<Shelf>,
-    /// Map from glyph_id to atlas region.
+    /// Map from `glyph_id` to atlas region.
     entries: HashMap<u16, AtlasRegion>,
     /// Whether the atlas data has changed since last GPU upload.
     dirty: bool,
@@ -72,8 +75,8 @@ impl GlyphAtlas {
     }
 
     /// Look up a glyph in the atlas. Returns `None` if not yet packed.
-    pub fn get(&self, _glyph_id: u16) -> Option<&AtlasRegion> {
-        None
+    pub fn get(&self, glyph_id: u16) -> Option<&AtlasRegion> {
+        self.entries.get(&glyph_id)
     }
 
     /// Insert a rasterized glyph into the atlas.
@@ -81,16 +84,117 @@ impl GlyphAtlas {
     /// Returns the `AtlasRegion` where the glyph was placed.
     /// If the glyph is already in the atlas, returns the existing region.
     /// If there is no room, grows the atlas and retries.
-    pub fn insert(&mut self, _glyph: &RasterizedGlyph) -> AtlasRegion {
-        AtlasRegion {
-            u_min: 0.0,
-            v_min: 0.0,
-            u_max: 0.0,
-            v_max: 0.0,
-            width: 0,
-            height: 0,
-            bearing_x: 0,
-            bearing_y: 0,
+    #[allow(clippy::cast_precision_loss)] // Atlas pixel coords fit comfortably in f32.
+    pub fn insert(&mut self, glyph: &RasterizedGlyph) -> AtlasRegion {
+        // Return existing entry if already packed.
+        if let Some(region) = self.entries.get(&glyph.glyph_id) {
+            return *region;
+        }
+
+        // Handle zero-dimension glyphs: store a zero-area entry.
+        if glyph.width == 0 || glyph.height == 0 {
+            let region = AtlasRegion {
+                u_min: 0.0,
+                v_min: 0.0,
+                u_max: 0.0,
+                v_max: 0.0,
+                width: 0,
+                height: 0,
+                bearing_x: glyph.bearing_x,
+                bearing_y: glyph.bearing_y,
+            };
+            self.entries.insert(glyph.glyph_id, region);
+            self.dirty = true;
+            return region;
+        }
+
+        // Find placement using shelf packing.
+        let (px, py) = loop {
+            if let Some(pos) = self.try_place(glyph.width, glyph.height) {
+                break pos;
+            }
+            // No room -- grow the atlas and retry.
+            self.grow();
+        };
+
+        // Copy glyph bitmap into the atlas row by row.
+        for row in 0..glyph.height {
+            let src_start = (row * glyph.width) as usize;
+            let src_end = src_start + glyph.width as usize;
+            let dst_start = ((py + row) * self.width + px) as usize;
+            let dst_end = dst_start + glyph.width as usize;
+            self.bitmap[dst_start..dst_end].copy_from_slice(&glyph.bitmap[src_start..src_end]);
+        }
+
+        // Compute UV coordinates normalized to [0, 1].
+        let w = self.width as f32;
+        let h = self.height as f32;
+        let region = AtlasRegion {
+            u_min: px as f32 / w,
+            v_min: py as f32 / h,
+            u_max: (px + glyph.width) as f32 / w,
+            v_max: (py + glyph.height) as f32 / h,
+            width: glyph.width,
+            height: glyph.height,
+            bearing_x: glyph.bearing_x,
+            bearing_y: glyph.bearing_y,
+        };
+        self.entries.insert(glyph.glyph_id, region);
+        self.dirty = true;
+        region
+    }
+
+    /// Try to place a glyph of the given dimensions on the current shelf
+    /// or a new shelf. Returns `Some((x, y))` pixel position on success,
+    /// or `None` if the atlas needs to grow.
+    fn try_place(&mut self, glyph_w: u32, glyph_h: u32) -> Option<(u32, u32)> {
+        // Try the current (last) shelf.
+        if let Some(shelf) = self.shelves.last_mut() {
+            if shelf.x + glyph_w + PADDING <= self.width || shelf.x + glyph_w == self.width {
+                // Fits on the current shelf (allow exact fit without trailing padding).
+                let px = shelf.x;
+                let py = shelf.y;
+                shelf.x += glyph_w + PADDING;
+                shelf.height = shelf.height.max(glyph_h);
+                return Some((px, py));
+            }
+            // Doesn't fit horizontally -- need a new shelf.
+        }
+
+        // Start a new shelf below the last one.
+        let new_y =
+            if let Some(last) = self.shelves.last() { last.y + last.height + PADDING } else { 0 };
+
+        // Check if the new shelf fits vertically.
+        if new_y + glyph_h > self.height {
+            return None; // Need to grow.
+        }
+
+        self.shelves.push(Shelf { y: new_y, x: glyph_w + PADDING, height: glyph_h });
+
+        Some((0, new_y))
+    }
+
+    /// Grow the atlas by doubling its height. Copies existing bitmap data
+    /// and updates all existing entries' UV coordinates to account for the
+    /// new height.
+    #[allow(clippy::cast_precision_loss)] // Atlas dimensions fit comfortably in f32.
+    fn grow(&mut self) {
+        let old_height = self.height;
+        let new_height = old_height * 2;
+
+        // Allocate new bitmap and copy old data.
+        let mut new_bitmap = vec![0u8; (self.width * new_height) as usize];
+        new_bitmap[..self.bitmap.len()].copy_from_slice(&self.bitmap);
+        self.bitmap = new_bitmap;
+        self.height = new_height;
+
+        // Update all existing entries' V coordinates since the atlas height changed.
+        // v_new = v_old * old_height / new_height
+        let scale = old_height as f32 / new_height as f32;
+        for region in self.entries.values_mut() {
+            region.v_min *= scale;
+            region.v_max *= scale;
         }
     }
 
@@ -117,7 +221,12 @@ impl GlyphAtlas {
 }
 
 #[cfg(test)]
-#[allow(clippy::float_cmp)]
+#[allow(
+    clippy::float_cmp,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation
+)]
 mod tests {
     use super::*;
     use crate::font::rasterizer::RasterizedGlyph;
