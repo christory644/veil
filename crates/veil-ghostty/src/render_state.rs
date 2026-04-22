@@ -1,6 +1,9 @@
 //! Safe wrapper around a libghosty render state instance.
 
-use crate::error::GhosttyError;
+use std::panic::catch_unwind;
+
+use crate::error::{check_result, GhosttyError};
+use crate::ffi;
 use crate::terminal::Terminal;
 
 /// Dirty state of a render state after update.
@@ -40,6 +43,7 @@ pub struct Color {
 
 /// Cursor state within the viewport.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct CursorState {
     /// Whether the cursor is visible in the viewport.
     pub in_viewport: bool,
@@ -72,51 +76,234 @@ pub struct RenderColors {
 ///
 /// Owns the underlying C handle and frees it on drop.
 pub struct RenderState {
-    _private: (), // placeholder -- will hold ffi::GhosttyRenderState
+    handle: ffi::GhosttyRenderState,
 }
 
 impl RenderState {
     /// Create a new empty render state.
     pub fn new() -> Result<Self, GhosttyError> {
-        todo!("RenderState::new: create render state via FFI")
+        let result = catch_unwind(|| {
+            let mut handle: ffi::GhosttyRenderState = std::ptr::null_mut();
+            let code = unsafe { ffi::ghostty_render_state_new(std::ptr::null(), &raw mut handle) };
+            check_result(code)?;
+            Ok(Self { handle })
+        });
+        match result {
+            Ok(inner) => inner,
+            Err(_) => Err(GhosttyError::Panic),
+        }
     }
 
     /// Update the render state from a terminal.
     ///
     /// This reads the terminal's current state and computes what has
     /// changed since the last update.
-    pub fn update(&mut self, _terminal: &mut Terminal) -> Result<(), GhosttyError> {
-        todo!("RenderState::update: update from terminal via FFI")
+    pub fn update(&mut self, terminal: &mut Terminal) -> Result<(), GhosttyError> {
+        let state_handle = self.handle;
+        let term_handle = terminal.handle();
+        let result = catch_unwind(move || {
+            let code = unsafe { ffi::ghostty_render_state_update(state_handle, term_handle) };
+            check_result(code)
+        });
+        match result {
+            Ok(inner) => inner,
+            Err(_) => Err(GhosttyError::Panic),
+        }
     }
 
     /// Query the current dirty state.
     pub fn dirty(&self) -> Result<DirtyState, GhosttyError> {
-        todo!("RenderState::dirty: query via FFI")
+        let state_handle = self.handle;
+        let result = catch_unwind(move || {
+            let mut value: i32 = 0;
+            let code = unsafe {
+                ffi::ghostty_render_state_get(
+                    state_handle,
+                    ffi::GHOSTTY_RENDER_STATE_DATA_DIRTY,
+                    (&raw mut value).cast::<std::ffi::c_void>(),
+                )
+            };
+            check_result(code)?;
+            match value {
+                ffi::GHOSTTY_RENDER_STATE_DIRTY_FALSE => Ok(DirtyState::Clean),
+                ffi::GHOSTTY_RENDER_STATE_DIRTY_PARTIAL => Ok(DirtyState::Partial),
+                ffi::GHOSTTY_RENDER_STATE_DIRTY_FULL => Ok(DirtyState::Full),
+                other => Err(GhosttyError::Unknown(other)),
+            }
+        });
+        match result {
+            Ok(inner) => inner,
+            Err(_) => Err(GhosttyError::Panic),
+        }
     }
 
     /// Set the dirty state (typically to `Clean` after rendering a frame).
-    pub fn set_dirty(&mut self, _state: DirtyState) -> Result<(), GhosttyError> {
-        todo!("RenderState::set_dirty: set via FFI")
+    pub fn set_dirty(&mut self, state: DirtyState) -> Result<(), GhosttyError> {
+        let raw_value: i32 = match state {
+            DirtyState::Clean => ffi::GHOSTTY_RENDER_STATE_DIRTY_FALSE,
+            DirtyState::Partial => ffi::GHOSTTY_RENDER_STATE_DIRTY_PARTIAL,
+            DirtyState::Full => ffi::GHOSTTY_RENDER_STATE_DIRTY_FULL,
+        };
+        let state_handle = self.handle;
+        let result = catch_unwind(move || {
+            let code = unsafe {
+                ffi::ghostty_render_state_set(
+                    state_handle,
+                    ffi::GHOSTTY_RENDER_STATE_OPTION_DIRTY,
+                    (&raw const raw_value).cast::<std::ffi::c_void>(),
+                )
+            };
+            check_result(code)
+        });
+        match result {
+            Ok(inner) => inner,
+            Err(_) => Err(GhosttyError::Panic),
+        }
     }
 
     /// Query the viewport width in cells.
     pub fn cols(&self) -> Result<u16, GhosttyError> {
-        todo!("RenderState::cols: query via FFI")
+        self.get_u16(ffi::GHOSTTY_RENDER_STATE_DATA_COLS)
     }
 
     /// Query the viewport height in cells.
     pub fn rows(&self) -> Result<u16, GhosttyError> {
-        todo!("RenderState::rows: query via FFI")
+        self.get_u16(ffi::GHOSTTY_RENDER_STATE_DATA_ROWS)
     }
 
     /// Query the full cursor state.
     pub fn cursor(&self) -> Result<CursorState, GhosttyError> {
-        todo!("RenderState::cursor: query via FFI")
+        let in_viewport =
+            self.get_bool(ffi::GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE)?;
+        let x = self.get_u16(ffi::GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X)?;
+        let y = self.get_u16(ffi::GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y)?;
+        let visible = self.get_bool(ffi::GHOSTTY_RENDER_STATE_DATA_CURSOR_VISIBLE)?;
+        let blinking = self.get_bool(ffi::GHOSTTY_RENDER_STATE_DATA_CURSOR_BLINKING)?;
+        let password_input = self.get_bool(ffi::GHOSTTY_RENDER_STATE_DATA_CURSOR_PASSWORD_INPUT)?;
+
+        let style_raw = self.get_i32(ffi::GHOSTTY_RENDER_STATE_DATA_CURSOR_VISUAL_STYLE)?;
+        let style = match style_raw {
+            ffi::GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR => CursorStyle::Bar,
+            ffi::GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK => CursorStyle::Block,
+            ffi::GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE => CursorStyle::Underline,
+            ffi::GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW => CursorStyle::BlockHollow,
+            other => return Err(GhosttyError::Unknown(other)),
+        };
+
+        Ok(CursorState { in_viewport, x, y, visible, blinking, style, password_input })
     }
 
     /// Query the render colors (background, foreground, optional cursor).
     pub fn colors(&self) -> Result<RenderColors, GhosttyError> {
-        todo!("RenderState::colors: query via FFI")
+        let state_handle = self.handle;
+        let result = catch_unwind(move || {
+            let mut colors = ffi::GhosttyRenderStateColors {
+                size: std::mem::size_of::<ffi::GhosttyRenderStateColors>(),
+                ..unsafe { std::mem::zeroed() }
+            };
+            let code =
+                unsafe { ffi::ghostty_render_state_colors_get(state_handle, &raw mut colors) };
+            check_result(code)?;
+
+            let cursor = if colors.cursor_has_value {
+                Some(Color { r: colors.cursor.r, g: colors.cursor.g, b: colors.cursor.b })
+            } else {
+                None
+            };
+
+            Ok(RenderColors {
+                background: Color {
+                    r: colors.background.r,
+                    g: colors.background.g,
+                    b: colors.background.b,
+                },
+                foreground: Color {
+                    r: colors.foreground.r,
+                    g: colors.foreground.g,
+                    b: colors.foreground.b,
+                },
+                cursor,
+            })
+        });
+        match result {
+            Ok(inner) => inner,
+            Err(_) => Err(GhosttyError::Panic),
+        }
+    }
+
+    // ---- Private helpers ----
+
+    /// Query a u16 value from the render state.
+    fn get_u16(&self, data: i32) -> Result<u16, GhosttyError> {
+        let state_handle = self.handle;
+        let result = catch_unwind(move || {
+            let mut value: u16 = 0;
+            let code = unsafe {
+                ffi::ghostty_render_state_get(
+                    state_handle,
+                    data,
+                    (&raw mut value).cast::<std::ffi::c_void>(),
+                )
+            };
+            check_result(code)?;
+            Ok(value)
+        });
+        match result {
+            Ok(inner) => inner,
+            Err(_) => Err(GhosttyError::Panic),
+        }
+    }
+
+    /// Query a bool value from the render state.
+    fn get_bool(&self, data: i32) -> Result<bool, GhosttyError> {
+        let state_handle = self.handle;
+        let result = catch_unwind(move || {
+            let mut value: bool = false;
+            let code = unsafe {
+                ffi::ghostty_render_state_get(
+                    state_handle,
+                    data,
+                    (&raw mut value).cast::<std::ffi::c_void>(),
+                )
+            };
+            check_result(code)?;
+            Ok(value)
+        });
+        match result {
+            Ok(inner) => inner,
+            Err(_) => Err(GhosttyError::Panic),
+        }
+    }
+
+    /// Query an i32 value from the render state.
+    fn get_i32(&self, data: i32) -> Result<i32, GhosttyError> {
+        let state_handle = self.handle;
+        let result = catch_unwind(move || {
+            let mut value: i32 = 0;
+            let code = unsafe {
+                ffi::ghostty_render_state_get(
+                    state_handle,
+                    data,
+                    (&raw mut value).cast::<std::ffi::c_void>(),
+                )
+            };
+            check_result(code)?;
+            Ok(value)
+        });
+        match result {
+            Ok(inner) => inner,
+            Err(_) => Err(GhosttyError::Panic),
+        }
+    }
+}
+
+impl Drop for RenderState {
+    fn drop(&mut self) {
+        // Safety: handle is valid and only freed once via Drop.
+        let handle = self.handle;
+        let _ = catch_unwind(move || {
+            unsafe { ffi::ghostty_render_state_free(handle) };
+        });
     }
 }
 
