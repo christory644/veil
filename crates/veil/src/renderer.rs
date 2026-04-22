@@ -50,24 +50,7 @@ fn create_render_pipeline(
             module: shader,
             entry_point: Some("vs_main"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
-            buffers: &[wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &[
-                    // position: vec2<f32> at offset 0
-                    wgpu::VertexAttribute {
-                        offset: 0,
-                        shader_location: 0,
-                        format: wgpu::VertexFormat::Float32x2,
-                    },
-                    // color: vec4<f32> at offset 8
-                    wgpu::VertexAttribute {
-                        offset: 8,
-                        shader_location: 1,
-                        format: wgpu::VertexFormat::Float32x4,
-                    },
-                ],
-            }],
+            buffers: &[Vertex::buffer_layout()],
         },
         fragment: Some(wgpu::FragmentState {
             module: shader,

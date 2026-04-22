@@ -7,6 +7,16 @@ use veil_core::layout::{PaneLayout, Rect};
 
 use crate::vertex::{quad_indices, quad_vertices, vertex_base, Vertex};
 
+/// Maximum distance (in pixels) between two pane edges for them to be
+/// considered adjacent and warrant a divider line.
+const DIVIDER_EDGE_TOLERANCE: f32 = 1.0;
+
+/// Width of a vertical divider line in pixels.
+const DIVIDER_WIDTH_PX: f32 = 1.0;
+
+/// Height of a horizontal divider line in pixels.
+const DIVIDER_HEIGHT_PX: f32 = 1.0;
+
 /// Parameters for building cell background quads for a pane.
 pub struct CellGridParams {
     /// The pane's pixel rectangle (from `compute_layout`).
@@ -21,11 +31,12 @@ pub struct CellGridParams {
 
 /// Build cell background quads for a single pane.
 ///
-/// Generates one quad per cell (cols * rows quads total). Each cell
+/// Generates one quad per cell (`cols * rows` quads total). Each cell
 /// is sized to evenly fill the pane rect. All cells use the same
 /// background color (real per-cell colors are a follow-up).
 ///
 /// Returns (vertices, indices) ready for GPU upload.
+#[allow(clippy::cast_precision_loss)] // Grid indices (col/row) fit comfortably in f32.
 pub fn build_cell_background_quads(params: &CellGridParams) -> (Vec<Vertex>, Vec<u16>) {
     if params.cols == 0 || params.rows == 0 {
         return (Vec::new(), Vec::new());
@@ -39,14 +50,12 @@ pub fn build_cell_background_quads(params: &CellGridParams) -> (Vec<Vertex>, Vec
 
     let mut vertices = Vec::with_capacity(total_quads * 4);
     let mut indices = Vec::with_capacity(total_quads * 6);
-    let mut quad_count: usize = 0;
 
     for row in 0..rows {
         for col in 0..cols {
-            #[allow(clippy::cast_precision_loss)]
             let x = params.rect.x + col as f32 * cell_width;
-            #[allow(clippy::cast_precision_loss)]
             let y = params.rect.y + row as f32 * cell_height;
+            let quad_count = row * cols + col;
             vertices.extend_from_slice(&quad_vertices(
                 x,
                 y,
@@ -55,7 +64,6 @@ pub fn build_cell_background_quads(params: &CellGridParams) -> (Vec<Vertex>, Vec
                 params.bg_color,
             ));
             indices.extend_from_slice(&quad_indices(vertex_base(quad_count)));
-            quad_count += 1;
         }
     }
 
@@ -93,92 +101,104 @@ pub fn build_cursor_quad(
     (vertices, indices)
 }
 
+/// Accumulates divider quad geometry across multiple edge-pair checks.
+///
+/// This avoids threading `&mut Vec<Vertex>`, `&mut Vec<u16>`, and
+/// `&mut usize` through every helper call.
+struct DividerCollector {
+    vertices: Vec<Vertex>,
+    indices: Vec<u16>,
+    quad_count: usize,
+    color: [f32; 4],
+}
+
+impl DividerCollector {
+    fn new(color: [f32; 4]) -> Self {
+        Self { vertices: Vec::new(), indices: Vec::new(), quad_count: 0, color }
+    }
+
+    /// Append a single divider quad.
+    fn push(&mut self, x: f32, y: f32, w: f32, h: f32) {
+        self.vertices.extend_from_slice(&quad_vertices(x, y, w, h, self.color));
+        self.indices.extend_from_slice(&quad_indices(vertex_base(self.quad_count)));
+        self.quad_count += 1;
+    }
+
+    /// If `left`'s right edge aligns with `right`'s left edge, emit a
+    /// vertical divider spanning their vertical overlap.
+    fn try_vertical(&mut self, left: &Rect, right: &Rect) {
+        let left_right_edge = left.x + left.width;
+        if (left_right_edge - right.x).abs() >= DIVIDER_EDGE_TOLERANCE {
+            return;
+        }
+        let overlap_top = left.y.max(right.y);
+        let overlap_bottom = (left.y + left.height).min(right.y + right.height);
+        if overlap_bottom <= overlap_top {
+            return;
+        }
+        self.push(
+            left_right_edge - DIVIDER_WIDTH_PX / 2.0,
+            overlap_top,
+            DIVIDER_WIDTH_PX,
+            overlap_bottom - overlap_top,
+        );
+    }
+
+    /// If `top`'s bottom edge aligns with `bottom`'s top edge, emit a
+    /// horizontal divider spanning their horizontal overlap.
+    fn try_horizontal(&mut self, top: &Rect, bottom: &Rect) {
+        let top_bottom_edge = top.y + top.height;
+        if (top_bottom_edge - bottom.y).abs() >= DIVIDER_EDGE_TOLERANCE {
+            return;
+        }
+        let overlap_left = top.x.max(bottom.x);
+        let overlap_right = (top.x + top.width).min(bottom.x + bottom.width);
+        if overlap_right <= overlap_left {
+            return;
+        }
+        self.push(
+            overlap_left,
+            top_bottom_edge - DIVIDER_HEIGHT_PX / 2.0,
+            overlap_right - overlap_left,
+            DIVIDER_HEIGHT_PX,
+        );
+    }
+
+    /// Consume the collector and return the accumulated geometry.
+    fn finish(self) -> (Vec<Vertex>, Vec<u16>) {
+        (self.vertices, self.indices)
+    }
+}
+
 /// Build divider quads between adjacent pane edges.
 ///
 /// Examines all pairs of pane layouts and, where two panes share
-/// an edge (within a tolerance), generates a thin line quad (1px
-/// wide for vertical dividers, 1px tall for horizontal dividers).
+/// an edge (within [`DIVIDER_EDGE_TOLERANCE`]), generates a thin line quad
+/// (`DIVIDER_WIDTH_PX` wide for vertical, `DIVIDER_HEIGHT_PX` tall for horizontal).
 ///
 /// Returns (vertices, indices) for all divider quads.
 pub fn build_divider_quads(
     pane_layouts: &[PaneLayout],
     divider_color: [f32; 4],
 ) -> (Vec<Vertex>, Vec<u16>) {
-    let mut vertices = Vec::new();
-    let mut indices = Vec::new();
-    let mut quad_count: usize = 0;
-    let tolerance = 1.0_f32;
+    let mut collector = DividerCollector::new(divider_color);
 
-    for i in 0..pane_layouts.len() {
-        for j in (i + 1)..pane_layouts.len() {
-            let rect_a = &pane_layouts[i].rect;
-            let rect_b = &pane_layouts[j].rect;
+    for (i, layout_a) in pane_layouts.iter().enumerate() {
+        for layout_b in &pane_layouts[i + 1..] {
+            let a = &layout_a.rect;
+            let b = &layout_b.rect;
 
-            let a_right = rect_a.x + rect_a.width;
-            let a_bottom = rect_a.y + rect_a.height;
-            let b_right = rect_b.x + rect_b.width;
-            let b_bottom = rect_b.y + rect_b.height;
+            // Vertical edges: check both directions (a|b and b|a).
+            collector.try_vertical(a, b);
+            collector.try_vertical(b, a);
 
-            // Helper: check vertical overlap and return divider span
-            let check_vertical = |edge: f32, left: &Rect, right: &Rect| {
-                let overlap_top = left.y.max(right.y);
-                let overlap_bottom = (left.y + left.height).min(right.y + right.height);
-                if overlap_bottom > overlap_top {
-                    Some((edge, overlap_top, overlap_bottom))
-                } else {
-                    None
-                }
-            };
-
-            // Helper: check horizontal overlap and return divider span
-            let check_horizontal = |edge: f32, top: &Rect, bottom: &Rect| {
-                let overlap_left = top.x.max(bottom.x);
-                let overlap_right = (top.x + top.width).min(bottom.x + bottom.width);
-                if overlap_right > overlap_left {
-                    Some((edge, overlap_left, overlap_right))
-                } else {
-                    None
-                }
-            };
-
-            // Emit a divider quad and advance the quad counter.
-            let mut emit_quad = |qx: f32, qy: f32, qw: f32, qh: f32| {
-                vertices.extend_from_slice(&quad_vertices(qx, qy, qw, qh, divider_color));
-                indices.extend_from_slice(&quad_indices(vertex_base(quad_count)));
-                quad_count += 1;
-            };
-
-            // Vertical: rect_a's right edge == rect_b's left edge
-            if (a_right - rect_b.x).abs() < tolerance {
-                if let Some((edge, top, bottom)) = check_vertical(a_right, rect_a, rect_b) {
-                    emit_quad(edge - 0.5, top, 1.0, bottom - top);
-                }
-            }
-
-            // Vertical: rect_b's right edge == rect_a's left edge
-            if (b_right - rect_a.x).abs() < tolerance {
-                if let Some((edge, top, bottom)) = check_vertical(b_right, rect_b, rect_a) {
-                    emit_quad(edge - 0.5, top, 1.0, bottom - top);
-                }
-            }
-
-            // Horizontal: rect_a's bottom edge == rect_b's top edge
-            if (a_bottom - rect_b.y).abs() < tolerance {
-                if let Some((edge, left, right)) = check_horizontal(a_bottom, rect_a, rect_b) {
-                    emit_quad(left, edge - 0.5, right - left, 1.0);
-                }
-            }
-
-            // Horizontal: rect_b's bottom edge == rect_a's top edge
-            if (b_bottom - rect_a.y).abs() < tolerance {
-                if let Some((edge, left, right)) = check_horizontal(b_bottom, rect_b, rect_a) {
-                    emit_quad(left, edge - 0.5, right - left, 1.0);
-                }
-            }
+            // Horizontal edges: check both directions (a/b and b/a).
+            collector.try_horizontal(a, b);
+            collector.try_horizontal(b, a);
         }
     }
 
-    (vertices, indices)
+    collector.finish()
 }
 
 /// Build focus border quads around a pane rect.

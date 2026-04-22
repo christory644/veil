@@ -11,13 +11,24 @@ use crate::quad_builder::{
 };
 use crate::vertex::Vertex;
 
+// -- Default grid dimensions (until real terminal state is wired in) ----------
 const DEFAULT_COLS: u16 = 80;
 const DEFAULT_ROWS: u16 = 24;
+
+// -- Default colors (until real per-cell colors arrive from RenderState) ------
+
+/// Dark gray cell background.
 const BG_COLOR: [f32; 4] = [0.1, 0.1, 0.1, 1.0];
+/// Light gray cursor.
 const CURSOR_COLOR: [f32; 4] = [0.9, 0.9, 0.9, 1.0];
+/// Medium gray pane divider.
 const DIVIDER_COLOR: [f32; 4] = [0.3, 0.3, 0.3, 1.0];
+/// Blue focus border with slight transparency.
 const FOCUS_BORDER_COLOR: [f32; 4] = [0.2, 0.5, 1.0, 0.8];
+/// Focus border width in pixels.
 const FOCUS_BORDER_THICKNESS: f32 = 2.0;
+/// Near-black window background (used as the wgpu clear color).
+const CLEAR_COLOR: wgpu::Color = wgpu::Color { r: 0.05, g: 0.05, b: 0.05, a: 1.0 };
 
 /// Complete geometry for a single frame, ready for GPU upload.
 pub struct FrameGeometry {
@@ -41,27 +52,26 @@ pub struct FrameGeometry {
 /// 7. Concatenate all vertices/indices with correct base offsets
 ///
 /// Returns `FrameGeometry` ready for a single draw call.
+// Window pixel dimensions and sidebar width_px all fit comfortably in f32.
+#[allow(clippy::cast_precision_loss)]
 pub fn build_frame_geometry(
     app_state: &AppState,
     focus: &FocusManager,
     window_width: u32,
     window_height: u32,
 ) -> FrameGeometry {
-    let clear_color = wgpu::Color { r: 0.05, g: 0.05, b: 0.05, a: 1.0 };
+    let empty =
+        || FrameGeometry { vertices: Vec::new(), indices: Vec::new(), clear_color: CLEAR_COLOR };
 
     let Some(workspace) = app_state.active_workspace() else {
-        return FrameGeometry { vertices: Vec::new(), indices: Vec::new(), clear_color };
+        return empty();
     };
 
     // Compute terminal area with sidebar offset.
-    // Pixel dimensions fit comfortably in f32 mantissa for any realistic window size.
-    #[allow(clippy::cast_precision_loss)]
     let window_w = window_width as f32;
-    #[allow(clippy::cast_precision_loss)]
     let window_h = window_height as f32;
 
     let (terminal_x, terminal_width) = if app_state.sidebar.visible {
-        #[allow(clippy::cast_precision_loss)]
         let x = app_state.sidebar.width_px as f32;
         (x, (window_w - x).max(0.0))
     } else {
@@ -69,21 +79,21 @@ pub fn build_frame_geometry(
     };
 
     let available = Rect { x: terminal_x, y: 0.0, width: terminal_width, height: window_h };
-
     let pane_layouts = compute_layout(&workspace.layout, available, workspace.zoomed_pane);
 
     let mut all_vertices: Vec<Vertex> = Vec::new();
     let mut all_indices: Vec<u16> = Vec::new();
 
-    // Helper to append geometry with correct index offsets.
-    let mut append = |verts: Vec<Vertex>, indices: Vec<u16>| {
+    // Append geometry with correct index offsets so multiple quad batches
+    // share a single vertex/index buffer.
+    let mut append = |verts: &[Vertex], idxs: &[u16]| {
         #[allow(clippy::cast_possible_truncation)]
         let base_offset = all_vertices.len() as u16;
-        all_vertices.extend_from_slice(&verts);
-        all_indices.extend(indices.iter().map(|i| i + base_offset));
+        all_vertices.extend_from_slice(verts);
+        all_indices.extend(idxs.iter().map(|i| i + base_offset));
     };
 
-    // Build cell background quads for each pane.
+    // Cell background quads for each pane.
     for pl in &pane_layouts {
         let params = CellGridParams {
             rect: pl.rect,
@@ -92,29 +102,27 @@ pub fn build_frame_geometry(
             bg_color: BG_COLOR,
         };
         let (verts, indices) = build_cell_background_quads(&params);
-        append(verts, indices);
+        append(&verts, &indices);
     }
 
-    // Build divider quads between adjacent panes.
+    // Divider quads between adjacent panes.
     let (div_verts, div_indices) = build_divider_quads(&pane_layouts, DIVIDER_COLOR);
-    append(div_verts, div_indices);
+    append(&div_verts, &div_indices);
 
-    // If there's a focused surface, build cursor and focus border.
+    // Cursor and focus border for the focused pane.
     if let Some(focused_surface) = focus.focused_surface() {
         if let Some(pl) = pane_layouts.iter().find(|pl| pl.surface_id == focused_surface) {
-            // Build cursor quad at position (0, 0).
             let (cursor_verts, cursor_indices) =
                 build_cursor_quad(&pl.rect, DEFAULT_COLS, DEFAULT_ROWS, 0, 0, CURSOR_COLOR);
-            append(cursor_verts, cursor_indices);
+            append(&cursor_verts, &cursor_indices);
 
-            // Build focus border.
             let (border_verts, border_indices) =
                 build_focus_border(&pl.rect, FOCUS_BORDER_THICKNESS, FOCUS_BORDER_COLOR);
-            append(border_verts, border_indices);
+            append(&border_verts, &border_indices);
         }
     }
 
-    FrameGeometry { vertices: all_vertices, indices: all_indices, clear_color }
+    FrameGeometry { vertices: all_vertices, indices: all_indices, clear_color: CLEAR_COLOR }
 }
 
 #[cfg(test)]
