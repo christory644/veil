@@ -53,6 +53,18 @@ if [[ -z "${CLAUDE_BIN}" ]]; then
     echo -e "${RED}ERROR: claude command not found${NC}"
     exit 1
 fi
+
+# Find timeout binary (GNU coreutils `timeout` or macOS Homebrew `gtimeout`)
+if command -v timeout &>/dev/null; then
+    TIMEOUT_BIN="timeout"
+elif command -v gtimeout &>/dev/null; then
+    TIMEOUT_BIN="gtimeout"
+else
+    echo -e "${RED}ERROR: neither 'timeout' nor 'gtimeout' found${NC}"
+    echo -e "${RED}On macOS, install GNU coreutils: brew install coreutils${NC}"
+    exit 1
+fi
+
 echo -e "${GREEN}Using claude at: ${CLAUDE_BIN}${NC}"
 echo -e "${GREEN}Config dir: ${CLAUDE_CONFIG_DIR}${NC}"
 
@@ -111,7 +123,7 @@ while true; do
     set +e
     (
         cd "${SCRIPT_DIR}"
-        cat "${PROMPT_FILE}" | timeout "${ITER_TIMEOUT}" "${CLAUDE_BIN}" \
+        cat "${PROMPT_FILE}" | "${TIMEOUT_BIN}" "${ITER_TIMEOUT}" "${CLAUDE_BIN}" \
             --print \
             --dangerously-skip-permissions \
             --model opus \
