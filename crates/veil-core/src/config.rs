@@ -471,14 +471,30 @@ pub struct ConfigDelta {
 impl ConfigDelta {
     /// Returns true if nothing changed.
     pub fn is_empty(&self) -> bool {
-        // STUB: always returns true
-        true
+        !self.theme_changed
+            && !self.persistence_changed
+            && !self.sidebar_changed
+            && !self.font_changed
+            && !self.scrollback_changed
+            && !self.keybindings_changed
+            && !self.adapters_changed
+            && !self.ghostty_path_changed
     }
 
     /// Compute the delta between an old and new config.
-    pub fn diff(_old: &AppConfig, _new: &AppConfig) -> Self {
-        // STUB: always returns empty delta
-        Self::default()
+    pub fn diff(old: &AppConfig, new: &AppConfig) -> Self {
+        Self {
+            theme_changed: old.general.theme != new.general.theme,
+            persistence_changed: old.general.persistence != new.general.persistence,
+            sidebar_changed: old.sidebar != new.sidebar,
+            font_changed: old.terminal.font_family != new.terminal.font_family
+                || (old.terminal.font_size - new.terminal.font_size).abs() > f32::EPSILON
+                || old.terminal.font_weight != new.terminal.font_weight,
+            scrollback_changed: old.terminal.scrollback_lines != new.terminal.scrollback_lines,
+            keybindings_changed: old.keybindings != new.keybindings,
+            adapters_changed: old.conversations != new.conversations,
+            ghostty_path_changed: old.ghostty != new.ghostty,
+        }
     }
 }
 
