@@ -9,6 +9,7 @@ members = [
     "crates/veil-aggregator",
     "crates/veil-socket",
     "crates/veil-scaffold-tests",
+    "crates/veil-e2e",
 ]
 
 [workspace.package]
@@ -33,6 +34,9 @@ tempfile = "3"
 winit = "0.30"
 libc = "0.2"
 proptest = "1"
+mockall = "0.13"
+criterion = { version = "0.5", features = ["html_reports"] }
+toml = "0.8"
 wgpu = "24"
 bytemuck = { version = "1", features = ["derive"] }
 pollster = "0.4"

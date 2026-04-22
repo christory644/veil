@@ -17,6 +17,18 @@ tokio = { workspace = true, features = ["sync"] }
 [dev-dependencies]
 tokio = { workspace = true, features = ["sync", "macros", "rt", "time"] }
 proptest.workspace = true
+mockall.workspace = true
+criterion.workspace = true
+toml.workspace = true
+serde_json.workspace = true
+
+[[bench]]
+name = "layout"
+harness = false
+
+[[bench]]
+name = "state"
+harness = false
 
 [lints]
 workspace = true

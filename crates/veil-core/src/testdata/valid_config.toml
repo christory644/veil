@@ -1,0 +1,32 @@
+# Complete valid Veil configuration file (all sections).
+# Used as a test fixture for config parsing validation.
+
+[general]
+default_shell = "/bin/zsh"
+working_directory = "~"
+confirm_quit = true
+
+[sidebar]
+visible = true
+default_tab = "workspaces"
+width = 250
+
+[terminal]
+font_family = "JetBrains Mono"
+font_size = 14.0
+scrollback_lines = 10000
+
+[keybindings]
+toggle_sidebar = "ctrl+b"
+new_workspace = "ctrl+shift+n"
+close_workspace = "ctrl+shift+w"
+split_horizontal = "ctrl+shift+h"
+split_vertical = "ctrl+shift+v"
+
+[aggregator]
+poll_interval_ms = 5000
+session_dirs = ["~/.claude/projects"]
+
+[appearance]
+theme = "dark"
+opacity = 1.0

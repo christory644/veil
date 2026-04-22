@@ -2,7 +2,9 @@
 
 mod adapter;
 mod discovery;
-mod jsonl;
-mod parser;
+/// JSONL record types for Claude Code session files.
+pub mod jsonl;
+/// JSONL file parser for Claude Code sessions.
+pub mod parser;
 
 pub use adapter::ClaudeCodeAdapter;

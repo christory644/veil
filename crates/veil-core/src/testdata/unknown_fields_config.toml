@@ -1,0 +1,16 @@
+# Valid TOML with extra unknown fields (forward compatibility test).
+# A well-designed config parser should handle this gracefully.
+
+[general]
+default_shell = "/bin/zsh"
+some_future_field = "should be ignored"
+experimental_feature = true
+
+[sidebar]
+visible = true
+width = 300
+new_sidebar_option = "unknown"
+
+[future_section]
+key1 = "value1"
+key2 = 42

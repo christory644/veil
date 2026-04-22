@@ -121,6 +121,58 @@ fn extract_topic_from_message(message: &str) -> String {
 }
 
 #[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// generate_title with arbitrary inputs must never panic and must
+        /// always return a non-empty string.
+        #[test]
+        fn generate_title_never_panics_and_returns_nonempty(
+            agent_title in proptest::option::of("\\PC{0,200}"),
+            first_message in proptest::option::of("\\PC{0,200}"),
+        ) {
+            let result = generate_title(agent_title.as_deref(), first_message.as_deref());
+            prop_assert!(!result.is_empty(), "generate_title must return non-empty string");
+        }
+
+        /// is_gibberish_title with arbitrary strings must never panic.
+        #[test]
+        fn is_gibberish_never_panics(input in "\\PC{0,200}") {
+            // Must not panic — true or false are both fine.
+            let _ = is_gibberish_title(&input);
+        }
+
+        /// extract_topic_from_message with arbitrary strings must never panic
+        /// and must return a string with length <= 100 (80 + "..." suffix).
+        #[test]
+        fn extract_topic_never_panics_and_respects_length_limit(
+            input in "\\PC{0,500}"
+        ) {
+            let result = extract_topic_from_message(&input);
+            prop_assert!(
+                result.len() <= 100,
+                "result length {} exceeds 100 for input of length {}: {:?}",
+                result.len(), input.len(), result
+            );
+        }
+
+        /// extract_topic_from_message with multi-byte Unicode characters
+        /// must never panic (no mid-codepoint slicing).
+        #[test]
+        fn extract_topic_handles_multibyte_unicode(
+            prefix in "[\\p{Han}\\p{Hiragana}\\p{Katakana}\\p{Emoji}]{0,50}",
+            suffix in "[a-zA-Z ]{0,100}",
+        ) {
+            let input = format!("{prefix}{suffix}");
+            let result = extract_topic_from_message(&input);
+            prop_assert!(result.len() <= 100, "result too long: {}", result.len());
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

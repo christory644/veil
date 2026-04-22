@@ -1,18 +1,19 @@
 [package]
-name = "veil-socket"
+name = "veil-e2e"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+publish = false
 
 [dependencies]
+veil-socket = { path = "../veil-socket" }
 veil-core = { path = "../veil-core" }
-tracing.workspace = true
-
-[dev-dependencies]
-mockall.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

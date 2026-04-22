@@ -13,7 +13,7 @@ mod tests {
     // Unit 1: Workspace Cargo.toml and Crate Skeletons
     // =========================================================================
 
-    /// The 7 crates that must exist under crates/.
+    /// The crates that must exist under crates/.
     const EXPECTED_CRATES: &[&str] = &[
         "veil",
         "veil-core",
@@ -22,6 +22,7 @@ mod tests {
         "veil-pty",
         "veil-aggregator",
         "veil-socket",
+        "veil-e2e",
     ];
 
     /// Library crates (have src/lib.rs).
@@ -448,6 +449,76 @@ mod tests {
         assert!(
             !ignores_cargo_lock,
             ".gitignore must NOT ignore Cargo.lock — binary projects should commit the lockfile"
+        );
+    }
+
+    // =========================================================================
+    // VEI-21: Testing Infrastructure
+    // =========================================================================
+
+    #[test]
+    fn veil_e2e_crate_exists() {
+        let root = workspace_root();
+        let crate_dir = root.join("crates").join("veil-e2e");
+        assert!(crate_dir.exists(), "veil-e2e crate directory must exist");
+        assert!(crate_dir.join("Cargo.toml").exists(), "veil-e2e must have Cargo.toml");
+        assert!(crate_dir.join("src").join("lib.rs").exists(), "veil-e2e must have src/lib.rs");
+    }
+
+    #[test]
+    fn veil_core_benches_directory_exists() {
+        let root = workspace_root();
+        let benches_dir = root.join("crates").join("veil-core").join("benches");
+        assert!(benches_dir.exists(), "veil-core/benches/ directory must exist");
+        assert!(benches_dir.join("layout.rs").exists(), "veil-core/benches/layout.rs must exist");
+        assert!(benches_dir.join("state.rs").exists(), "veil-core/benches/state.rs must exist");
+    }
+
+    #[test]
+    fn veil_aggregator_benches_directory_exists() {
+        let root = workspace_root();
+        let benches_dir = root.join("crates").join("veil-aggregator").join("benches");
+        assert!(benches_dir.exists(), "veil-aggregator/benches/ directory must exist");
+        assert!(
+            benches_dir.join("session_store.rs").exists(),
+            "veil-aggregator/benches/session_store.rs must exist"
+        );
+        assert!(
+            benches_dir.join("jsonl_parsing.rs").exists(),
+            "veil-aggregator/benches/jsonl_parsing.rs must exist"
+        );
+    }
+
+    #[test]
+    fn cargo_config_toml_exists_with_coverage_alias() {
+        let root = workspace_root();
+        let config_path = root.join(".cargo").join("config.toml");
+        assert!(config_path.exists(), ".cargo/config.toml must exist at {}", config_path.display());
+        let content = fs::read_to_string(&config_path).unwrap_or_default();
+        assert!(content.contains("cov"), ".cargo/config.toml must contain a 'cov' alias");
+        assert!(
+            content.contains("llvm-cov"),
+            ".cargo/config.toml cov alias must reference llvm-cov"
+        );
+    }
+
+    #[test]
+    fn workspace_has_mockall_dependency() {
+        let root = workspace_root();
+        let content = fs::read_to_string(root.join("Cargo.toml")).unwrap_or_default();
+        assert!(
+            content.contains("mockall"),
+            "workspace Cargo.toml must declare 'mockall' in [workspace.dependencies]"
+        );
+    }
+
+    #[test]
+    fn workspace_has_criterion_dependency() {
+        let root = workspace_root();
+        let content = fs::read_to_string(root.join("Cargo.toml")).unwrap_or_default();
+        assert!(
+            content.contains("criterion"),
+            "workspace Cargo.toml must declare 'criterion' in [workspace.dependencies]"
         );
     }
 

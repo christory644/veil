@@ -770,3 +770,123 @@ mod tests {
         assert_eq!(state.workspaces[2].id, ids[2]);
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Operation enum for driving arbitrary state machine sequences.
+    #[derive(Debug, Clone)]
+    enum StateOp {
+        Create,
+        Close(usize),
+        SetActive(usize),
+    }
+
+    fn arb_state_op() -> impl Strategy<Value = StateOp> {
+        prop_oneof![
+            Just(StateOp::Create),
+            (0..10usize).prop_map(StateOp::Close),
+            (0..10usize).prop_map(StateOp::SetActive),
+        ]
+    }
+
+    proptest! {
+        /// After any sequence of create/close/set_active operations,
+        /// active_workspace_id is always either None or refers to an
+        /// existing workspace.
+        #[test]
+        fn active_workspace_always_valid_or_none(
+            ops in proptest::collection::vec(arb_state_op(), 0..50)
+        ) {
+            let mut state = AppState::new();
+
+            for op in &ops {
+                match op {
+                    StateOp::Create => {
+                        state.create_workspace(
+                            "ws".to_string(),
+                            PathBuf::from("/tmp"),
+                        );
+                    }
+                    StateOp::Close(idx) => {
+                        if !state.workspaces.is_empty() {
+                            let ws_idx = idx % state.workspaces.len();
+                            let ws_id = state.workspaces[ws_idx].id;
+                            let _ = state.close_workspace(ws_id);
+                        }
+                    }
+                    StateOp::SetActive(idx) => {
+                        if !state.workspaces.is_empty() {
+                            let ws_idx = idx % state.workspaces.len();
+                            let ws_id = state.workspaces[ws_idx].id;
+                            let _ = state.set_active_workspace(ws_id);
+                        }
+                    }
+                }
+
+                // Invariant: active_workspace_id is None or points to existing workspace
+                if let Some(active_id) = state.active_workspace_id {
+                    prop_assert!(
+                        state.workspace(active_id).is_some(),
+                        "active_workspace_id {:?} does not refer to an existing workspace",
+                        active_id,
+                    );
+                }
+            }
+        }
+
+        /// After any sequence of split/close pane operations, the pane tree
+        /// always has at least 1 leaf.
+        #[test]
+        fn pane_tree_always_has_at_least_one_leaf(
+            split_count in 0..20usize,
+            close_indices in proptest::collection::vec(0..20usize, 0..15),
+        ) {
+            let mut state = AppState::new();
+            let ws_id = state.create_workspace("ws".to_string(), PathBuf::from("/tmp"));
+
+            // Perform splits
+            for _ in 0..split_count {
+                let pane_ids = state.workspace(ws_id).unwrap().pane_ids();
+                let target = pane_ids[0]; // Always split the first pane
+                let _ = state.split_pane(ws_id, target, SplitDirection::Horizontal);
+            }
+
+            // Perform closes (skipping errors like LastPane)
+            for idx in &close_indices {
+                let pane_ids = state.workspace(ws_id).unwrap().pane_ids();
+                if pane_ids.len() > 1 {
+                    let target_idx = idx % pane_ids.len();
+                    let target = pane_ids[target_idx];
+                    let _ = state.close_pane(ws_id, target);
+                }
+            }
+
+            // Invariant: pane tree always has at least 1 leaf
+            let ws = state.workspace(ws_id).unwrap();
+            prop_assert!(
+                ws.layout.pane_count() >= 1,
+                "pane tree should have at least 1 leaf, got {}",
+                ws.layout.pane_count(),
+            );
+        }
+
+        /// next_id is strictly monotonically increasing across any number of calls.
+        #[test]
+        fn next_id_strictly_monotonic(call_count in 1..100usize) {
+            let mut state = AppState::new();
+            let mut prev = state.next_id();
+            for _ in 1..call_count {
+                let current = state.next_id();
+                prop_assert!(
+                    current > prev,
+                    "next_id must be strictly increasing: {} <= {}",
+                    current, prev,
+                );
+                prev = current;
+            }
+        }
+    }
+}

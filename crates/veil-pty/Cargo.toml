@@ -16,5 +16,8 @@ tokio = { workspace = true, features = ["sync"] }
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
+[dev-dependencies]
+mockall.workspace = true
+
 [lints]
 workspace = true

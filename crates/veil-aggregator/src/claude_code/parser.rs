@@ -566,4 +566,102 @@ mod tests {
         let count = count_tool_uses(&content);
         assert_eq!(count, 3);
     }
+
+    // =========================================================================
+    // New JSONL fixture tests (VEI-21)
+    // =========================================================================
+
+    #[test]
+    fn parse_unicode_content_preserves_multibyte_characters() {
+        let path = fixture_path("unicode_content.jsonl");
+        let parsed = parse_session_file(&path).expect("should parse unicode content session");
+
+        assert_eq!(parsed.session_id, "55555555-5555-5555-5555-555555555555");
+        // First user message contains emoji
+        let first_msg = parsed.first_user_message.as_deref().expect("should have first message");
+        assert!(
+            first_msg.contains('\u{1f41b}') || first_msg.contains("bug"),
+            "first user message should contain emoji or related text: {first_msg}"
+        );
+        // Should have parsed all user messages (3 text messages)
+        assert_eq!(parsed.user_message_count, 3, "should have 3 user text messages");
+        assert_eq!(parsed.assistant_message_count, 3, "should have 3 assistant messages");
+        assert_eq!(parsed.parse_error_count, 0, "should have no parse errors");
+    }
+
+    #[test]
+    fn parse_large_session_has_expected_scale() {
+        let path = fixture_path("large_session.jsonl");
+        let parsed = parse_session_file(&path).expect("should parse large session");
+
+        assert_eq!(parsed.session_id, "66666666-6666-6666-6666-666666666666");
+        assert_eq!(
+            parsed.first_user_message.as_deref(),
+            Some("Build a complete REST API for the user management service")
+        );
+        // Large session should have many user and assistant messages
+        assert!(
+            parsed.user_message_count >= 5,
+            "large session should have at least 5 user text messages, got {}",
+            parsed.user_message_count,
+        );
+        assert!(
+            parsed.assistant_message_count >= 10,
+            "large session should have at least 10 assistant messages, got {}",
+            parsed.assistant_message_count,
+        );
+        assert!(
+            parsed.tool_use_count >= 10,
+            "large session should have at least 10 tool uses, got {}",
+            parsed.tool_use_count,
+        );
+        assert_eq!(parsed.parse_error_count, 0, "should have no parse errors");
+    }
+
+    #[test]
+    fn parse_large_session_has_correct_timestamps() {
+        let path = fixture_path("large_session.jsonl");
+        let parsed = parse_session_file(&path).expect("should parse large session");
+
+        let started = parsed.started_at.expect("should have started_at");
+        let ended = parsed.ended_at.expect("should have ended_at");
+        assert!(started < ended, "started_at should be before ended_at");
+    }
+
+    #[test]
+    fn parse_sidechain_session_handles_sidechain_records() {
+        let path = fixture_path("sidechain_session.jsonl");
+        let parsed = parse_session_file(&path).expect("should parse sidechain session");
+
+        assert_eq!(parsed.session_id, "77777777-7777-7777-7777-777777777777");
+        assert_eq!(
+            parsed.first_user_message.as_deref(),
+            Some("Help me refactor the error handling")
+        );
+        assert_eq!(
+            parsed.first_assistant_message.as_deref(),
+            Some("I'll refactor the error handling to use thiserror.")
+        );
+        // Should count both main-chain and sidechain messages
+        // 2 main-chain user text messages + sidechain messages are not counted as text (tool_result)
+        assert!(
+            parsed.user_message_count >= 2,
+            "should have at least 2 user text messages, got {}",
+            parsed.user_message_count,
+        );
+        assert_eq!(parsed.parse_error_count, 0, "should have no parse errors");
+    }
+
+    #[test]
+    fn parse_sidechain_session_sidechain_does_not_override_first_message() {
+        let path = fixture_path("sidechain_session.jsonl");
+        let parsed = parse_session_file(&path).expect("should parse sidechain session");
+
+        // The first user message should be from the main chain, not the sidechain
+        let first_msg = parsed.first_user_message.as_deref().expect("should have first message");
+        assert!(
+            !first_msg.contains("Check if the tests still pass"),
+            "sidechain message should not become the first user message"
+        );
+    }
 }

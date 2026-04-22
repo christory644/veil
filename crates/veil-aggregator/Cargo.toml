@@ -19,6 +19,17 @@ dirs.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+proptest.workspace = true
+mockall.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "session_store"
+harness = false
+
+[[bench]]
+name = "jsonl_parsing"
+harness = false
 
 [lints]
 workspace = true

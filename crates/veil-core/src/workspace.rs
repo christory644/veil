@@ -618,3 +618,114 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn make_workspace_with_ids(start_pane: u64, start_surface: u64) -> Workspace {
+        Workspace::new(
+            WorkspaceId::new(1),
+            "proptest".to_string(),
+            std::path::PathBuf::from("/tmp/proptest"),
+            PaneId::new(start_pane),
+            SurfaceId::new(start_surface),
+        )
+    }
+
+    proptest! {
+        /// After any sequence of splits and closes, pane_ids().len() equals
+        /// pane_count().
+        #[test]
+        fn pane_ids_len_equals_pane_count(
+            split_count in 0..15usize,
+            close_indices in proptest::collection::vec(0..20usize, 0..10),
+        ) {
+            let mut ws = make_workspace_with_ids(1, 100);
+            let mut next_id = 2u64;
+
+            // Perform splits
+            for _ in 0..split_count {
+                let pane_ids = ws.pane_ids();
+                let target = pane_ids[0];
+                let new_pane = PaneId::new(next_id);
+                let new_surface = SurfaceId::new(next_id + 1000);
+                next_id += 1;
+                let _ = ws.split_pane(
+                    target,
+                    SplitDirection::Horizontal,
+                    new_pane,
+                    new_surface,
+                );
+            }
+
+            // Perform closes
+            for idx in &close_indices {
+                let pane_ids = ws.pane_ids();
+                if pane_ids.len() > 1 {
+                    let target_idx = idx % pane_ids.len();
+                    let target = pane_ids[target_idx];
+                    let _ = ws.close_pane(target);
+                }
+            }
+
+            // Invariant: pane_ids().len() == pane_count()
+            let ids = ws.pane_ids();
+            let count = ws.layout.pane_count();
+            prop_assert_eq!(
+                ids.len(),
+                count,
+                "pane_ids().len() ({}) != pane_count() ({})",
+                ids.len(),
+                count,
+            );
+        }
+
+        /// Every surface_id returned by surface_ids() corresponds to a
+        /// findable leaf via find_pane with the matching pane_id.
+        #[test]
+        fn all_surface_ids_correspond_to_findable_panes(
+            split_count in 0..10usize,
+        ) {
+            let mut ws = make_workspace_with_ids(1, 100);
+            let mut next_id = 2u64;
+
+            for _ in 0..split_count {
+                let pane_ids = ws.pane_ids();
+                let target = pane_ids[0];
+                let new_pane = PaneId::new(next_id);
+                let new_surface = SurfaceId::new(next_id + 1000);
+                next_id += 1;
+                let _ = ws.split_pane(
+                    target,
+                    SplitDirection::Horizontal,
+                    new_pane,
+                    new_surface,
+                );
+            }
+
+            let surface_ids = ws.layout.surface_ids();
+            let pane_ids = ws.pane_ids();
+
+            // Every pane must be findable
+            for pid in &pane_ids {
+                let found = ws.layout.find_pane(*pid);
+                prop_assert!(
+                    found.is_some(),
+                    "pane {:?} should be findable in the tree",
+                    pid,
+                );
+            }
+
+            // surface_ids count must equal pane_ids count
+            prop_assert_eq!(
+                surface_ids.len(),
+                pane_ids.len(),
+                "surface_ids count ({}) != pane_ids count ({})",
+                surface_ids.len(),
+                pane_ids.len(),
+            );
+        }
+    }
+}

@@ -1,0 +1,8 @@
+# Invalid TOML — malformed syntax for testing error handling.
+
+[general
+default_shell = "/bin/sh"
+working_directory = ~    # missing quotes around tilde
+
+[sidebar
+  visible = tru   # not a valid boolean

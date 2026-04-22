@@ -236,6 +236,65 @@ pub struct FileHistorySnapshotRecord {
 }
 
 #[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// Arbitrary byte sequences fed to serde_json must never panic.
+        /// They should return Err for invalid input.
+        #[test]
+        fn arbitrary_strings_never_panic_on_deserialize(input in "\\PC*") {
+            // Must not panic — Ok or Err are both fine.
+            let _ = serde_json::from_str::<JournalRecord>(&input);
+        }
+
+        /// Arbitrary valid JSON objects with random type fields must not panic.
+        #[test]
+        fn arbitrary_json_object_with_random_type_never_panics(
+            type_val in "[a-z_-]{1,20}",
+            extra_key in "[a-z]{1,10}",
+            extra_val in "[a-zA-Z0-9 ]{0,50}",
+        ) {
+            let json = format!(
+                r#"{{"type": "{type_val}", "{extra_key}": "{extra_val}"}}"#
+            );
+            let _ = serde_json::from_str::<JournalRecord>(&json);
+        }
+
+        /// Valid user records with arbitrary string content must deserialize
+        /// without panic.
+        #[test]
+        fn user_records_with_arbitrary_content_never_panic(
+            content in "\\PC{0,500}"
+        ) {
+            // Escape the content for valid JSON embedding
+            let escaped = serde_json::to_string(&content).unwrap();
+            let json = format!(
+                r#"{{"type": "user", "message": {{"role": "user", "content": {escaped}}}}}"#
+            );
+            let result = serde_json::from_str::<JournalRecord>(&json);
+            // Should parse successfully since we built valid JSON
+            prop_assert!(result.is_ok(), "valid user record should parse: {:?}", result.err());
+        }
+
+        /// Valid assistant records with arbitrary text blocks must deserialize
+        /// without panic.
+        #[test]
+        fn assistant_records_with_arbitrary_text_never_panic(
+            text in "\\PC{0,500}"
+        ) {
+            let escaped = serde_json::to_string(&text).unwrap();
+            let json = format!(
+                r#"{{"type": "assistant", "message": {{"role": "assistant", "content": [{{"type": "text", "text": {escaped}}}]}}}}"#
+            );
+            let result = serde_json::from_str::<JournalRecord>(&json);
+            prop_assert!(result.is_ok(), "valid assistant record should parse: {:?}", result.err());
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

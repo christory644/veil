@@ -1,0 +1,5 @@
+# Minimal valid Veil configuration with only required fields.
+# All optional sections omitted.
+
+[general]
+default_shell = "/bin/sh"
