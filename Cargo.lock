@@ -1700,6 +1700,9 @@ dependencies = [
 name = "veil-pty"
 version = "0.1.0"
 dependencies = [
+ "libc",
+ "thiserror 2.0.18",
+ "tokio",
  "tracing",
  "veil-core",
 ]

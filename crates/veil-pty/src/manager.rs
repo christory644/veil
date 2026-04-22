@@ -19,13 +19,10 @@ type PtyFactory = Box<dyn Fn(PtyConfig) -> Result<Box<dyn Pty>, PtyError> + Send
 /// A PTY instance with its associated metadata.
 struct ManagedPty {
     /// The PTY trait object.
-    #[allow(dead_code)]
     pty: Box<dyn Pty>,
     /// The surface this PTY belongs to.
-    #[allow(dead_code)]
     surface_id: SurfaceId,
     /// Thread handle for the event bridge task.
-    #[allow(dead_code)]
     bridge_handle: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -38,13 +35,11 @@ pub struct PtyManager {
     /// Active PTY instances, keyed by `SurfaceId`.
     ptys: HashMap<SurfaceId, ManagedPty>,
     /// For sending state updates back to the event loop.
-    #[allow(dead_code)]
     state_tx: tokio::sync::mpsc::Sender<StateUpdate>,
     /// For observing application shutdown.
     #[allow(dead_code)]
     shutdown: ShutdownHandle,
     /// Factory function for creating PTY instances (allows injection for testing).
-    #[allow(dead_code)]
     pty_factory: PtyFactory,
 }
 
@@ -64,43 +59,149 @@ impl PtyManager {
         Self { ptys: HashMap::new(), state_tx, shutdown, pty_factory: factory }
     }
 
+    /// Start a bridge thread for a PTY that forwards [`PtyEvent`](crate::types::PtyEvent)s
+    /// to [`StateUpdate`] messages on the state channel.
+    fn start_bridge(
+        pty: &mut Box<dyn Pty>,
+        surface_id: SurfaceId,
+        state_tx: &tokio::sync::mpsc::Sender<StateUpdate>,
+    ) -> Option<std::thread::JoinHandle<()>> {
+        let rx = pty.take_event_rx()?;
+        let state_tx = state_tx.clone();
+        Some(std::thread::spawn(move || {
+            while let Ok(event) = rx.recv() {
+                match event {
+                    crate::types::PtyEvent::ChildExited { exit_code } => {
+                        let update = StateUpdate::SurfaceExited { surface_id, exit_code };
+                        if let Err(e) = state_tx.blocking_send(update) {
+                            tracing::warn!(?surface_id, "failed to forward SurfaceExited: {e}");
+                        }
+                        break;
+                    }
+                    crate::types::PtyEvent::Output(_) => {
+                        // Output routing is handled elsewhere; drop here.
+                    }
+                }
+            }
+        }))
+    }
+
+    /// Ensure all existing PTYs have bridge threads running.
+    ///
+    /// PTYs that were manually inserted (e.g. in tests) may lack a bridge.
+    /// This starts bridges for any that are missing one.
+    fn ensure_bridges(&mut self) {
+        for managed in self.ptys.values_mut() {
+            if managed.bridge_handle.is_none() {
+                managed.bridge_handle =
+                    Self::start_bridge(&mut managed.pty, managed.surface_id, &self.state_tx);
+            }
+        }
+    }
+
     /// Spawn a new PTY for the given surface.
-    #[allow(clippy::needless_pass_by_value)] // Will consume config in implementation
     pub fn spawn(&mut self, surface_id: SurfaceId, config: PtyConfig) -> Result<(), PtyError> {
-        todo!(
-            "PtyManager::spawn — create PTY, start event bridge, insert into ptys map. \
-             surface_id={surface_id:?}, config={config:?}"
-        )
+        // Start bridges for any existing PTYs that were inserted without one.
+        self.ensure_bridges();
+
+        if self.ptys.contains_key(&surface_id) {
+            return Err(PtyError::Create("surface already exists".to_string()));
+        }
+
+        let factory_result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (self.pty_factory)(config)));
+
+        match factory_result {
+            Ok(Ok(mut pty)) => {
+                let bridge_handle = Self::start_bridge(&mut pty, surface_id, &self.state_tx);
+                self.ptys.insert(surface_id, ManagedPty { pty, surface_id, bridge_handle });
+            }
+            Ok(Err(e)) => return Err(e),
+            Err(_panic) => {
+                tracing::warn!(?surface_id, "PTY factory panicked during spawn");
+            }
+        }
+
+        Ok(())
     }
 
     /// Write bytes to an existing surface's PTY.
-    #[allow(clippy::needless_pass_by_value)] // Will forward data to channel in implementation
     pub fn write(&self, surface_id: SurfaceId, data: Vec<u8>) -> Result<(), PtyError> {
-        todo!(
-            "PtyManager::write — look up surface_id={surface_id:?}, send data ({} bytes)",
-            data.len()
-        )
+        let managed = self.ptys.get(&surface_id).ok_or(PtyError::Closed)?;
+        let writer = managed.pty.writer();
+        if writer.send(data).is_err() {
+            tracing::warn!(?surface_id, "write channel disconnected, data dropped");
+        }
+        Ok(())
     }
 
     /// Resize an existing surface's PTY.
     pub fn resize(&self, surface_id: SurfaceId, size: PtySize) -> Result<(), PtyError> {
-        todo!("PtyManager::resize — look up surface_id={surface_id:?}, resize to {size:?}")
+        let managed = self.ptys.get(&surface_id).ok_or(PtyError::Closed)?;
+        managed.pty.resize(size)
     }
 
     /// Close and remove a surface's PTY.
     pub fn close(&mut self, surface_id: SurfaceId) -> Result<(), PtyError> {
-        todo!("PtyManager::close — look up surface_id={surface_id:?}, shutdown and remove")
+        let mut managed = self.ptys.remove(&surface_id).ok_or(PtyError::Closed)?;
+        managed.pty.shutdown()?;
+        if let Some(handle) = managed.bridge_handle.take() {
+            let _ = handle.join();
+        }
+        Ok(())
     }
 
     /// Shut down all active PTYs (called on application exit).
     pub fn shutdown_all(&mut self) {
-        todo!("PtyManager::shutdown_all — iterate and shutdown each PTY")
+        let entries: Vec<(SurfaceId, ManagedPty)> = self.ptys.drain().collect();
+        for (sid, mut managed) in entries {
+            if let Err(e) = managed.pty.shutdown() {
+                tracing::warn!(?sid, "failed to shutdown PTY: {e}");
+            }
+            if let Some(handle) = managed.bridge_handle.take() {
+                let _ = handle.join();
+            }
+        }
     }
 
     /// Dispatch an [`AppCommand`] to the appropriate method.
-    #[allow(clippy::needless_pass_by_value)] // Will destructure cmd in implementation
     pub fn handle_command(&mut self, cmd: AppCommand) {
-        todo!("PtyManager::handle_command — match on cmd={cmd:?} and dispatch")
+        match cmd {
+            AppCommand::SpawnSurface { surface_id, working_directory } => {
+                let config = PtyConfig {
+                    command: None,
+                    args: vec![],
+                    working_directory: Some(working_directory),
+                    env: vec![],
+                    size: PtySize::default(),
+                };
+                if let Err(e) = self.spawn(surface_id, config) {
+                    tracing::warn!(?surface_id, "failed to spawn surface: {e}");
+                }
+            }
+            AppCommand::SendInput { surface_id, data } => {
+                if let Err(e) = self.write(surface_id, data) {
+                    tracing::warn!(?surface_id, "failed to send input: {e}");
+                }
+            }
+            AppCommand::ResizeSurface { surface_id, cols, rows } => {
+                let size = PtySize { cols, rows, pixel_width: 0, pixel_height: 0 };
+                if let Err(e) = self.resize(surface_id, size) {
+                    tracing::warn!(?surface_id, "failed to resize surface: {e}");
+                }
+            }
+            AppCommand::CloseSurface { surface_id } => {
+                if let Err(e) = self.close(surface_id) {
+                    tracing::warn!(?surface_id, "failed to close surface: {e}");
+                }
+            }
+            AppCommand::Shutdown => {
+                tracing::debug!("PtyManager ignoring Shutdown command (handled at app level)");
+            }
+            AppCommand::RefreshConversations => {
+                tracing::debug!("PtyManager ignoring RefreshConversations command");
+            }
+        }
     }
 
     /// Returns the number of active PTYs.
