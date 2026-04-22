@@ -126,11 +126,7 @@ impl AppState {
     /// Close a workspace. Returns surface IDs to clean up.
     /// Activates adjacent workspace if closing the active one.
     pub fn close_workspace(&mut self, id: WorkspaceId) -> Result<Vec<SurfaceId>, StateError> {
-        let idx = self
-            .workspaces
-            .iter()
-            .position(|ws| ws.id == id)
-            .ok_or(StateError::WorkspaceNotFound(id))?;
+        let idx = self.workspace_index(id)?;
 
         let surface_ids = self.workspaces[idx].layout.surface_ids();
         self.workspaces.remove(idx);
@@ -169,6 +165,11 @@ impl AppState {
     /// Look up a workspace by ID, returning a mutable reference.
     fn workspace_mut(&mut self, id: WorkspaceId) -> Result<&mut Workspace, StateError> {
         self.workspaces.iter_mut().find(|ws| ws.id == id).ok_or(StateError::WorkspaceNotFound(id))
+    }
+
+    /// Find the index of a workspace by ID.
+    fn workspace_index(&self, id: WorkspaceId) -> Result<usize, StateError> {
+        self.workspaces.iter().position(|ws| ws.id == id).ok_or(StateError::WorkspaceNotFound(id))
     }
 
     /// Switch the active workspace.
@@ -271,11 +272,7 @@ impl AppState {
         id: WorkspaceId,
         new_index: usize,
     ) -> Result<(), StateError> {
-        let current_index = self
-            .workspaces
-            .iter()
-            .position(|ws| ws.id == id)
-            .ok_or(StateError::WorkspaceNotFound(id))?;
+        let current_index = self.workspace_index(id)?;
         let clamped = new_index.min(self.workspaces.len() - 1);
         if current_index != clamped {
             let ws = self.workspaces.remove(current_index);
@@ -286,16 +283,8 @@ impl AppState {
 
     /// Swap two workspaces by their IDs.
     pub fn swap_workspaces(&mut self, a: WorkspaceId, b: WorkspaceId) -> Result<(), StateError> {
-        let idx_a = self
-            .workspaces
-            .iter()
-            .position(|ws| ws.id == a)
-            .ok_or(StateError::WorkspaceNotFound(a))?;
-        let idx_b = self
-            .workspaces
-            .iter()
-            .position(|ws| ws.id == b)
-            .ok_or(StateError::WorkspaceNotFound(b))?;
+        let idx_a = self.workspace_index(a)?;
+        let idx_b = self.workspace_index(b)?;
         self.workspaces.swap(idx_a, idx_b);
         Ok(())
     }

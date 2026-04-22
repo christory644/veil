@@ -1,7 +1,7 @@
 //! Layout calculation -- translating the abstract `PaneNode` tree into
 //! concrete pixel rectangles for the renderer.
 
-use crate::workspace::{PaneId, PaneNode, SurfaceId};
+use crate::workspace::{PaneId, PaneNode, SplitDirection, SurfaceId};
 
 /// A rectangle in pixel coordinates (origin at top-left of the terminal area).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -14,6 +14,13 @@ pub struct Rect {
     pub width: f32,
     /// Height in pixels.
     pub height: f32,
+}
+
+impl Rect {
+    /// Compute the center point of this rectangle.
+    pub fn center(&self) -> (f32, f32) {
+        (self.x + self.width / 2.0, self.y + self.height / 2.0)
+    }
 }
 
 /// A pane's computed layout: its ID, surface, and pixel rectangle.
@@ -107,21 +114,18 @@ fn subdivide(node: &PaneNode, x0: f32, y0: f32, x1: f32, y1: f32, result: &mut V
                 rect: Rect { x: x0, y: y0, width: safe_span(x0, x1), height: safe_span(y0, y1) },
             });
         }
-        PaneNode::Split { direction, ratio, first, second } => {
-            use crate::workspace::SplitDirection;
-            match direction {
-                SplitDirection::Horizontal => {
-                    let split = x0 + (x1 - x0) * ratio;
-                    subdivide(first, x0, y0, split, y1, result);
-                    subdivide(second, split, y0, x1, y1, result);
-                }
-                SplitDirection::Vertical => {
-                    let split = y0 + (y1 - y0) * ratio;
-                    subdivide(first, x0, y0, x1, split, result);
-                    subdivide(second, x0, split, x1, y1, result);
-                }
+        PaneNode::Split { direction, ratio, first, second } => match direction {
+            SplitDirection::Horizontal => {
+                let split = x0 + (x1 - x0) * ratio;
+                subdivide(first, x0, y0, split, y1, result);
+                subdivide(second, split, y0, x1, y1, result);
             }
-        }
+            SplitDirection::Vertical => {
+                let split = y0 + (y1 - y0) * ratio;
+                subdivide(first, x0, y0, x1, split, result);
+                subdivide(second, x0, split, x1, y1, result);
+            }
+        },
     }
 }
 

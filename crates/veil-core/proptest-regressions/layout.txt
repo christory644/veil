@@ -1,8 +1,0 @@
-# Seeds for failure cases proptest has generated in the past. It is
-# automatically read and these particular cases re-run before any
-# novel cases are generated.
-#
-# It is recommended to check this file in to source control so that
-# everyone who runs the test benefits from these saved cases.
-cc 63a796498b7940d47dd4b3faabbc2540f02b3197b8f7fd89cdddd8a990c44734 # shrinks to (tree, leaf_count) = (Leaf { pane_id: PaneId(1), surface_id: SurfaceId(10001) }, 1), (w, h) = (1.0, 1.0)
-cc f1f24c257048054135633ca4e7fe6a9f51db0abfc14577255163325960d80993 # shrinks to (tree, _) = (Leaf { pane_id: PaneId(1), surface_id: SurfaceId(10001) }, 1), (w, h) = (1.0, 1.0)

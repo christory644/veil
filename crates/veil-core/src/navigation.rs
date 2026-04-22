@@ -17,6 +17,43 @@ pub enum Direction {
     Down,
 }
 
+/// A 2D point used for center-of-rect calculations.
+#[derive(Debug, Clone, Copy)]
+struct Point {
+    x: f32,
+    y: f32,
+}
+
+impl Point {
+    /// Squared Euclidean distance to another point.
+    fn distance_sq(self, other: Point) -> f32 {
+        let dx = other.x - self.x;
+        let dy = other.y - self.y;
+        dx * dx + dy * dy
+    }
+
+    /// Whether `other` lies strictly in the given direction from `self`.
+    fn is_toward(self, other: Point, direction: Direction) -> bool {
+        match direction {
+            Direction::Left => other.x < self.x,
+            Direction::Right => other.x > self.x,
+            Direction::Up => other.y < self.y,
+            Direction::Down => other.y > self.y,
+        }
+    }
+
+    /// Distance along the axis perpendicular to the navigation direction.
+    ///
+    /// For left/right navigation, this is the vertical offset (prefer closest y).
+    /// For up/down navigation, this is the horizontal offset (prefer closest x).
+    fn perpendicular_offset(self, other: Point, direction: Direction) -> f32 {
+        match direction {
+            Direction::Left | Direction::Right => (other.y - self.y).abs(),
+            Direction::Up | Direction::Down => (other.x - self.x).abs(),
+        }
+    }
+}
+
 /// Find the pane in the given direction from the currently focused pane.
 ///
 /// Returns `None` if there is no pane in that direction (focused pane is
@@ -29,50 +66,35 @@ pub fn find_pane_in_direction(
     focused: PaneId,
     direction: Direction,
 ) -> Option<PaneId> {
-    // 1. Find the focused pane's rect.
     let focused_layout = panes.iter().find(|p| p.pane_id == focused)?;
-    let fr = &focused_layout.rect;
-    let cx = fr.x + fr.width / 2.0;
-    let cy = fr.y + fr.height / 2.0;
+    let origin = rect_center(&focused_layout.rect);
 
-    // 2. Filter candidates whose center is strictly in the target direction,
-    //    then pick the nearest by Euclidean distance (tie-break on perpendicular axis).
     panes
         .iter()
         .filter(|p| p.pane_id != focused)
         .filter_map(|p| {
-            let r = &p.rect;
-            let px = r.x + r.width / 2.0;
-            let py = r.y + r.height / 2.0;
-
-            let in_direction = match direction {
-                Direction::Left => px < cx,
-                Direction::Right => px > cx,
-                Direction::Up => py < cy,
-                Direction::Down => py > cy,
-            };
-
-            if in_direction {
-                let dx = px - cx;
-                let dy = py - cy;
-                let dist_sq = dx * dx + dy * dy;
-                // Perpendicular distance for tie-breaking:
-                // left/right -> prefer closest y; up/down -> prefer closest x
-                let perp = match direction {
-                    Direction::Left | Direction::Right => (py - cy).abs(),
-                    Direction::Up | Direction::Down => (px - cx).abs(),
-                };
+            let center = rect_center(&p.rect);
+            if origin.is_toward(center, direction) {
+                let dist_sq = origin.distance_sq(center);
+                let perp = origin.perpendicular_offset(center, direction);
                 Some((p.pane_id, dist_sq, perp))
             } else {
                 None
             }
         })
-        .min_by(|a, b| {
-            a.1.partial_cmp(&b.1)
+        .min_by(|(_, dist_a, perp_a), (_, dist_b, perp_b)| {
+            dist_a
+                .partial_cmp(dist_b)
                 .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+                .then_with(|| perp_a.partial_cmp(perp_b).unwrap_or(std::cmp::Ordering::Equal))
         })
         .map(|(id, _, _)| id)
+}
+
+/// Compute the center point of a `Rect`.
+fn rect_center(rect: &crate::layout::Rect) -> Point {
+    let (x, y) = rect.center();
+    Point { x, y }
 }
 
 #[cfg(test)]
