@@ -22,6 +22,11 @@ pub fn apply_sidebar_response(
         app_state.set_sidebar_tab(tab);
     }
 
+    if let Some(ref session_id) = response.selected_conversation {
+        tracing::info!(session_id = %session_id, "conversation selected");
+        // TODO(VEI-47): navigate to workspace for active, show details for historical
+    }
+
     if let Some(ws_id) = response.switch_to_workspace {
         app_state
             .set_active_workspace(ws_id)
@@ -67,7 +72,8 @@ mod tests {
         assert_eq!(state.active_workspace_id, Some(ws1));
 
         let mut focus = FocusManager::new();
-        let response = SidebarResponse { switch_to_workspace: Some(ws2), switch_tab: None };
+        let response =
+            SidebarResponse { switch_to_workspace: Some(ws2), ..SidebarResponse::default() };
 
         apply_sidebar_response(&response, &mut state, &mut focus).expect("should succeed");
         assert_eq!(state.active_workspace_id, Some(ws2), "active workspace should change to ws2");
@@ -82,7 +88,8 @@ mod tests {
         let ws1_surface = state.workspaces[0].layout.surface_ids()[0];
         focus.focus_surface(ws1_surface);
 
-        let response = SidebarResponse { switch_to_workspace: Some(ws2), switch_tab: None };
+        let response =
+            SidebarResponse { switch_to_workspace: Some(ws2), ..SidebarResponse::default() };
 
         apply_sidebar_response(&response, &mut state, &mut focus).expect("should succeed");
 
@@ -101,7 +108,8 @@ mod tests {
         let mut focus = FocusManager::new();
 
         let stale_id = WorkspaceId::new(999);
-        let response = SidebarResponse { switch_to_workspace: Some(stale_id), switch_tab: None };
+        let response =
+            SidebarResponse { switch_to_workspace: Some(stale_id), ..SidebarResponse::default() };
 
         let result = apply_sidebar_response(&response, &mut state, &mut focus);
         assert!(result.is_err(), "switching to nonexistent workspace should return an error");
@@ -113,7 +121,8 @@ mod tests {
         let mut focus = FocusManager::new();
 
         let stale_id = WorkspaceId::new(999);
-        let response = SidebarResponse { switch_to_workspace: Some(stale_id), switch_tab: None };
+        let response =
+            SidebarResponse { switch_to_workspace: Some(stale_id), ..SidebarResponse::default() };
 
         let _ = apply_sidebar_response(&response, &mut state, &mut focus);
         assert_eq!(
@@ -134,8 +143,8 @@ mod tests {
         assert_eq!(state.sidebar.active_tab, SidebarTab::Workspaces);
 
         let response = SidebarResponse {
-            switch_to_workspace: None,
             switch_tab: Some(SidebarTab::Conversations),
+            ..SidebarResponse::default()
         };
 
         apply_sidebar_response(&response, &mut state, &mut focus).expect("should succeed");
@@ -152,8 +161,10 @@ mod tests {
         state.set_sidebar_tab(SidebarTab::Conversations);
         let mut focus = FocusManager::new();
 
-        let response =
-            SidebarResponse { switch_to_workspace: None, switch_tab: Some(SidebarTab::Workspaces) };
+        let response = SidebarResponse {
+            switch_tab: Some(SidebarTab::Workspaces),
+            ..SidebarResponse::default()
+        };
 
         apply_sidebar_response(&response, &mut state, &mut focus).expect("should succeed");
         assert_eq!(
@@ -171,8 +182,8 @@ mod tests {
         let mut focus = FocusManager::new();
 
         let response = SidebarResponse {
-            switch_to_workspace: None,
             switch_tab: Some(SidebarTab::Conversations),
+            ..SidebarResponse::default()
         };
 
         apply_sidebar_response(&response, &mut state, &mut focus).expect("should succeed");
@@ -236,6 +247,7 @@ mod tests {
         let response = SidebarResponse {
             switch_to_workspace: Some(ws2),
             switch_tab: Some(SidebarTab::Conversations),
+            ..SidebarResponse::default()
         };
 
         apply_sidebar_response(&response, &mut state, &mut focus).expect("should succeed");
@@ -256,7 +268,7 @@ mod tests {
 
         let response = SidebarResponse {
             switch_to_workspace: Some(ws1), // already active
-            switch_tab: None,
+            ..SidebarResponse::default()
         };
 
         apply_sidebar_response(&response, &mut state, &mut focus).expect("should succeed");
