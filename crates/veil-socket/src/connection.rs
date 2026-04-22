@@ -7,7 +7,10 @@
 
 use std::sync::Arc;
 
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
 use crate::dispatcher::Dispatcher;
+use crate::rpc::{ErrorResponse, Request, Response, RpcOutcome, INVALID_REQUEST};
 
 /// Handle a single client connection to completion.
 ///
@@ -20,14 +23,87 @@ use crate::dispatcher::Dispatcher;
 /// - Valid JSON that is not a valid `Request` → write an `invalid_request` response.
 /// - Valid request → dispatch, write response (or nothing for notifications).
 /// - All responses are compact JSON followed by `\n`.
-#[allow(unused_variables)]
 pub async fn handle_connection(
     reader: tokio::io::BufReader<tokio::net::unix::OwnedReadHalf>,
-    writer: tokio::io::BufWriter<tokio::net::unix::OwnedWriteHalf>,
+    mut writer: tokio::io::BufWriter<tokio::net::unix::OwnedWriteHalf>,
     dispatcher: Arc<Dispatcher>,
-    shutdown: veil_core::lifecycle::ShutdownHandle,
+    mut shutdown: veil_core::lifecycle::ShutdownHandle,
 ) {
-    todo!("implement handle_connection")
+    let mut lines = reader.lines();
+
+    loop {
+        let line = tokio::select! {
+            () = shutdown.wait() => break,
+            result = lines.next_line() => result,
+        };
+
+        let raw = match line {
+            Ok(Some(l)) => l,
+            Ok(None) => break, // EOF — client disconnected cleanly
+            Err(e) => {
+                tracing::error!("connection I/O error: {e}");
+                break;
+            }
+        };
+
+        // Step 1: parse line as serde_json::Value
+        let json_value: serde_json::Value = if let Ok(v) = serde_json::from_str(&raw) {
+            v
+        } else {
+            let err = ErrorResponse::parse_error();
+            write_json(&mut writer, &err).await;
+            continue;
+        };
+
+        // Step 2: try to deserialize as a Request
+        let request: Request = if let Ok(r) = serde_json::from_value(json_value.clone()) {
+            r
+        } else {
+            let id = json_value.get("id").cloned().unwrap_or(serde_json::Value::Null);
+            let err = ErrorResponse::new(id, INVALID_REQUEST, "Invalid Request");
+            write_json(&mut writer, &err).await;
+            continue;
+        };
+
+        // Capture the request id before consuming the request in dispatch.
+        let id = request.id.clone().unwrap_or(serde_json::Value::Null);
+
+        // Step 3: dispatch and write response
+        match dispatcher.dispatch(request).await {
+            Some(RpcOutcome::Ok(result)) => {
+                let resp = Response::ok(id, result);
+                write_json(&mut writer, &resp).await;
+            }
+            Some(RpcOutcome::Err(err)) => {
+                write_json(&mut writer, &err).await;
+            }
+            None => {
+                // Notification — no response written
+            }
+        }
+    }
+}
+
+/// Serialize `value` as compact JSON, append `\n`, write to `writer`, and flush.
+async fn write_json<T: serde::Serialize>(
+    writer: &mut tokio::io::BufWriter<tokio::net::unix::OwnedWriteHalf>,
+    value: &T,
+) {
+    match serde_json::to_string(value) {
+        Ok(json) => {
+            let line = format!("{json}\n");
+            if let Err(e) = writer.write_all(line.as_bytes()).await {
+                tracing::error!("failed to write response: {e}");
+                return;
+            }
+            if let Err(e) = writer.flush().await {
+                tracing::error!("failed to flush writer: {e}");
+            }
+        }
+        Err(e) => {
+            tracing::error!("failed to serialize response: {e}");
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -35,6 +111,7 @@ pub async fn handle_connection(
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::items_after_statements)]
 mod tests {
     use super::*;
     use crate::dispatcher::Dispatcher;

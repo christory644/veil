@@ -6,9 +6,12 @@
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio::task::JoinSet;
 use veil_core::state::AppState;
 
-use crate::transport::{SocketError, SocketPath};
+use crate::connection::handle_connection;
+use crate::dispatcher::Dispatcher;
+use crate::transport::{SocketError, SocketListener, SocketPath};
 
 /// Configuration for the socket server.
 #[derive(Debug, Clone)]
@@ -20,13 +23,12 @@ pub struct ServerConfig {
 impl ServerConfig {
     /// Create a config using the platform default socket path.
     pub fn default_for_platform() -> Self {
-        todo!("implement ServerConfig::default_for_platform")
+        Self { socket_path: SocketPath::default_for_platform() }
     }
 
     /// Create a config with a specific path (used in tests).
-    #[allow(unused_variables)]
     pub fn with_path(path: impl Into<std::path::PathBuf>) -> Self {
-        todo!("implement ServerConfig::with_path")
+        Self { socket_path: SocketPath::Unix(path.into()) }
     }
 }
 
@@ -41,9 +43,8 @@ pub struct SocketServer {
 
 impl SocketServer {
     /// Create a new server over the given shared state.
-    #[allow(unused_variables)]
     pub fn new(config: ServerConfig, state: Arc<Mutex<AppState>>) -> Self {
-        todo!("implement SocketServer::new")
+        Self { config, state }
     }
 
     /// Run the server until shutdown is signaled.
@@ -51,18 +52,45 @@ impl SocketServer {
     /// Binds the socket, then loops accepting connections. Each connection is
     /// handed to `handle_connection` in a spawned task. Returns when `shutdown`
     /// is triggered and all connection tasks complete.
-    #[allow(unused_variables)]
     pub async fn run(
         self,
-        shutdown: veil_core::lifecycle::ShutdownHandle,
+        mut shutdown: veil_core::lifecycle::ShutdownHandle,
     ) -> Result<(), SocketError> {
-        todo!("implement SocketServer::run")
+        let listener = SocketListener::bind(self.config.socket_path).await?;
+        let dispatcher = Arc::new(Dispatcher::new(self.state));
+        let mut tasks: JoinSet<()> = JoinSet::new();
+
+        loop {
+            tokio::select! {
+                () = shutdown.wait() => break,
+                accept_result = listener.accept() => {
+                    match accept_result {
+                        Ok((reader, writer)) => {
+                            let dispatcher = Arc::clone(&dispatcher);
+                            let conn_shutdown = shutdown.clone();
+                            tasks.spawn(async move {
+                                handle_connection(reader, writer, dispatcher, conn_shutdown).await;
+                            });
+                        }
+                        Err(e) => {
+                            tracing::error!("accept error: {e}");
+                        }
+                    }
+                }
+            }
+        }
+
+        // Abort all remaining connection tasks — they observe shutdown via their
+        // own ShutdownHandle clones, so this is belt-and-suspenders cleanup.
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+
+        Ok(())
     }
 
     /// Returns the socket path this server is (or will be) bound to.
-    #[allow(clippy::unused_self)]
     pub fn socket_path(&self) -> &SocketPath {
-        todo!("implement SocketServer::socket_path")
+        &self.config.socket_path
     }
 }
 

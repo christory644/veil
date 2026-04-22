@@ -24,13 +24,18 @@ impl SocketPath {
     /// The resolved path is also what the `VEIL_SOCKET` environment variable
     /// should be set to so that clients can discover the server.
     pub fn default_for_platform() -> Self {
-        todo!("implement SocketPath::default_for_platform")
+        if let Ok(xdg_dir) = std::env::var("XDG_RUNTIME_DIR") {
+            SocketPath::Unix(PathBuf::from(xdg_dir).join("veil.sock"))
+        } else {
+            SocketPath::Unix(PathBuf::from("/tmp/veil.sock"))
+        }
     }
 
     /// Return the filesystem path for Unix sockets.
-    #[allow(clippy::unused_self)]
     pub fn as_path(&self) -> Option<&Path> {
-        todo!("implement SocketPath::as_path")
+        match self {
+            SocketPath::Unix(path) => Some(path.as_path()),
+        }
     }
 }
 
@@ -44,15 +49,30 @@ impl SocketListener {
     /// Bind a new listener at the given path.
     ///
     /// Removes any pre-existing socket file before binding (stale socket cleanup).
-    #[allow(unused_variables)]
+    // The `async` is intentional: the public API is designed for async callers and
+    // future platforms (e.g. Windows named pipes) may require `.await` here.
+    #[allow(clippy::unused_async)]
     pub async fn bind(path: SocketPath) -> Result<Self, SocketError> {
-        todo!("implement SocketListener::bind")
+        use std::os::unix::fs::PermissionsExt;
+
+        if let Some(fs_path) = path.as_path() {
+            match std::fs::remove_file(fs_path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(SocketError::Io(e)),
+            }
+        }
+
+        let fs_path = path.as_path().ok_or(SocketError::UnsupportedPlatform)?;
+        let listener = tokio::net::UnixListener::bind(fs_path)?;
+        std::fs::set_permissions(fs_path, std::fs::Permissions::from_mode(0o600))?;
+
+        Ok(SocketListener { inner: listener, path })
     }
 
     /// Accept the next incoming connection.
     ///
     /// Returns a `(reader, writer)` pair for the connection.
-    #[allow(clippy::unused_self)]
     pub async fn accept(
         &self,
     ) -> Result<
@@ -62,13 +82,14 @@ impl SocketListener {
         ),
         SocketError,
     > {
-        todo!("implement SocketListener::accept")
+        let (stream, _addr) = self.inner.accept().await?;
+        let (read_half, write_half) = stream.into_split();
+        Ok((tokio::io::BufReader::new(read_half), tokio::io::BufWriter::new(write_half)))
     }
 
     /// The path this listener is bound to.
-    #[allow(clippy::unused_self)]
     pub fn path(&self) -> &SocketPath {
-        todo!("implement SocketListener::path")
+        &self.path
     }
 }
 

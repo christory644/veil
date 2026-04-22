@@ -16,6 +16,11 @@ impl WorkspaceId {
     pub fn new(id: u64) -> Self {
         Self(id)
     }
+
+    /// Return the inner `u64` value.
+    pub fn as_u64(self) -> u64 {
+        self.0
+    }
 }
 
 /// Unique identifier for a pane within a workspace.

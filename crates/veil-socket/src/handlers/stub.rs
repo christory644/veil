@@ -1,17 +1,21 @@
-//! Stub handlers that return NOT_IMPLEMENTED for unimplemented method groups.
+//! Stub handlers that return `NOT_IMPLEMENTED` for unimplemented method groups.
 #![allow(dead_code)]
 
 use crate::rpc::RpcOutcome;
 
-/// Return a NOT_IMPLEMENTED error for methods not yet implemented.
+/// Return a `NOT_IMPLEMENTED` error for methods not yet implemented.
 ///
 /// The response has:
 /// - `code`: `-32001` (`NOT_IMPLEMENTED`)
 /// - `message`: `"Method not yet implemented: <method>"`
 /// - `data`: `None`
-#[allow(unused_variables)]
 pub(crate) fn not_implemented(id: serde_json::Value, method: &str) -> RpcOutcome {
-    todo!("implement stub::not_implemented")
+    use crate::rpc::{ErrorResponse, NOT_IMPLEMENTED};
+    RpcOutcome::Err(ErrorResponse::new(
+        id,
+        NOT_IMPLEMENTED,
+        format!("Method not yet implemented: {method}"),
+    ))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

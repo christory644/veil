@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use veil_core::state::AppState;
 
-use crate::rpc::{Request, RpcOutcome};
+use crate::rpc::{ErrorResponse, Request, RpcOutcome};
 
 /// The central request dispatcher.
 ///
@@ -16,17 +16,49 @@ pub struct Dispatcher {
 
 impl Dispatcher {
     /// Create a new dispatcher over the given shared state.
-    #[allow(unused_variables)]
     pub fn new(state: Arc<Mutex<AppState>>) -> Self {
-        todo!("implement Dispatcher::new")
+        Self { state }
     }
 
     /// Dispatch a parsed request and return the outcome.
     ///
     /// Returns `None` for notifications (requests with no `id`).
-    #[allow(unused_variables, clippy::unused_self)]
     pub async fn dispatch(&self, request: Request) -> Option<RpcOutcome> {
-        todo!("implement Dispatcher::dispatch")
+        let (id, is_notification) = match request.id.clone() {
+            Some(id) => (id, false),
+            None => (serde_json::Value::Null, true),
+        };
+
+        let outcome = match request.method.as_str() {
+            "workspace.create" => {
+                crate::handlers::workspace::create(&self.state, request.params, id).await
+            }
+            "workspace.list" => crate::handlers::workspace::list(&self.state, id).await,
+            "workspace.select" => {
+                crate::handlers::workspace::select(&self.state, request.params, id).await
+            }
+            "workspace.close" => {
+                crate::handlers::workspace::close(&self.state, request.params, id).await
+            }
+            "workspace.rename" => {
+                crate::handlers::workspace::rename(&self.state, request.params, id).await
+            }
+            method
+                if method.starts_with("surface.")
+                    || method.starts_with("notification.")
+                    || method.starts_with("sidebar.")
+                    || method.starts_with("session.") =>
+            {
+                crate::handlers::stub::not_implemented(id, method)
+            }
+            method => RpcOutcome::Err(ErrorResponse::method_not_found(id, method)),
+        };
+
+        if is_notification {
+            None
+        } else {
+            Some(outcome)
+        }
     }
 }
 

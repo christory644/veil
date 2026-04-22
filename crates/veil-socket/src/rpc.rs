@@ -72,9 +72,8 @@ pub const NOT_IMPLEMENTED: i64 = -32001;
 
 impl Response {
     /// Construct a success response.
-    #[allow(unused_variables)]
     pub fn ok(id: serde_json::Value, result: serde_json::Value) -> Self {
-        todo!("implement Response::ok")
+        Self { jsonrpc: "2.0".to_string(), result, id }
     }
 }
 
@@ -82,39 +81,38 @@ impl Response {
 
 impl ErrorResponse {
     /// Construct an error response with an explicit code and message.
-    #[allow(unused_variables)]
     pub fn new(id: serde_json::Value, code: i64, message: impl Into<String>) -> Self {
-        todo!("implement ErrorResponse::new")
+        Self {
+            jsonrpc: "2.0".to_string(),
+            error: RpcError { code, message: message.into(), data: None },
+            id,
+        }
     }
 
     /// `-32700 Parse error` — used when a line cannot be parsed as JSON.
     /// The id is `null` because we cannot identify the request.
     pub fn parse_error() -> Self {
-        todo!("implement ErrorResponse::parse_error")
+        Self::new(serde_json::Value::Null, PARSE_ERROR, "Parse error")
     }
 
     /// `-32601 Method not found`.
-    #[allow(unused_variables)]
     pub fn method_not_found(id: serde_json::Value, method: &str) -> Self {
-        todo!("implement ErrorResponse::method_not_found")
+        Self::new(id, METHOD_NOT_FOUND, format!("Method not found: {method}"))
     }
 
     /// `-32602 Invalid params`.
-    #[allow(unused_variables)]
     pub fn invalid_params(id: serde_json::Value, detail: impl Into<String>) -> Self {
-        todo!("implement ErrorResponse::invalid_params")
+        Self::new(id, INVALID_PARAMS, format!("Invalid params: {}", detail.into()))
     }
 
     /// `-32603 Internal error`.
-    #[allow(unused_variables)]
     pub fn internal_error(id: serde_json::Value, detail: impl Into<String>) -> Self {
-        todo!("implement ErrorResponse::internal_error")
+        Self::new(id, INTERNAL_ERROR, format!("Internal error: {}", detail.into()))
     }
 
     /// `-32000 Workspace not found` (application-defined).
-    #[allow(unused_variables)]
     pub fn workspace_not_found(id: serde_json::Value, ws_id: u64) -> Self {
-        todo!("implement ErrorResponse::workspace_not_found")
+        Self::new(id, WORKSPACE_NOT_FOUND, format!("Workspace not found: {ws_id}"))
     }
 }
 

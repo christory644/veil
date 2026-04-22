@@ -5,21 +5,29 @@
 //! ID. It locks state, calls the appropriate `AppState` method, and returns an
 //! `RpcOutcome`.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use veil_core::state::AppState;
+use veil_core::state::{AppState, StateError};
 use veil_core::workspace::WorkspaceId;
 
-use crate::rpc::RpcOutcome;
+use crate::rpc::{ErrorResponse, RpcOutcome};
 
-// ── Temporary helper until veil-core adds WorkspaceId::as_u64() ───────────────
+// ── Helper ─────────────────────────────────────────────────────────────────────
 
 /// Extract the inner u64 from a `WorkspaceId`.
-///
-/// This will be removed once `veil-core` adds `WorkspaceId::as_u64()`.
-#[allow(unused_variables)]
 pub(crate) fn workspace_id_as_u64(id: WorkspaceId) -> u64 {
-    todo!("implement workspace_id_as_u64 — replaced by WorkspaceId::as_u64() in veil-core")
+    id.as_u64()
+}
+
+/// Map a `StateError` to an `RpcOutcome::Err`.
+fn map_state_error(id: serde_json::Value, ws_id: u64, err: StateError) -> RpcOutcome {
+    match err {
+        StateError::WorkspaceNotFound(_) => {
+            RpcOutcome::Err(ErrorResponse::workspace_not_found(id, ws_id))
+        }
+        other => RpcOutcome::Err(ErrorResponse::internal_error(id, other.to_string())),
+    }
 }
 
 // ── Handler: workspace.create ─────────────────────────────────────────────────
@@ -28,13 +36,30 @@ pub(crate) fn workspace_id_as_u64(id: WorkspaceId) -> u64 {
 ///
 /// Params: `{ "name": string, "working_directory": string }`
 /// Result: `{ "id": u64, "name": string, "working_directory": string }`
-#[allow(unused_variables)]
 pub(crate) async fn create(
     state: &Arc<Mutex<AppState>>,
     params: serde_json::Value,
     id: serde_json::Value,
 ) -> RpcOutcome {
-    todo!("implement workspace::create")
+    let Some(name) = params.get("name").and_then(serde_json::Value::as_str) else {
+        return RpcOutcome::Err(ErrorResponse::invalid_params(id, "missing field: name"));
+    };
+    let Some(wd) = params.get("working_directory").and_then(serde_json::Value::as_str) else {
+        return RpcOutcome::Err(ErrorResponse::invalid_params(
+            id,
+            "missing field: working_directory",
+        ));
+    };
+    let (name, wd) = (name.to_string(), wd.to_string());
+
+    let mut guard = state.lock().await;
+    let ws_id = guard.create_workspace(name.clone(), PathBuf::from(&wd));
+
+    RpcOutcome::Ok(serde_json::json!({
+        "id": ws_id.as_u64(),
+        "name": name,
+        "working_directory": wd,
+    }))
 }
 
 // ── Handler: workspace.list ───────────────────────────────────────────────────
@@ -44,9 +69,25 @@ pub(crate) async fn create(
 /// Params: `{}` (ignored)
 /// Result: `[{ "id": u64, "name": string, "working_directory": string,
 ///              "active": bool, "branch": string|null }]`
-#[allow(unused_variables)]
-pub(crate) async fn list(state: &Arc<Mutex<AppState>>, id: serde_json::Value) -> RpcOutcome {
-    todo!("implement workspace::list")
+pub(crate) async fn list(state: &Arc<Mutex<AppState>>, _id: serde_json::Value) -> RpcOutcome {
+    let guard = state.lock().await;
+    let active_id = guard.active_workspace_id;
+
+    let entries: Vec<serde_json::Value> = guard
+        .workspaces
+        .iter()
+        .map(|ws| {
+            serde_json::json!({
+                "id": ws.id.as_u64(),
+                "name": ws.name,
+                "working_directory": ws.working_directory.to_string_lossy(),
+                "active": active_id == Some(ws.id),
+                "branch": ws.branch,
+            })
+        })
+        .collect();
+
+    RpcOutcome::Ok(serde_json::Value::Array(entries))
 }
 
 // ── Handler: workspace.select ─────────────────────────────────────────────────
@@ -55,13 +96,20 @@ pub(crate) async fn list(state: &Arc<Mutex<AppState>>, id: serde_json::Value) ->
 ///
 /// Params: `{ "id": u64 }`
 /// Result: `{ "id": u64 }`
-#[allow(unused_variables)]
 pub(crate) async fn select(
     state: &Arc<Mutex<AppState>>,
     params: serde_json::Value,
     id: serde_json::Value,
 ) -> RpcOutcome {
-    todo!("implement workspace::select")
+    let Some(ws_id_raw) = params.get("id").and_then(serde_json::Value::as_u64) else {
+        return RpcOutcome::Err(ErrorResponse::invalid_params(id, "missing field: id"));
+    };
+
+    let mut guard = state.lock().await;
+    match guard.set_active_workspace(WorkspaceId::new(ws_id_raw)) {
+        Ok(()) => RpcOutcome::Ok(serde_json::json!({ "id": ws_id_raw })),
+        Err(err) => map_state_error(id, ws_id_raw, err),
+    }
 }
 
 // ── Handler: workspace.close ──────────────────────────────────────────────────
@@ -70,13 +118,20 @@ pub(crate) async fn select(
 ///
 /// Params: `{ "id": u64 }`
 /// Result: `{ "id": u64 }`
-#[allow(unused_variables)]
 pub(crate) async fn close(
     state: &Arc<Mutex<AppState>>,
     params: serde_json::Value,
     id: serde_json::Value,
 ) -> RpcOutcome {
-    todo!("implement workspace::close")
+    let Some(ws_id_raw) = params.get("id").and_then(serde_json::Value::as_u64) else {
+        return RpcOutcome::Err(ErrorResponse::invalid_params(id, "missing field: id"));
+    };
+
+    let mut guard = state.lock().await;
+    match guard.close_workspace(WorkspaceId::new(ws_id_raw)) {
+        Ok(_) => RpcOutcome::Ok(serde_json::json!({ "id": ws_id_raw })),
+        Err(err) => map_state_error(id, ws_id_raw, err),
+    }
 }
 
 // ── Handler: workspace.rename ─────────────────────────────────────────────────
@@ -85,13 +140,24 @@ pub(crate) async fn close(
 ///
 /// Params: `{ "id": u64, "name": string }`
 /// Result: `{ "id": u64, "name": string }`
-#[allow(unused_variables)]
 pub(crate) async fn rename(
     state: &Arc<Mutex<AppState>>,
     params: serde_json::Value,
     id: serde_json::Value,
 ) -> RpcOutcome {
-    todo!("implement workspace::rename")
+    let Some(ws_id_raw) = params.get("id").and_then(serde_json::Value::as_u64) else {
+        return RpcOutcome::Err(ErrorResponse::invalid_params(id, "missing field: id"));
+    };
+    let Some(new_name) = params.get("name").and_then(serde_json::Value::as_str) else {
+        return RpcOutcome::Err(ErrorResponse::invalid_params(id, "missing field: name"));
+    };
+    let new_name = new_name.to_string();
+
+    let mut guard = state.lock().await;
+    match guard.rename_workspace(WorkspaceId::new(ws_id_raw), new_name.clone()) {
+        Ok(()) => RpcOutcome::Ok(serde_json::json!({ "id": ws_id_raw, "name": new_name })),
+        Err(err) => map_state_error(id, ws_id_raw, err),
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
