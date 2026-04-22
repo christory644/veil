@@ -245,17 +245,26 @@ impl SessionStore {
     }
 
     /// Sanitize a user-provided query string for safe use in FTS5 MATCH.
-    /// Strips FTS5 operators and special characters, keeping only alphanumeric
-    /// words which are then joined with spaces (implicit AND).
+    /// Strips FTS5 operators and special characters, keeping alphanumeric
+    /// characters plus interior hyphens and underscores (which are valid in
+    /// tokens like "pre-commit" or "`foo_bar`"). Leading/trailing hyphens are
+    /// trimmed to prevent FTS5 operator injection (e.g. `--` as NOT).
+    /// Tokens are joined with spaces (implicit AND).
     fn sanitize_fts_query(query: &str) -> String {
         query
             .split_whitespace()
             .filter_map(|word| {
-                let cleaned: String = word.chars().filter(|c| c.is_alphanumeric()).collect();
-                if cleaned.is_empty() {
+                let cleaned: String = word
+                    .chars()
+                    .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+                    .collect();
+                // Trim leading/trailing hyphens to avoid FTS5 operator injection
+                // (e.g. "--" is the NOT operator in FTS5).
+                let trimmed = cleaned.trim_matches('-');
+                if trimmed.is_empty() {
                     None
                 } else {
-                    Some(cleaned)
+                    Some(trimmed.to_string())
                 }
             })
             .collect::<Vec<_>>()
@@ -355,11 +364,13 @@ impl SessionStore {
 
     /// Update the FTS index for a session (title + first message text).
     ///
-    /// Inserts a new FTS entry for the given session. For contentless FTS5
-    /// tables, updates require knowing the previous content to issue a
-    /// proper delete. This implementation inserts directly; callers should
-    /// ensure `update_fts` is called once per session or use `clear_all`
-    /// to rebuild the index.
+    /// Attempts to remove any prior FTS entry for this session before inserting,
+    /// making it safe to call multiple times with the same values (idempotent).
+    ///
+    /// NOTE: Contentless FTS5 delete requires the *exact* original indexed
+    /// values. The best-effort delete succeeds when called again with the same
+    /// data (the common case) but cannot remove a prior entry if the content
+    /// changed between calls. For full re-indexing, use [`clear_all`](Self::clear_all).
     pub fn update_fts(
         &self,
         id: &SessionId,
@@ -368,6 +379,13 @@ impl SessionStore {
     ) -> Result<(), StoreError> {
         let rowid = self.get_rowid(id)?;
         let msg = first_message.unwrap_or("");
+
+        // Best-effort delete of a prior FTS entry with these exact values.
+        // Silently ignored if no matching entry exists.
+        let _ = self.conn.execute(
+            "INSERT INTO sessions_fts(sessions_fts, rowid, title, first_message) VALUES('delete', ?1, ?2, ?3)",
+            rusqlite::params![rowid, title, msg],
+        );
 
         self.conn.execute(
             "INSERT INTO sessions_fts(rowid, title, first_message) VALUES (?1, ?2, ?3)",

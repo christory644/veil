@@ -49,11 +49,23 @@ impl AdapterRegistry {
     }
 
     /// Get preview from the appropriate adapter for a given session.
+    ///
+    /// Adapter errors are logged and treated as "not found" (returns `None`),
+    /// consistent with how [`discover_all`](Self::discover_all) handles failures.
     pub fn session_preview(&self, agent: &AgentKind, id: &SessionId) -> Option<SessionPreview> {
-        self.adapters
-            .iter()
-            .find(|a| a.agent_kind() == *agent)
-            .and_then(|a| a.session_preview(id).ok().flatten())
+        self.adapters.iter().find(|a| a.agent_kind() == *agent).and_then(|a| {
+            match a.session_preview(id) {
+                Ok(preview) => preview,
+                Err(err) => {
+                    warn!(
+                        adapter = a.name(),
+                        %err,
+                        "failed to load session preview"
+                    );
+                    None
+                }
+            }
+        })
     }
 
     /// Collect all watch paths from all adapters.
