@@ -4,6 +4,7 @@
 //! the binary crate translates winit key events into the domain `KeyInput` type.
 
 /// Modifier keys held during a key press.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Modifiers {
     /// Control key.
@@ -89,32 +90,140 @@ impl KeybindingRegistry {
 
     /// Create a registry populated with default keybindings.
     pub fn with_defaults() -> Self {
-        todo!()
+        let mut registry = Self::new();
+
+        // Logo+1 through Logo+9 -> SwitchWorkspace(1..9)
+        for i in 1..=9u8 {
+            registry.bind(
+                KeyInput {
+                    key: Key::Character(char::from(b'0' + i)),
+                    modifiers: Modifiers { logo: true, ..Default::default() },
+                },
+                KeyAction::SwitchWorkspace(i),
+            );
+        }
+
+        // Logo+N -> CreateWorkspace
+        registry.bind(
+            KeyInput {
+                key: Key::Character('n'),
+                modifiers: Modifiers { logo: true, ..Default::default() },
+            },
+            KeyAction::CreateWorkspace,
+        );
+
+        // Logo+D -> SplitHorizontal
+        registry.bind(
+            KeyInput {
+                key: Key::Character('d'),
+                modifiers: Modifiers { logo: true, ..Default::default() },
+            },
+            KeyAction::SplitHorizontal,
+        );
+
+        // Logo+Shift+D -> SplitVertical
+        registry.bind(
+            KeyInput {
+                key: Key::Character('d'),
+                modifiers: Modifiers { logo: true, shift: true, ..Default::default() },
+            },
+            KeyAction::SplitVertical,
+        );
+
+        // Logo+W -> ClosePane
+        registry.bind(
+            KeyInput {
+                key: Key::Character('w'),
+                modifiers: Modifiers { logo: true, ..Default::default() },
+            },
+            KeyAction::ClosePane,
+        );
+
+        // Logo+[ -> FocusPreviousPane
+        registry.bind(
+            KeyInput {
+                key: Key::Named("[".to_string()),
+                modifiers: Modifiers { logo: true, ..Default::default() },
+            },
+            KeyAction::FocusPreviousPane,
+        );
+
+        // Logo+] -> FocusNextPane
+        registry.bind(
+            KeyInput {
+                key: Key::Named("]".to_string()),
+                modifiers: Modifiers { logo: true, ..Default::default() },
+            },
+            KeyAction::FocusNextPane,
+        );
+
+        // Logo+Shift+Enter -> ZoomPane
+        registry.bind(
+            KeyInput {
+                key: Key::Named("Enter".to_string()),
+                modifiers: Modifiers { logo: true, shift: true, ..Default::default() },
+            },
+            KeyAction::ZoomPane,
+        );
+
+        // Logo+B -> ToggleSidebar
+        registry.bind(
+            KeyInput {
+                key: Key::Character('b'),
+                modifiers: Modifiers { logo: true, ..Default::default() },
+            },
+            KeyAction::ToggleSidebar,
+        );
+
+        // Ctrl+Shift+W -> SwitchToWorkspacesTab
+        registry.bind(
+            KeyInput {
+                key: Key::Character('w'),
+                modifiers: Modifiers { ctrl: true, shift: true, ..Default::default() },
+            },
+            KeyAction::SwitchToWorkspacesTab,
+        );
+
+        // Ctrl+Shift+C -> SwitchToConversationsTab
+        registry.bind(
+            KeyInput {
+                key: Key::Character('c'),
+                modifiers: Modifiers { ctrl: true, shift: true, ..Default::default() },
+            },
+            KeyAction::SwitchToConversationsTab,
+        );
+
+        registry
     }
 
     /// Add or replace a binding.
-    pub fn bind(&mut self, _input: KeyInput, _action: KeyAction) {
-        todo!()
+    pub fn bind(&mut self, input: KeyInput, action: KeyAction) {
+        if let Some(existing) = self.bindings.iter_mut().find(|b| b.input == input) {
+            existing.action = action;
+        } else {
+            self.bindings.push(KeyBinding { input, action });
+        }
     }
 
     /// Remove a binding. Returns the old action if it existed.
-    pub fn unbind(&mut self, _input: &KeyInput) -> Option<KeyAction> {
-        todo!()
+    pub fn unbind(&mut self, input: &KeyInput) -> Option<KeyAction> {
+        let pos = self.bindings.iter().position(|b| b.input == *input)?;
+        Some(self.bindings.remove(pos).action)
     }
 
     /// Find the action for a key input.
-    pub fn lookup(&self, _input: &KeyInput) -> Option<&KeyAction> {
-        todo!()
+    pub fn lookup(&self, input: &KeyInput) -> Option<&KeyAction> {
+        self.bindings.iter().find(|b| b.input == *input).map(|b| &b.action)
     }
 
     /// List all bindings.
     pub fn all_bindings(&self) -> &[KeyBinding] {
-        todo!()
+        &self.bindings
     }
 
     /// Remove all bindings.
     pub fn clear(&mut self) {
-        todo!()
+        self.bindings.clear();
     }
 }
 
