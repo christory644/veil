@@ -44,74 +44,92 @@ pub enum OscParseError {
 /// OSC 9/99/777 notification sequence. This is the expected "no match" case,
 /// not a true error.
 pub fn parse_osc_notification(payload: &str) -> Result<OscNotification, OscParseError> {
-    if let Some(body) = payload.strip_prefix("9;") {
-        if body.is_empty() {
-            return Err(OscParseError::EmptyBody);
+    if let Some(rest) = payload.strip_prefix("9;") {
+        return parse_osc9(rest);
+    }
+    if let Some(rest) = payload.strip_prefix("99;") {
+        return parse_osc99(rest);
+    }
+    if let Some(rest) = payload.strip_prefix("777;") {
+        return parse_osc777(rest);
+    }
+    Err(OscParseError::NotNotification)
+}
+
+/// Parse an OSC 9 (iTerm2/ConEmu) notification payload.
+///
+/// `rest` is the content after the `"9;"` prefix (i.e., the message body).
+fn parse_osc9(body: &str) -> Result<OscNotification, OscParseError> {
+    if body.is_empty() {
+        return Err(OscParseError::EmptyBody);
+    }
+    Ok(OscNotification {
+        sequence_type: OscSequenceType::Osc9,
+        title: None,
+        body: body.to_string(),
+    })
+}
+
+/// Parse an OSC 99 (kitty) notification payload.
+///
+/// `rest` is the content after the `"99;"` prefix. Expected format:
+/// `<params>;<data>` where params are colon-separated key-value pairs
+/// (e.g., `i=1:p=title`).
+fn parse_osc99(rest: &str) -> Result<OscNotification, OscParseError> {
+    let (params, data) = match rest.find(';') {
+        Some(pos) => (&rest[..pos], &rest[pos + 1..]),
+        None => {
+            return Err(OscParseError::Malformed {
+                reason: "missing payload separator in OSC 99".to_string(),
+            })
         }
-        return Ok(OscNotification {
-            sequence_type: OscSequenceType::Osc9,
-            title: None,
-            body: body.to_string(),
-        });
+    };
+
+    if data.is_empty() {
+        return Err(OscParseError::EmptyBody);
     }
 
-    if let Some(rest) = payload.strip_prefix("99;") {
-        // Split on the first ';' to separate params from payload data.
-        let (params, data) = match rest.find(';') {
-            Some(pos) => (&rest[..pos], &rest[pos + 1..]),
-            None => {
-                return Err(OscParseError::Malformed {
-                    reason: "missing payload separator in OSC 99".to_string(),
-                })
-            }
-        };
+    let is_title = params.split(':').any(|kv| kv == "p=title");
 
-        if data.is_empty() {
-            return Err(OscParseError::EmptyBody);
-        }
-
-        // Parse key-value params separated by ':'.
-        let is_title = params.split(':').any(|kv| kv == "p=title");
-
-        if is_title {
-            return Ok(OscNotification {
-                sequence_type: OscSequenceType::Osc99,
-                title: Some(data.to_string()),
-                body: String::new(),
-            });
-        }
-
-        return Ok(OscNotification {
+    if is_title {
+        Ok(OscNotification {
+            sequence_type: OscSequenceType::Osc99,
+            title: Some(data.to_string()),
+            body: String::new(),
+        })
+    } else {
+        Ok(OscNotification {
             sequence_type: OscSequenceType::Osc99,
             title: None,
             body: data.to_string(),
-        });
+        })
+    }
+}
+
+/// Parse an OSC 777 (rxvt-unicode) notification payload.
+///
+/// `rest` is the content after the `"777;"` prefix. Expected format:
+/// `notify;<title>;<body>`. The `notify` keyword is required.
+fn parse_osc777(rest: &str) -> Result<OscNotification, OscParseError> {
+    let mut parts = rest.splitn(3, ';');
+    let keyword = parts.next().unwrap_or("");
+    if keyword != "notify" {
+        return Err(OscParseError::NotNotification);
+    }
+    let title_str = parts.next().unwrap_or("");
+    let body_str = parts.next().unwrap_or("");
+
+    if body_str.is_empty() {
+        return Err(OscParseError::EmptyBody);
     }
 
-    if let Some(rest) = payload.strip_prefix("777;") {
-        // Format: notify;<title>;<body>
-        let mut parts = rest.splitn(3, ';');
-        let keyword = parts.next().unwrap_or("");
-        if keyword != "notify" {
-            return Err(OscParseError::NotNotification);
-        }
-        let title_str = parts.next().unwrap_or("");
-        let body_str = parts.next().unwrap_or("");
+    let title = if title_str.is_empty() { None } else { Some(title_str.to_string()) };
 
-        if body_str.is_empty() {
-            return Err(OscParseError::EmptyBody);
-        }
-
-        let title = if title_str.is_empty() { None } else { Some(title_str.to_string()) };
-
-        return Ok(OscNotification {
-            sequence_type: OscSequenceType::Osc777,
-            title,
-            body: body_str.to_string(),
-        });
-    }
-
-    Err(OscParseError::NotNotification)
+    Ok(OscNotification {
+        sequence_type: OscSequenceType::Osc777,
+        title,
+        body: body_str.to_string(),
+    })
 }
 
 #[cfg(test)]

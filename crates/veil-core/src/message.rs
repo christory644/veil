@@ -266,16 +266,6 @@ mod tests {
     }
 }
 
-// ================================================================
-// VEI-18: Unit 4 — StateUpdate notification source integration tests
-//
-// These tests verify that the new notification types (NotificationSource,
-// Notification, NotificationStore) integrate correctly with the channel
-// infrastructure. They construct the types and process them through
-// AppState methods. Once the StateUpdate enum is enriched with the
-// additional fields, these tests will also cover the channel round-trip.
-// ================================================================
-
 #[cfg(test)]
 mod notification_channel_tests {
     use super::*;

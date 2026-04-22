@@ -3,7 +3,7 @@
 //! The UI thread reads `AppState` each frame to render. Background actors push
 //! `StateUpdate` messages to `AppState` via tokio mpsc channels.
 
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use std::path::PathBuf;
 
 use crate::notification::{Notification, NotificationId, NotificationSource, NotificationStore};
@@ -29,22 +29,6 @@ pub struct SidebarState {
     pub active_tab: SidebarTab,
     /// Width in pixels.
     pub width_px: u32,
-}
-
-/// A notification displayed in the UI.
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub struct NotificationEntry {
-    /// Unique notification identifier.
-    pub id: u64,
-    /// Which workspace this notification belongs to.
-    pub workspace_id: WorkspaceId,
-    /// Notification message.
-    pub message: String,
-    /// When the notification was created.
-    pub timestamp: DateTime<Utc>,
-    /// Whether the user has acknowledged this notification.
-    pub acknowledged: bool,
 }
 
 /// Indexed conversation data for the Conversations tab.
@@ -292,10 +276,6 @@ impl AppState {
         self.workspaces.swap(idx_a, idx_b);
         Ok(())
     }
-
-    // ================================================================
-    // VEI-18: New notification store delegation methods
-    // ================================================================
 
     /// Add a notification with full source and metadata via the notification store.
     pub fn add_notification_with_source(
@@ -946,10 +926,6 @@ mod proptests {
         }
     }
 }
-
-// ================================================================
-// VEI-18: Unit 4 — AppState notification store integration tests
-// ================================================================
 
 #[cfg(test)]
 mod notification_integration_tests {

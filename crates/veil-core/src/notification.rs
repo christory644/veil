@@ -1,7 +1,7 @@
 //! Notification data model and store.
 //!
-//! Defines the enriched notification types that replace the legacy
-//! `NotificationEntry` in `state.rs`, plus a `NotificationStore` that
+//! Defines the notification types (`Notification`, `NotificationId`,
+//! `NotificationSource`, `OscSequenceType`) and a `NotificationStore` that
 //! manages notification lifecycle (create, read, dismiss, clear, query).
 
 use std::fmt;
@@ -543,8 +543,8 @@ mod tests {
         // Add MAX_NOTIFICATIONS + 5 notifications
         let total = MAX_NOTIFICATIONS + 5;
         for i in 0..total {
-            #[allow(clippy::cast_possible_wrap)]
-            let t = Utc::now() + chrono::Duration::seconds(i as i64);
+            let offset = i64::try_from(i).expect("test index fits in i64");
+            let t = Utc::now() + chrono::Duration::seconds(offset);
             store.add(make_notification_with_timestamp(i as u64, 1, &format!("notif {i}"), t));
         }
 
@@ -570,7 +570,7 @@ mod tests {
 
     #[derive(Debug, Clone)]
     enum StoreOp {
-        Add(#[allow(dead_code)] u64, u64),
+        Add(u64),
         Dismiss(u64),
         ClearWorkspace(u64),
         ClearAll,
@@ -578,7 +578,7 @@ mod tests {
 
     fn arb_store_op() -> impl Strategy<Value = StoreOp> {
         prop_oneof![
-            (0..1000u64, 1..5u64).prop_map(|(id, ws)| StoreOp::Add(id, ws)),
+            (1..5u64).prop_map(StoreOp::Add),
             (0..1000u64).prop_map(StoreOp::Dismiss),
             (1..5u64).prop_map(StoreOp::ClearWorkspace),
             Just(StoreOp::ClearAll),
@@ -595,7 +595,7 @@ mod tests {
 
             for op in &ops {
                 match op {
-                    StoreOp::Add(_, ws) => {
+                    StoreOp::Add(ws) => {
                         let notif = make_notification(next_id, *ws, "test");
                         store.add(notif);
                         next_id += 1;
