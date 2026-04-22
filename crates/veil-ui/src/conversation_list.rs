@@ -109,19 +109,57 @@ fn session_to_entry_data(session: &SessionEntry, now: DateTime<Utc>) -> Conversa
 /// per-conversation entry rows within each group. Returns the `SessionId`
 /// of a conversation the user clicked, if any.
 pub fn render_conversations_tab(
-    _ui: &mut egui::Ui,
-    _groups: &[ConversationGroup],
+    ui: &mut egui::Ui,
+    groups: &[ConversationGroup],
 ) -> Option<SessionId> {
-    // Stub: renders nothing, returns None.
-    None
+    let mut clicked_id = None;
+    for group in groups {
+        let header_text = format!("{} ({})", group.agent_name, group.session_count);
+        egui::CollapsingHeader::new(header_text).default_open(true).show(ui, |ui| {
+            for entry in &group.entries {
+                if render_conversation_entry(ui, entry) {
+                    clicked_id = Some(entry.id.clone());
+                }
+            }
+        });
+    }
+    clicked_id
 }
 
 /// Render a single conversation entry row.
 ///
 /// Returns `true` if the user clicked this entry.
-fn render_conversation_entry(_ui: &mut egui::Ui, _entry: &ConversationEntryData) -> bool {
-    // Stub: renders nothing, returns false.
-    false
+fn render_conversation_entry(ui: &mut egui::Ui, entry: &ConversationEntryData) -> bool {
+    let response = ui.vertical(|ui| {
+        // First line: active indicator + title (+ optional plan indicator)
+        ui.horizontal(|ui| {
+            let indicator = if entry.is_active { "● " } else { "○ " };
+            ui.label(indicator);
+
+            let title_text = egui::RichText::new(&entry.title);
+            let title_text = if entry.is_active { title_text.strong() } else { title_text };
+            ui.label(title_text);
+
+            if entry.has_plan {
+                ui.label("[plan]");
+            }
+        });
+
+        // Branch line (only if present) — rendered as a separate line to add height
+        if let Some(branch) = &entry.branch {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(format!("  {branch}")).weak());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new(&entry.relative_time).weak());
+                });
+            });
+        } else {
+            // No branch: just relative_time on the second line
+            ui.label(egui::RichText::new(format!("  {}", entry.relative_time)).weak());
+        }
+    });
+
+    response.response.interact(egui::Sense::click()).clicked()
 }
 
 #[cfg(test)]
