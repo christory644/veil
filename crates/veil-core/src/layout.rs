@@ -36,12 +36,93 @@ pub struct PaneLayout {
 /// expanded to fill the entire `available` rect. Returns an empty vec if
 /// the zoomed pane is not found in the tree.
 pub fn compute_layout(
-    _root: &PaneNode,
-    _available: Rect,
-    _zoomed_pane: Option<PaneId>,
+    root: &PaneNode,
+    available: Rect,
+    zoomed_pane: Option<PaneId>,
 ) -> Vec<PaneLayout> {
-    // STUB: returns empty vec -- tests will fail until implemented.
-    Vec::new()
+    if let Some(target_id) = zoomed_pane {
+        // Find the leaf with matching pane_id and return it filling the entire available rect.
+        return match find_leaf(root, target_id) {
+            Some((pane_id, surface_id)) => {
+                vec![PaneLayout { pane_id, surface_id, rect: available }]
+            }
+            None => vec![],
+        };
+    }
+
+    let mut result = Vec::new();
+    subdivide(
+        root,
+        available.x,
+        available.y,
+        available.x + available.width,
+        available.y + available.height,
+        &mut result,
+    );
+    result
+}
+
+/// Find a leaf node by pane ID, returning its `pane_id` and `surface_id`.
+fn find_leaf(node: &PaneNode, target: PaneId) -> Option<(PaneId, SurfaceId)> {
+    match node {
+        PaneNode::Leaf { pane_id, surface_id } => {
+            if *pane_id == target {
+                Some((*pane_id, *surface_id))
+            } else {
+                None
+            }
+        }
+        PaneNode::Split { first, second, .. } => {
+            find_leaf(first, target).or_else(|| find_leaf(second, target))
+        }
+    }
+}
+
+/// Compute a width such that `origin + width <= edge` is guaranteed.
+///
+/// Naively, `width = edge - origin`, but IEEE 754 does not guarantee
+/// `origin + (edge - origin) <= edge`. When the reconstructed sum overshoots,
+/// we subtract one ULP from the width to close the gap.
+fn safe_span(origin: f32, edge: f32) -> f32 {
+    let span = edge - origin;
+    if span > 0.0 && origin + span > edge {
+        f32::from_bits(span.to_bits() - 1)
+    } else {
+        span
+    }
+}
+
+/// Recursively subdivide the region bounded by `(x0, y0)` to `(x1, y1)`.
+///
+/// Passing absolute edge coordinates avoids drift: each split boundary is
+/// computed once and shared between both children as their adjacent edge.
+/// At leaf nodes, `safe_span` converts to width/height while guaranteeing
+/// `x + width <= x1` (and `y + height <= y1`), which prevents overlap.
+fn subdivide(node: &PaneNode, x0: f32, y0: f32, x1: f32, y1: f32, result: &mut Vec<PaneLayout>) {
+    match node {
+        PaneNode::Leaf { pane_id, surface_id } => {
+            result.push(PaneLayout {
+                pane_id: *pane_id,
+                surface_id: *surface_id,
+                rect: Rect { x: x0, y: y0, width: safe_span(x0, x1), height: safe_span(y0, y1) },
+            });
+        }
+        PaneNode::Split { direction, ratio, first, second } => {
+            use crate::workspace::SplitDirection;
+            match direction {
+                SplitDirection::Horizontal => {
+                    let split = x0 + (x1 - x0) * ratio;
+                    subdivide(first, x0, y0, split, y1, result);
+                    subdivide(second, split, y0, x1, y1, result);
+                }
+                SplitDirection::Vertical => {
+                    let split = y0 + (y1 - y0) * ratio;
+                    subdivide(first, x0, y0, x1, split, result);
+                    subdivide(second, x0, split, x1, y1, result);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
