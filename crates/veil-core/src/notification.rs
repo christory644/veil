@@ -173,7 +173,7 @@ impl NotificationStore {
         results
     }
 
-    /// Get all notifications, most recent first.
+    /// Get all notifications in insertion order (oldest first).
     pub fn all(&self) -> &[Notification] {
         &self.notifications
     }
