@@ -14,7 +14,7 @@ pub enum JournalRecord {
     /// User message (text or tool results).
     #[serde(rename = "user")]
     User(UserRecord),
-    /// Assistant response (text, thinking, tool_use).
+    /// Assistant response (text, thinking, `tool_use`).
     #[serde(rename = "assistant")]
     Assistant(AssistantRecord),
     /// System event (hooks, compaction boundaries).
@@ -107,7 +107,7 @@ pub struct MessagePayload {
 pub enum MessageContent {
     /// Plain text content.
     Text(String),
-    /// Array of content blocks (e.g., tool_result).
+    /// Array of content blocks (e.g., `tool_result`).
     Blocks(Vec<ContentBlock>),
 }
 
@@ -118,7 +118,7 @@ pub struct AssistantMessagePayload {
     pub role: Option<String>,
     /// Model used for this response.
     pub model: Option<String>,
-    /// Content blocks (text, thinking, tool_use).
+    /// Content blocks (text, thinking, `tool_use`).
     pub content: Option<Vec<ContentBlock>>,
     /// Why the response stopped.
     pub stop_reason: Option<String>,
@@ -153,7 +153,7 @@ pub enum ContentBlock {
     /// Tool execution result (in user messages).
     #[serde(rename = "tool_result")]
     ToolResult {
-        /// ID of the tool_use this result corresponds to.
+        /// ID of the `tool_use` this result corresponds to.
         tool_use_id: Option<String>,
         /// Result content (unbounded structure).
         content: Option<serde_json::Value>,
@@ -171,7 +171,7 @@ pub struct SystemRecord {
     pub timestamp: Option<DateTime<Utc>>,
     /// Session this event belongs to.
     pub session_id: Option<String>,
-    /// Event subtype (e.g., "stop_hook_summary", "compact_boundary").
+    /// Event subtype (e.g., `stop_hook_summary`, `compact_boundary`).
     pub subtype: Option<String>,
 }
 
@@ -594,7 +594,7 @@ mod tests {
 
     #[test]
     fn malformed_json_produces_serde_error() {
-        let json = r#"{this is not valid json}"#;
+        let json = r"{this is not valid json}";
         let result = serde_json::from_str::<JournalRecord>(json);
         assert!(result.is_err(), "malformed JSON should produce a serde error");
     }
@@ -625,7 +625,7 @@ mod tests {
                 let msg = user.message.expect("should have message");
                 match msg.content {
                     MessageContent::Text(text) => assert_eq!(text, "hello"),
-                    _ => panic!("expected Text content"),
+                    MessageContent::Blocks(_) => panic!("expected Text content"),
                 }
             }
             other => panic!("expected User record, got {other:?}"),

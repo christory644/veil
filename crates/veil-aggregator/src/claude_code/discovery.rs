@@ -180,7 +180,7 @@ mod tests {
         let paths: Vec<_> = sessions.iter().map(|s| s.jsonl_path.clone()).collect();
         for path in &paths {
             assert!(
-                path.extension().map_or(false, |ext| ext == "jsonl"),
+                path.extension().is_some_and(|ext| ext == "jsonl"),
                 "all discovered files should be .jsonl, got: {path:?}"
             );
         }

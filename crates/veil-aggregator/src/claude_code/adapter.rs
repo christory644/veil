@@ -3,17 +3,16 @@
 //! Wires together discovery, parsing, and title generation to provide
 //! session data from `~/.claude/projects/`.
 
-#![allow(unused_imports)]
-#![allow(dead_code)]
-
 use std::path::PathBuf;
 
-use veil_core::session::{AgentKind, SessionEntry, SessionId, SessionPreview};
+use chrono::Utc;
+use veil_core::session::{AgentKind, SessionEntry, SessionId, SessionPreview, SessionStatus};
 
 use crate::adapter::{AdapterError, AgentAdapter};
 
 use super::discovery;
 use super::parser;
+use crate::title;
 
 /// Claude Code adapter for the session aggregator.
 ///
@@ -28,7 +27,8 @@ impl ClaudeCodeAdapter {
     /// Create an adapter with the default projects directory.
     /// Returns `None` when `~/.claude/projects/` does not exist.
     pub fn new() -> Option<Self> {
-        unimplemented!("ClaudeCodeAdapter::new: will be implemented in GREEN phase")
+        let projects_dir = discovery::resolve_projects_dir()?;
+        Some(Self { projects_dir })
     }
 
     /// Create an adapter with a custom projects directory (for testing).
@@ -38,6 +38,7 @@ impl ClaudeCodeAdapter {
 }
 
 impl AgentAdapter for ClaudeCodeAdapter {
+    #[allow(clippy::unnecessary_literal_bound)]
     fn name(&self) -> &str {
         "Claude Code"
     }
@@ -51,11 +52,61 @@ impl AgentAdapter for ClaudeCodeAdapter {
     }
 
     fn discover_sessions(&self) -> Vec<Result<SessionEntry, AdapterError>> {
-        unimplemented!("ClaudeCodeAdapter::discover_sessions: will be implemented in GREEN phase")
+        let discovered = discovery::discover_sessions(&self.projects_dir);
+
+        discovered
+            .into_iter()
+            .map(|ds| {
+                let parsed = parser::parse_session_file(&ds.jsonl_path).map_err(|e| {
+                    AdapterError::ParseError { path: ds.jsonl_path.clone(), source: Box::new(e) }
+                })?;
+
+                Ok(SessionEntry {
+                    id: SessionId::new(&parsed.session_id),
+                    agent: AgentKind::ClaudeCode,
+                    title: title::generate_title(None, parsed.first_user_message.as_deref()),
+                    working_dir: PathBuf::from(parsed.cwd.as_deref().unwrap_or("")),
+                    branch: None,
+                    pr_number: None,
+                    pr_url: None,
+                    plan_content: None,
+                    status: SessionStatus::default(),
+                    started_at: parsed.started_at.unwrap_or_else(Utc::now),
+                    ended_at: parsed.ended_at,
+                    indexed_at: Utc::now(),
+                })
+            })
+            .collect()
     }
 
-    fn session_preview(&self, _id: &SessionId) -> Result<Option<SessionPreview>, AdapterError> {
-        unimplemented!("ClaudeCodeAdapter::session_preview: will be implemented in GREEN phase")
+    fn session_preview(&self, id: &SessionId) -> Result<Option<SessionPreview>, AdapterError> {
+        let target_filename = format!("{}.jsonl", id.as_str());
+
+        // Scan project directories looking for a matching JSONL file.
+        let Ok(project_dirs) = std::fs::read_dir(&self.projects_dir) else {
+            return Ok(None);
+        };
+
+        for project_entry in project_dirs.flatten() {
+            let project_path = project_entry.path();
+            if !project_path.is_dir() {
+                continue;
+            }
+
+            let candidate = project_path.join(&target_filename);
+            if candidate.is_file() {
+                let parsed = parser::parse_session_file(&candidate)?;
+                return Ok(Some(SessionPreview {
+                    id: SessionId::new(&parsed.session_id),
+                    first_user_message: parsed.first_user_message,
+                    first_assistant_message: parsed.first_assistant_message,
+                    message_count: parsed.user_message_count + parsed.assistant_message_count,
+                    tool_call_count: parsed.tool_use_count,
+                }));
+            }
+        }
+
+        Ok(None)
     }
 }
 
