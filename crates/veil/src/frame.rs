@@ -118,6 +118,7 @@ pub fn build_frame_geometry(
 }
 
 #[cfg(test)]
+#[allow(clippy::doc_markdown)]
 mod tests {
     use super::*;
     use std::path::PathBuf;

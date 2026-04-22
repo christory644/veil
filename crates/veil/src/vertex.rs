@@ -38,10 +38,13 @@ pub fn quad_indices(base: u16) -> [u16; 6] {
 /// Compute the vertex base index for the Nth quad in a batch.
 /// Each quad uses 4 vertices, so quad N starts at vertex index N * 4.
 pub fn vertex_base(quad_index: usize) -> u16 {
-    (quad_index * 4) as u16
+    #[allow(clippy::cast_possible_truncation)]
+    let base = (quad_index * 4) as u16;
+    base
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
 

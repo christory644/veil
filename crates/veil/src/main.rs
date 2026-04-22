@@ -12,6 +12,8 @@ mod quad_builder;
 mod renderer;
 mod vertex;
 
+use std::sync::Arc;
+
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::WindowEvent;
@@ -24,12 +26,17 @@ use veil_core::lifecycle::ShutdownSignal;
 use veil_core::message::Channels;
 use veil_core::state::AppState;
 
+use crate::frame::build_frame_geometry;
+use crate::renderer::Renderer;
+
 /// The main application struct that owns all state and implements the winit event loop.
 struct VeilApp {
     /// The winit window, created in `resumed`.
-    window: Option<Window>,
-    /// Central application state (used by future renderer).
-    _app_state: AppState,
+    window: Option<Arc<Window>>,
+    /// GPU renderer, created in `resumed`.
+    renderer: Option<Renderer>,
+    /// Central application state (drives frame geometry).
+    app_state: AppState,
     /// Channel infrastructure for actor communication.
     _channels: Channels,
     /// Shutdown coordinator.
@@ -37,7 +44,7 @@ struct VeilApp {
     /// Keybinding registry with default shortcuts.
     _keybindings: KeybindingRegistry,
     /// Keyboard focus tracker.
-    _focus: FocusManager,
+    focus: FocusManager,
     /// Current window size in physical pixels.
     window_size: (u32, u32),
 }
@@ -46,11 +53,12 @@ impl VeilApp {
     fn new() -> Self {
         Self {
             window: None,
-            _app_state: AppState::new(),
+            renderer: None,
+            app_state: AppState::new(),
             _channels: Channels::new(256),
             shutdown: ShutdownSignal::new(),
             _keybindings: KeybindingRegistry::with_defaults(),
-            _focus: FocusManager::new(),
+            focus: FocusManager::new(),
             window_size: (1280, 800),
         }
     }
@@ -63,7 +71,10 @@ impl ApplicationHandler for VeilApp {
         }
         let size = LogicalSize::new(1280.0_f64, 800.0_f64);
         let attrs = WindowAttributes::default().with_title("Veil").with_inner_size(size);
-        let window = event_loop.create_window(attrs).expect("failed to create window");
+        let window = Arc::new(event_loop.create_window(attrs).expect("failed to create window"));
+        let renderer =
+            pollster::block_on(Renderer::new(window.clone())).expect("failed to create renderer");
+        self.renderer = Some(renderer);
         self.window = Some(window);
     }
 
@@ -80,10 +91,26 @@ impl ApplicationHandler for VeilApp {
             }
             WindowEvent::Resized(new_size) => {
                 self.window_size = (new_size.width, new_size.height);
+                if let Some(renderer) = &mut self.renderer {
+                    renderer.resize(new_size.width, new_size.height);
+                }
             }
             WindowEvent::RedrawRequested => {
-                // Future: wgpu rendering goes here.
-                // For now, request another redraw to keep the loop alive.
+                let frame_geometry = build_frame_geometry(
+                    &self.app_state,
+                    &self.focus,
+                    self.window_size.0,
+                    self.window_size.1,
+                );
+                if let Some(renderer) = &mut self.renderer {
+                    match renderer.render(&frame_geometry) {
+                        Ok(()) => {}
+                        Err(e) => {
+                            tracing::error!("render error: {e}");
+                            event_loop.exit();
+                        }
+                    }
+                }
                 if let Some(window) = &self.window {
                     window.request_redraw();
                 }

@@ -9,7 +9,7 @@ use crate::vertex::{quad_indices, quad_vertices, vertex_base, Vertex};
 
 /// Parameters for building cell background quads for a pane.
 pub struct CellGridParams {
-    /// The pane's pixel rectangle (from compute_layout).
+    /// The pane's pixel rectangle (from `compute_layout`).
     pub rect: Rect,
     /// Number of columns in the terminal grid.
     pub cols: u16,
@@ -34,8 +34,8 @@ pub fn build_cell_background_quads(params: &CellGridParams) -> (Vec<Vertex>, Vec
     let cols = params.cols as usize;
     let rows = params.rows as usize;
     let total_quads = cols * rows;
-    let cell_width = params.rect.width / params.cols as f32;
-    let cell_height = params.rect.height / params.rows as f32;
+    let cell_width = params.rect.width / f32::from(params.cols);
+    let cell_height = params.rect.height / f32::from(params.rows);
 
     let mut vertices = Vec::with_capacity(total_quads * 4);
     let mut indices = Vec::with_capacity(total_quads * 6);
@@ -43,7 +43,9 @@ pub fn build_cell_background_quads(params: &CellGridParams) -> (Vec<Vertex>, Vec
 
     for row in 0..rows {
         for col in 0..cols {
+            #[allow(clippy::cast_precision_loss)]
             let x = params.rect.x + col as f32 * cell_width;
+            #[allow(clippy::cast_precision_loss)]
             let y = params.rect.y + row as f32 * cell_height;
             vertices.extend_from_slice(&quad_vertices(
                 x,
@@ -80,10 +82,10 @@ pub fn build_cursor_quad(
 
     let clamped_col = col.min(cols - 1);
     let clamped_row = row.min(rows - 1);
-    let cell_width = rect.width / cols as f32;
-    let cell_height = rect.height / rows as f32;
-    let x = rect.x + clamped_col as f32 * cell_width;
-    let y = rect.y + clamped_row as f32 * cell_height;
+    let cell_width = rect.width / f32::from(cols);
+    let cell_height = rect.height / f32::from(rows);
+    let x = rect.x + f32::from(clamped_col) * cell_width;
+    let y = rect.y + f32::from(clamped_row) * cell_height;
 
     let vertices = quad_vertices(x, y, cell_width, cell_height, color).to_vec();
     let indices = quad_indices(0).to_vec();
@@ -231,6 +233,7 @@ pub fn build_focus_border(
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, clippy::manual_range_contains)]
 mod tests {
     use super::*;
     use veil_core::layout::{PaneLayout, Rect};
