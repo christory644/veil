@@ -3,6 +3,10 @@
 //! This module declares only the subset of the Ghostty VT API needed
 //! by VEI-6. Types mirror the C header exactly, with Rust equivalents.
 
+// Some constants and types are declared for completeness with the C API
+// but not yet consumed by safe wrappers. Allow dead code at the module level.
+#![allow(dead_code)]
+
 use std::ffi::c_void;
 
 // ---- Opaque handles ----
