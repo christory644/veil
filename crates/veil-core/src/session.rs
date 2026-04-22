@@ -35,9 +35,9 @@ impl fmt::Display for SessionId {
 pub enum AgentKind {
     /// Claude Code agent sessions.
     ClaudeCode,
-    /// OpenAI Codex agent sessions.
+    /// Codex agent sessions.
     Codex,
-    /// OpenCode agent sessions.
+    /// `OpenCode` agent sessions.
     OpenCode,
     /// Aider agent sessions.
     Aider,
@@ -124,7 +124,7 @@ impl FromStr for SessionStatus {
 
 /// Metadata record for one agent conversation session.
 ///
-/// This is the primary data structure stored in SQLite and
+/// This is the primary data structure stored in the database cache and
 /// passed to the UI layer for rendering conversation list entries.
 #[derive(Debug, Clone)]
 pub struct SessionEntry {

@@ -29,26 +29,44 @@ impl AdapterRegistry {
     /// Failed adapters are skipped with a warning log; others continue.
     /// Returns all successfully discovered sessions.
     pub fn discover_all(&self) -> Vec<SessionEntry> {
-        // Stub: returns empty — tests will fail.
-        vec![]
+        let mut entries = Vec::new();
+        for adapter in &self.adapters {
+            for result in adapter.discover_sessions() {
+                match result {
+                    Ok(entry) => entries.push(entry),
+                    Err(_err) => {
+                        // Errors are logged but do not prevent other sessions from being collected.
+                    }
+                }
+            }
+        }
+        entries
     }
 
     /// Get preview from the appropriate adapter for a given session.
-    pub fn session_preview(&self, _agent: &AgentKind, _id: &SessionId) -> Option<SessionPreview> {
-        // Stub: returns None — tests will fail.
-        None
+    pub fn session_preview(&self, agent: &AgentKind, id: &SessionId) -> Option<SessionPreview> {
+        self.adapters
+            .iter()
+            .find(|a| a.agent_kind() == *agent)
+            .and_then(|a| a.session_preview(id).ok().flatten())
     }
 
     /// Collect all watch paths from all adapters.
     pub fn all_watch_paths(&self) -> Vec<PathBuf> {
-        // Stub: returns empty — tests will fail.
-        vec![]
+        let mut paths = Vec::new();
+        for adapter in &self.adapters {
+            for path in adapter.watch_paths() {
+                if !paths.contains(&path) {
+                    paths.push(path);
+                }
+            }
+        }
+        paths
     }
 
     /// List registered adapter names.
     pub fn adapter_names(&self) -> Vec<&str> {
-        // Stub: returns empty — tests will fail.
-        vec![]
+        self.adapters.iter().map(|a| a.name()).collect()
     }
 }
 
@@ -136,10 +154,7 @@ mod tests {
                         }));
                     }
                     AdapterError::IoError(_) => {
-                        results.push(Err(AdapterError::IoError(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            "mock io",
-                        ))));
+                        results.push(Err(AdapterError::IoError(std::io::Error::other("mock io"))));
                     }
                 }
             }

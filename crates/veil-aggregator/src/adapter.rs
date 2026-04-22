@@ -1,6 +1,6 @@
 //! Agent adapter trait and error types for the session aggregator.
 //!
-//! Each agent harness (Claude Code, Codex, OpenCode, etc.) implements
+//! Each agent harness (Claude Code, Codex, `OpenCode`, etc.) implements
 //! the [`AgentAdapter`] trait to discover sessions and provide preview content.
 
 use std::fmt;
@@ -57,7 +57,7 @@ impl From<std::io::Error> for AdapterError {
 ///
 /// Adapters discover sessions on the filesystem, parse their metadata,
 /// and provide preview content. They are expected to be stateless --
-/// the session store (SQLite) owns the persistent state.
+/// the session store (database) owns the persistent state.
 pub trait AgentAdapter: Send + Sync {
     /// Human-readable name for this harness (e.g., "Claude Code").
     fn name(&self) -> &str;
@@ -146,9 +146,9 @@ mod tests {
                         path: path.clone(),
                         source: "test error".into(),
                     }),
-                    Err(AdapterError::IoError(_)) => Err(AdapterError::IoError(
-                        std::io::Error::new(std::io::ErrorKind::Other, "test io error"),
-                    )),
+                    Err(AdapterError::IoError(_)) => {
+                        Err(AdapterError::IoError(std::io::Error::other("test io error")))
+                    }
                 })
                 .collect()
         }

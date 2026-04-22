@@ -4,8 +4,11 @@
 //! operations, and supports FTS5 full-text search over session metadata.
 
 use std::fmt;
-use std::path::Path;
-use veil_core::session::{AgentKind, SessionEntry, SessionId, SessionSearchResult};
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
+
+use chrono::{DateTime, Utc};
+use veil_core::session::{AgentKind, SessionEntry, SessionId, SessionSearchResult, SessionStatus};
 
 /// Wraps a `rusqlite::Connection` with session-specific operations.
 pub struct SessionStore {
@@ -15,7 +18,7 @@ pub struct SessionStore {
 /// Errors that can occur during session store operations.
 #[derive(Debug)]
 pub enum StoreError {
-    /// SQLite error.
+    /// Database engine error.
     Sqlite(rusqlite::Error),
     /// Database file I/O error.
     Io(std::io::Error),
@@ -79,6 +82,9 @@ impl SessionStore {
     /// Run schema migrations. Creates tables if they don't exist.
     fn run_migrations(&self) -> Result<(), StoreError> {
         self.conn
+            .execute_batch("PRAGMA journal_mode=WAL;")
+            .map_err(|e| StoreError::MigrationError(e.to_string()))?;
+        self.conn
             .execute_batch(
                 "
             CREATE TABLE IF NOT EXISTS sessions (
@@ -110,70 +116,282 @@ impl SessionStore {
 
     /// Insert or update a session entry.
     /// Uses INSERT OR REPLACE -- the session ID is the natural key.
-    pub fn upsert_session(&self, _entry: &SessionEntry) -> Result<(), StoreError> {
-        // Stub: does nothing — tests will fail because data isn't persisted.
+    pub fn upsert_session(&self, entry: &SessionEntry) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO sessions
+             (id, agent, title, working_dir, branch, pr_number, pr_url,
+              plan_content, status, started_at, ended_at, indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            rusqlite::params![
+                entry.id.as_str(),
+                entry.agent.to_string(),
+                entry.title,
+                entry.working_dir.to_string_lossy().to_string(),
+                entry.branch,
+                entry.pr_number.map(u64::cast_signed),
+                entry.pr_url,
+                entry.plan_content,
+                entry.status.to_string(),
+                entry.started_at.to_rfc3339(),
+                entry.ended_at.map(|dt| dt.to_rfc3339()),
+                entry.indexed_at.to_rfc3339(),
+            ],
+        )?;
         Ok(())
     }
 
     /// Batch upsert multiple sessions in a single transaction.
-    pub fn upsert_sessions(&self, _entries: &[SessionEntry]) -> Result<usize, StoreError> {
-        // Stub: returns 0 — tests will fail for non-empty inputs.
-        Ok(0)
+    pub fn upsert_sessions(&self, entries: &[SessionEntry]) -> Result<usize, StoreError> {
+        if entries.is_empty() {
+            return Ok(0);
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        for entry in entries {
+            tx.execute(
+                "INSERT OR REPLACE INTO sessions
+                 (id, agent, title, working_dir, branch, pr_number, pr_url,
+                  plan_content, status, started_at, ended_at, indexed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                rusqlite::params![
+                    entry.id.as_str(),
+                    entry.agent.to_string(),
+                    entry.title,
+                    entry.working_dir.to_string_lossy().to_string(),
+                    entry.branch,
+                    entry.pr_number.map(u64::cast_signed),
+                    entry.pr_url,
+                    entry.plan_content,
+                    entry.status.to_string(),
+                    entry.started_at.to_rfc3339(),
+                    entry.ended_at.map(|dt| dt.to_rfc3339()),
+                    entry.indexed_at.to_rfc3339(),
+                ],
+            )?;
+        }
+        let count = entries.len();
+        tx.commit()?;
+        Ok(count)
+    }
+
+    /// Parse a row from the sessions table into a `SessionEntry`.
+    fn row_to_entry(row: &rusqlite::Row<'_>) -> Result<SessionEntry, rusqlite::Error> {
+        let id: String = row.get("id")?;
+        let agent_str: String = row.get("agent")?;
+        let title: String = row.get("title")?;
+        let working_dir_str: String = row.get("working_dir")?;
+        let branch: Option<String> = row.get("branch")?;
+        let pr_number: Option<i64> = row.get("pr_number")?;
+        let pr_url: Option<String> = row.get("pr_url")?;
+        let plan_content: Option<String> = row.get("plan_content")?;
+        let status_str: String = row.get("status")?;
+        let started_at_str: String = row.get("started_at")?;
+        let ended_at_str: Option<String> = row.get("ended_at")?;
+        let indexed_at_str: String = row.get("indexed_at")?;
+
+        let agent = AgentKind::from_str(&agent_str).unwrap_or(AgentKind::Unknown(agent_str));
+        let status = SessionStatus::from_str(&status_str).unwrap_or_default();
+
+        let started_at = DateTime::parse_from_rfc3339(&started_at_str)
+            .map(|dt| dt.with_timezone(&Utc))
+            .map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
+
+        let ended_at = ended_at_str
+            .map(|s| {
+                DateTime::parse_from_rfc3339(&s).map(|dt| dt.with_timezone(&Utc)).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })
+            })
+            .transpose()?;
+
+        let indexed_at = DateTime::parse_from_rfc3339(&indexed_at_str)
+            .map(|dt| dt.with_timezone(&Utc))
+            .map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
+
+        Ok(SessionEntry {
+            id: SessionId::new(id),
+            agent,
+            title,
+            working_dir: PathBuf::from(working_dir_str),
+            branch,
+            pr_number: pr_number.map(i64::cast_unsigned),
+            pr_url,
+            plan_content,
+            status,
+            started_at,
+            ended_at,
+            indexed_at,
+        })
     }
 
     /// Retrieve a session by ID.
-    pub fn get_session(&self, _id: &SessionId) -> Result<Option<SessionEntry>, StoreError> {
-        // Stub: always returns None — tests will fail.
-        Ok(None)
+    pub fn get_session(&self, id: &SessionId) -> Result<Option<SessionEntry>, StoreError> {
+        let mut stmt = self.conn.prepare("SELECT * FROM sessions WHERE id = ?1")?;
+        let mut rows = stmt.query(rusqlite::params![id.as_str()])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(Self::row_to_entry(row)?)),
+            None => Ok(None),
+        }
     }
 
     /// List all sessions, ordered by `started_at` descending.
     pub fn list_sessions(&self) -> Result<Vec<SessionEntry>, StoreError> {
-        // Stub: returns empty — tests will fail.
-        Ok(vec![])
+        let mut stmt = self.conn.prepare("SELECT * FROM sessions ORDER BY started_at DESC")?;
+        let rows = stmt.query_map([], Self::row_to_entry)?;
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row?);
+        }
+        Ok(entries)
     }
 
     /// List sessions filtered by agent kind.
     pub fn list_sessions_by_agent(
         &self,
-        _agent: &AgentKind,
+        agent: &AgentKind,
     ) -> Result<Vec<SessionEntry>, StoreError> {
-        // Stub: returns empty — tests will fail.
-        Ok(vec![])
+        let mut stmt = self
+            .conn
+            .prepare("SELECT * FROM sessions WHERE agent = ?1 ORDER BY started_at DESC")?;
+        let rows = stmt.query_map(rusqlite::params![agent.to_string()], Self::row_to_entry)?;
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row?);
+        }
+        Ok(entries)
+    }
+
+    /// Sanitize a user-provided query string for safe use in FTS5 MATCH.
+    /// Strips FTS5 operators and special characters, keeping only alphanumeric
+    /// words which are then joined with spaces (implicit AND).
+    fn sanitize_fts_query(query: &str) -> String {
+        query
+            .split_whitespace()
+            .filter_map(|word| {
+                let cleaned: String = word.chars().filter(|c| c.is_alphanumeric()).collect();
+                if cleaned.is_empty() {
+                    None
+                } else {
+                    Some(cleaned)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     /// Full-text search across session titles and first messages.
-    pub fn search_sessions(&self, _query: &str) -> Result<Vec<SessionSearchResult>, StoreError> {
-        // Stub: returns empty — tests will fail.
-        Ok(vec![])
+    pub fn search_sessions(&self, query: &str) -> Result<Vec<SessionSearchResult>, StoreError> {
+        let sanitized = Self::sanitize_fts_query(query);
+        if sanitized.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // First, query the FTS table for matching rowids and their ranks.
+        // We query the FTS table directly so the `rank` column is available.
+        let mut fts_stmt = self.conn.prepare(
+            "SELECT rowid, rank FROM sessions_fts WHERE sessions_fts MATCH ?1 ORDER BY rank",
+        )?;
+        let fts_rows = fts_stmt.query_map(rusqlite::params![sanitized], |row| {
+            let rowid: i64 = row.get(0)?;
+            let rank: f64 = row.get(1)?;
+            Ok((rowid, rank))
+        })?;
+
+        let mut ranked: Vec<(i64, f64)> = Vec::new();
+        for row in fts_rows {
+            ranked.push(row?);
+        }
+
+        // Now load the full session entries for each matching rowid.
+        let mut results = Vec::new();
+        let mut sess_stmt = self.conn.prepare("SELECT * FROM sessions WHERE rowid = ?1")?;
+        for (rowid, rank) in &ranked {
+            let mut rows = sess_stmt.query(rusqlite::params![rowid])?;
+            if let Some(row) = rows.next()? {
+                let entry = Self::row_to_entry(row)?;
+                // FTS5 rank is negative (more negative = more relevant), negate for
+                // a positive relevance score where higher = better.
+                let relevance = -rank;
+                results.push(SessionSearchResult { entry, relevance, snippet: None });
+            }
+        }
+        Ok(results)
     }
 
     /// Delete a session by ID.
-    pub fn delete_session(&self, _id: &SessionId) -> Result<bool, StoreError> {
-        // Stub: returns false — tests will fail.
-        Ok(false)
+    pub fn delete_session(&self, id: &SessionId) -> Result<bool, StoreError> {
+        let affected = self
+            .conn
+            .execute("DELETE FROM sessions WHERE id = ?1", rusqlite::params![id.as_str()])?;
+        Ok(affected > 0)
+    }
+
+    /// Look up the integer rowid for a session by its string ID.
+    fn get_rowid(&self, id: &SessionId) -> Result<i64, StoreError> {
+        self.conn
+            .query_row(
+                "SELECT rowid FROM sessions WHERE id = ?1",
+                rusqlite::params![id.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(StoreError::from)
     }
 
     /// Update the FTS index for a session (title + first message text).
+    ///
+    /// Inserts a new FTS entry for the given session. For contentless FTS5
+    /// tables, updates require knowing the previous content to issue a
+    /// proper delete. This implementation inserts directly; callers should
+    /// ensure `update_fts` is called once per session or use `clear_all`
+    /// to rebuild the index.
     pub fn update_fts(
         &self,
-        _id: &SessionId,
-        _title: &str,
-        _first_message: Option<&str>,
+        id: &SessionId,
+        title: &str,
+        first_message: Option<&str>,
     ) -> Result<(), StoreError> {
-        // Stub: does nothing — tests will fail.
+        let rowid = self.get_rowid(id)?;
+        let msg = first_message.unwrap_or("");
+
+        self.conn.execute(
+            "INSERT INTO sessions_fts(rowid, title, first_message) VALUES (?1, ?2, ?3)",
+            rusqlite::params![rowid, title, msg],
+        )?;
         Ok(())
     }
 
     /// Count total sessions, optionally filtered by agent.
-    pub fn count_sessions(&self, _agent: Option<&AgentKind>) -> Result<usize, StoreError> {
-        // Stub: returns 0 — tests will fail.
-        Ok(0)
+    pub fn count_sessions(&self, agent: Option<&AgentKind>) -> Result<usize, StoreError> {
+        let count: i64 = match agent {
+            Some(a) => self.conn.query_row(
+                "SELECT COUNT(*) FROM sessions WHERE agent = ?1",
+                rusqlite::params![a.to_string()],
+                |row| row.get(0),
+            )?,
+            None => self.conn.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))?,
+        };
+        Ok(usize::try_from(count).unwrap_or(0))
     }
 
     /// Delete all sessions (used for cache rebuild scenarios).
     pub fn clear_all(&self) -> Result<(), StoreError> {
-        // Stub: does nothing — tests will fail.
+        self.conn.execute("DELETE FROM sessions", [])?;
+        self.conn.execute("INSERT INTO sessions_fts(sessions_fts) VALUES('delete-all')", [])?;
         Ok(())
     }
 }

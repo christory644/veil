@@ -9,16 +9,52 @@
 /// Priority: agent-provided title (if not gibberish) > heuristic from first
 /// message > fallback.
 pub fn generate_title(agent_title: Option<&str>, first_user_message: Option<&str>) -> String {
-    // Stub: always returns fallback — tests will fail because the logic isn't implemented.
-    let _ = agent_title;
-    let _ = first_user_message;
-    String::new()
+    // 1. Try agent-provided title if it's non-empty and not gibberish.
+    if let Some(title) = agent_title {
+        let trimmed = title.trim();
+        if !trimmed.is_empty() && !is_gibberish_title(trimmed) {
+            return trimmed.to_string();
+        }
+    }
+
+    // 2. Try extracting a topic from the first user message.
+    if let Some(msg) = first_user_message {
+        let trimmed = msg.trim();
+        if !trimmed.is_empty() {
+            return extract_topic_from_message(trimmed);
+        }
+    }
+
+    // 3. Fallback.
+    "Untitled session".to_string()
 }
 
 /// Returns true if the string looks like a UUID, hash, or other non-meaningful identifier.
 fn is_gibberish_title(title: &str) -> bool {
-    // Stub: always returns false — tests will fail.
-    let _ = title;
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+
+    // Purely numeric strings are gibberish.
+    if trimmed.chars().all(|c| c.is_ascii_digit()) {
+        return true;
+    }
+
+    // UUID pattern: 8-4-4-4-12 hex digits.
+    if trimmed.len() == 36
+        && trimmed.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+        && trimmed.chars().filter(|&c| c == '-').count() == 4
+    {
+        return true;
+    }
+
+    // Hex hash: only hex digits, at least 8 chars long (and contains at least
+    // one letter so it wasn't caught by the numeric check above).
+    if trimmed.len() >= 8 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+        return true;
+    }
+
     false
 }
 
@@ -26,8 +62,53 @@ fn is_gibberish_title(title: &str) -> bool {
 ///
 /// Truncates to reasonable length, strips common prefixes ("please", "can you", etc.).
 fn extract_topic_from_message(message: &str) -> String {
-    // Stub: returns the message unchanged — tests will fail.
-    message.to_string()
+    // Take only the first line of the message.
+    let first_line = message.lines().next().unwrap_or("").trim();
+
+    // Strip common conversational prefixes (case-insensitive).
+    let prefixes: &[&str] = &[
+        "please help me ",
+        "please can you ",
+        "please ",
+        "could you please ",
+        "could you ",
+        "can you please ",
+        "can you help me ",
+        "can you ",
+        "i'd like you to ",
+        "i would like you to ",
+        "i want you to ",
+        "i need you to ",
+        "i need help with ",
+        "i need help ",
+        "help me ",
+    ];
+
+    let lower = first_line.to_lowercase();
+    let mut result = first_line;
+    for prefix in prefixes {
+        if lower.starts_with(prefix) {
+            result = &first_line[prefix.len()..];
+            break;
+        }
+    }
+
+    let result = result.trim();
+
+    // Truncate to ~80 characters, breaking at a word boundary if possible.
+    let max_len = 80;
+    if result.len() <= max_len {
+        return result.to_string();
+    }
+
+    // Find the last space before the limit.
+    let truncated = &result[..max_len];
+    if let Some(last_space) = truncated.rfind(' ') {
+        format!("{}...", &result[..last_space])
+    } else {
+        // No space found — hard truncate.
+        format!("{truncated}...")
+    }
 }
 
 #[cfg(test)]
