@@ -254,11 +254,12 @@ impl AppState {
     /// Rename a workspace.
     pub fn rename_workspace(
         &mut self,
-        _id: WorkspaceId,
-        _new_name: String,
+        id: WorkspaceId,
+        new_name: String,
     ) -> Result<(), StateError> {
-        // STUB: returns error — tests will fail until implemented.
-        Err(StateError::NoActiveWorkspace)
+        let ws = self.workspace_mut(id)?;
+        ws.name = new_name;
+        Ok(())
     }
 
     /// Move a workspace to a new position in the list.
@@ -267,17 +268,36 @@ impl AppState {
     /// removed from its current position and inserted at `new_index`.
     pub fn reorder_workspace(
         &mut self,
-        _id: WorkspaceId,
-        _new_index: usize,
+        id: WorkspaceId,
+        new_index: usize,
     ) -> Result<(), StateError> {
-        // STUB: returns error — tests will fail until implemented.
-        Err(StateError::NoActiveWorkspace)
+        let current_index = self
+            .workspaces
+            .iter()
+            .position(|ws| ws.id == id)
+            .ok_or(StateError::WorkspaceNotFound(id))?;
+        let clamped = new_index.min(self.workspaces.len() - 1);
+        if current_index != clamped {
+            let ws = self.workspaces.remove(current_index);
+            self.workspaces.insert(clamped, ws);
+        }
+        Ok(())
     }
 
     /// Swap two workspaces by their IDs.
-    pub fn swap_workspaces(&mut self, _a: WorkspaceId, _b: WorkspaceId) -> Result<(), StateError> {
-        // STUB: returns error — tests will fail until implemented.
-        Err(StateError::NoActiveWorkspace)
+    pub fn swap_workspaces(&mut self, a: WorkspaceId, b: WorkspaceId) -> Result<(), StateError> {
+        let idx_a = self
+            .workspaces
+            .iter()
+            .position(|ws| ws.id == a)
+            .ok_or(StateError::WorkspaceNotFound(a))?;
+        let idx_b = self
+            .workspaces
+            .iter()
+            .position(|ws| ws.id == b)
+            .ok_or(StateError::WorkspaceNotFound(b))?;
+        self.workspaces.swap(idx_a, idx_b);
+        Ok(())
     }
 }
 
