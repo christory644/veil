@@ -19,7 +19,7 @@ use crate::lifecycle::ShutdownHandle;
 // ============================================================
 
 /// Top-level application configuration, deserialized from config.toml.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
     /// General application settings.
@@ -36,26 +36,12 @@ pub struct AppConfig {
     pub ghostty: GhosttyConfig,
 }
 
-#[allow(clippy::derivable_impls)]
-impl Default for AppConfig {
-    fn default() -> Self {
-        // STUB: returns wrong defaults so tests fail (via sub-struct wrong defaults)
-        Self {
-            general: GeneralConfig::default(),
-            sidebar: SidebarConfig::default(),
-            terminal: TerminalConfig::default(),
-            conversations: ConversationsConfig::default(),
-            keybindings: KeybindingsConfig::default(),
-            ghostty: GhosttyConfig::default(),
-        }
-    }
-}
-
 /// Theme preference.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThemeMode {
     /// Dark theme.
+    #[default]
     Dark,
     /// Light theme.
     Light,
@@ -63,16 +49,8 @@ pub enum ThemeMode {
     System,
 }
 
-#[allow(clippy::derivable_impls)]
-impl Default for ThemeMode {
-    fn default() -> Self {
-        // STUB: wrong default — should be Dark
-        Self::Light
-    }
-}
-
 /// Workspace persistence behavior on exit/launch.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PersistenceMode {
     /// Restore previous session.
@@ -80,19 +58,12 @@ pub enum PersistenceMode {
     /// Start fresh.
     Fresh,
     /// Ask the user.
+    #[default]
     Ask,
 }
 
-#[allow(clippy::derivable_impls)]
-impl Default for PersistenceMode {
-    fn default() -> Self {
-        // STUB: wrong default — should be Ask
-        Self::Fresh
-    }
-}
-
 /// `[general]` section.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GeneralConfig {
     /// Theme preference.
@@ -101,29 +72,15 @@ pub struct GeneralConfig {
     pub persistence: PersistenceMode,
 }
 
-#[allow(clippy::derivable_impls)]
-impl Default for GeneralConfig {
-    fn default() -> Self {
-        Self { theme: ThemeMode::default(), persistence: PersistenceMode::default() }
-    }
-}
-
 /// Which sidebar tab to show by default.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DefaultTab {
     /// Show workspaces tab.
+    #[default]
     Workspaces,
     /// Show conversations tab.
     Conversations,
-}
-
-#[allow(clippy::derivable_impls)]
-impl Default for DefaultTab {
-    fn default() -> Self {
-        // STUB: wrong default — should be Workspaces
-        Self::Conversations
-    }
 }
 
 /// `[sidebar]` section.
@@ -140,17 +97,12 @@ pub struct SidebarConfig {
 
 impl Default for SidebarConfig {
     fn default() -> Self {
-        Self {
-            default_tab: DefaultTab::default(),
-            // STUB: wrong default — should be 250
-            width: 200,
-            visible: true,
-        }
+        Self { default_tab: DefaultTab::default(), width: 250, visible: true }
     }
 }
 
 /// Font weight specification.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FontWeight {
     /// 100 weight.
@@ -160,6 +112,7 @@ pub enum FontWeight {
     /// 300 weight.
     Light,
     /// 400 weight.
+    #[default]
     Regular,
     /// 500 weight.
     Medium,
@@ -171,14 +124,6 @@ pub enum FontWeight {
     ExtraBold,
     /// 900 weight.
     Black,
-}
-
-#[allow(clippy::derivable_impls)]
-impl Default for FontWeight {
-    fn default() -> Self {
-        // STUB: wrong default — should be Regular
-        Self::Bold
-    }
 }
 
 /// `[terminal]` section.
@@ -198,11 +143,9 @@ pub struct TerminalConfig {
 impl Default for TerminalConfig {
     fn default() -> Self {
         Self {
-            // STUB: wrong default — should be 10000
-            scrollback_lines: 5000,
+            scrollback_lines: 10000,
             font_family: None,
-            // STUB: wrong default — should be 14.0
-            font_size: 12.0,
+            font_size: 14.0,
             font_weight: FontWeight::default(),
         }
     }
@@ -216,20 +159,16 @@ pub struct ConversationsConfig {
     pub adapters: Vec<String>,
 }
 
-#[allow(clippy::derivable_impls)]
 impl Default for ConversationsConfig {
     fn default() -> Self {
-        Self {
-            // STUB: wrong default — should be vec!["claude-code"]
-            adapters: Vec::new(),
-        }
+        Self { adapters: vec!["claude-code".to_string()] }
     }
 }
 
 /// `[keybindings]` section.
 /// Keys are action names, values are shortcut strings.
 /// Unknown keys are ignored with a warning.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct KeybindingsConfig {
     /// Toggle sidebar visibility.
@@ -264,43 +203,13 @@ pub struct KeybindingsConfig {
     pub focus_pane_down: Option<String>,
 }
 
-#[allow(clippy::derivable_impls)]
-impl Default for KeybindingsConfig {
-    fn default() -> Self {
-        Self {
-            toggle_sidebar: None,
-            workspace_tab: None,
-            conversations_tab: None,
-            new_workspace: None,
-            close_workspace: None,
-            split_horizontal: None,
-            split_vertical: None,
-            close_pane: None,
-            focus_next_pane: None,
-            focus_previous_pane: None,
-            zoom_pane: None,
-            focus_pane_left: None,
-            focus_pane_right: None,
-            focus_pane_up: None,
-            focus_pane_down: None,
-        }
-    }
-}
-
 /// `[ghostty]` section.
 /// Placeholder for Ghostty config import (VEI-35).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GhosttyConfig {
     /// Path to Ghostty config file.
     pub config_path: Option<String>,
-}
-
-#[allow(clippy::derivable_impls)]
-impl Default for GhosttyConfig {
-    fn default() -> Self {
-        Self { config_path: None }
-    }
 }
 
 // ============================================================
