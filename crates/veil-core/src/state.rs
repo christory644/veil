@@ -104,82 +104,141 @@ impl AppState {
 
     /// Generate the next unique ID.
     pub fn next_id(&mut self) -> u64 {
-        todo!()
+        let id = self.next_id;
+        self.next_id += 1;
+        id
     }
 
     /// Create a new workspace. Sets it active if no workspace exists yet.
-    pub fn create_workspace(&mut self, _name: String, _working_directory: PathBuf) -> WorkspaceId {
-        todo!()
+    pub fn create_workspace(&mut self, name: String, working_directory: PathBuf) -> WorkspaceId {
+        let ws_id = WorkspaceId::new(self.next_id());
+        let pane_id = PaneId::new(self.next_id());
+        let surface_id = SurfaceId::new(self.next_id());
+        let ws = Workspace::new(ws_id, name, working_directory, pane_id, surface_id);
+        let is_first = self.workspaces.is_empty();
+        self.workspaces.push(ws);
+        if is_first {
+            self.active_workspace_id = Some(ws_id);
+        }
+        ws_id
     }
 
     /// Close a workspace. Returns surface IDs to clean up.
     /// Activates adjacent workspace if closing the active one.
-    pub fn close_workspace(&mut self, _id: WorkspaceId) -> Result<Vec<SurfaceId>, StateError> {
-        todo!()
+    pub fn close_workspace(&mut self, id: WorkspaceId) -> Result<Vec<SurfaceId>, StateError> {
+        let idx = self
+            .workspaces
+            .iter()
+            .position(|ws| ws.id == id)
+            .ok_or(StateError::WorkspaceNotFound(id))?;
+
+        let surface_ids = self.workspaces[idx].layout.surface_ids();
+        self.workspaces.remove(idx);
+
+        if self.active_workspace_id == Some(id) {
+            if self.workspaces.is_empty() {
+                self.active_workspace_id = None;
+            } else {
+                // Activate the workspace at the same index, or the last one if we removed the tail.
+                let new_idx =
+                    if idx < self.workspaces.len() { idx } else { self.workspaces.len() - 1 };
+                self.active_workspace_id = Some(self.workspaces[new_idx].id);
+            }
+        }
+
+        Ok(surface_ids)
     }
 
     /// Get the active workspace.
     pub fn active_workspace(&self) -> Option<&Workspace> {
-        todo!()
+        let id = self.active_workspace_id?;
+        self.workspaces.iter().find(|ws| ws.id == id)
     }
 
     /// Get the active workspace mutably.
     pub fn active_workspace_mut(&mut self) -> Option<&mut Workspace> {
-        todo!()
+        let id = self.active_workspace_id?;
+        self.workspaces.iter_mut().find(|ws| ws.id == id)
     }
 
     /// Look up a workspace by ID.
-    pub fn workspace(&self, _id: WorkspaceId) -> Option<&Workspace> {
-        todo!()
+    pub fn workspace(&self, id: WorkspaceId) -> Option<&Workspace> {
+        self.workspaces.iter().find(|ws| ws.id == id)
     }
 
     /// Switch the active workspace.
-    pub fn set_active_workspace(&mut self, _id: WorkspaceId) -> Result<(), StateError> {
-        todo!()
+    pub fn set_active_workspace(&mut self, id: WorkspaceId) -> Result<(), StateError> {
+        if !self.workspaces.iter().any(|ws| ws.id == id) {
+            return Err(StateError::WorkspaceNotFound(id));
+        }
+        self.active_workspace_id = Some(id);
+        Ok(())
     }
 
     /// Split a pane in a workspace. Returns the new pane and surface IDs.
     pub fn split_pane(
         &mut self,
-        _workspace_id: WorkspaceId,
-        _pane_id: PaneId,
-        _direction: SplitDirection,
+        workspace_id: WorkspaceId,
+        pane_id: PaneId,
+        direction: SplitDirection,
     ) -> Result<(PaneId, SurfaceId), StateError> {
-        todo!()
+        let new_pane_id = PaneId::new(self.next_id());
+        let new_surface_id = SurfaceId::new(self.next_id());
+        let ws = self
+            .workspaces
+            .iter_mut()
+            .find(|ws| ws.id == workspace_id)
+            .ok_or(StateError::WorkspaceNotFound(workspace_id))?;
+        ws.split_pane(pane_id, direction, new_pane_id, new_surface_id)?;
+        Ok((new_pane_id, new_surface_id))
     }
 
     /// Close a pane in a workspace. Returns the removed surface ID.
     pub fn close_pane(
         &mut self,
-        _workspace_id: WorkspaceId,
-        _pane_id: PaneId,
+        workspace_id: WorkspaceId,
+        pane_id: PaneId,
     ) -> Result<Option<SurfaceId>, StateError> {
-        todo!()
+        let ws = self
+            .workspaces
+            .iter_mut()
+            .find(|ws| ws.id == workspace_id)
+            .ok_or(StateError::WorkspaceNotFound(workspace_id))?;
+        Ok(ws.close_pane(pane_id)?)
     }
 
     /// Toggle sidebar visibility.
     pub fn toggle_sidebar(&mut self) {
-        todo!()
+        self.sidebar.visible = !self.sidebar.visible;
     }
 
     /// Switch the active sidebar tab.
-    pub fn set_sidebar_tab(&mut self, _tab: SidebarTab) {
-        todo!()
+    pub fn set_sidebar_tab(&mut self, tab: SidebarTab) {
+        self.sidebar.active_tab = tab;
     }
 
     /// Push a notification.
-    pub fn add_notification(&mut self, _workspace_id: WorkspaceId, _message: String) {
-        todo!()
+    pub fn add_notification(&mut self, workspace_id: WorkspaceId, message: String) {
+        let id = self.next_id();
+        self.notifications.push(NotificationEntry {
+            id,
+            workspace_id,
+            message,
+            timestamp: Utc::now(),
+            acknowledged: false,
+        });
     }
 
     /// Mark a notification as acknowledged.
-    pub fn acknowledge_notification(&mut self, _id: u64) {
-        todo!()
+    pub fn acknowledge_notification(&mut self, id: u64) {
+        if let Some(notif) = self.notifications.iter_mut().find(|n| n.id == id) {
+            notif.acknowledged = true;
+        }
     }
 
     /// Replace the conversation index.
-    pub fn update_conversations(&mut self, _sessions: Vec<SessionEntry>) {
-        todo!()
+    pub fn update_conversations(&mut self, sessions: Vec<SessionEntry>) {
+        self.conversations.sessions = sessions;
     }
 }
 
