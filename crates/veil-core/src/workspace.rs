@@ -81,22 +81,50 @@ pub enum PaneNode {
 impl PaneNode {
     /// Collect all pane IDs in the tree.
     pub fn pane_ids(&self) -> Vec<PaneId> {
-        todo!()
+        match self {
+            PaneNode::Leaf { pane_id, .. } => vec![*pane_id],
+            PaneNode::Split { first, second, .. } => {
+                let mut ids = first.pane_ids();
+                ids.extend(second.pane_ids());
+                ids
+            }
+        }
     }
 
     /// Collect all surface IDs in the tree.
     pub fn surface_ids(&self) -> Vec<SurfaceId> {
-        todo!()
+        match self {
+            PaneNode::Leaf { surface_id, .. } => vec![*surface_id],
+            PaneNode::Split { first, second, .. } => {
+                let mut ids = first.surface_ids();
+                ids.extend(second.surface_ids());
+                ids
+            }
+        }
     }
 
     /// Locate a pane by ID.
-    pub fn find_pane(&self, _id: PaneId) -> Option<&PaneNode> {
-        todo!()
+    pub fn find_pane(&self, id: PaneId) -> Option<&PaneNode> {
+        match self {
+            PaneNode::Leaf { pane_id, .. } => {
+                if *pane_id == id {
+                    Some(self)
+                } else {
+                    None
+                }
+            }
+            PaneNode::Split { first, second, .. } => {
+                first.find_pane(id).or_else(|| second.find_pane(id))
+            }
+        }
     }
 
     /// Count leaf nodes.
     pub fn pane_count(&self) -> usize {
-        todo!()
+        match self {
+            PaneNode::Leaf { .. } => 1,
+            PaneNode::Split { first, second, .. } => first.pane_count() + second.pane_count(),
+        }
     }
 }
 
@@ -147,18 +175,95 @@ impl Workspace {
     /// Split an existing pane.
     pub fn split_pane(
         &mut self,
-        _pane_id: PaneId,
-        _direction: SplitDirection,
-        _new_pane_id: PaneId,
-        _new_surface_id: SurfaceId,
+        pane_id: PaneId,
+        direction: SplitDirection,
+        new_pane_id: PaneId,
+        new_surface_id: SurfaceId,
     ) -> Result<(), WorkspaceError> {
-        todo!()
+        if !Self::split_node(&mut self.layout, pane_id, direction, new_pane_id, new_surface_id) {
+            return Err(WorkspaceError::PaneNotFound(pane_id));
+        }
+        Ok(())
+    }
+
+    /// Recursively find the target leaf and replace it with a split node.
+    /// Returns true if the pane was found and split.
+    fn split_node(
+        node: &mut PaneNode,
+        target: PaneId,
+        direction: SplitDirection,
+        new_pane_id: PaneId,
+        new_surface_id: SurfaceId,
+    ) -> bool {
+        match node {
+            PaneNode::Leaf { pane_id, .. } => {
+                if *pane_id == target {
+                    let old_leaf = node.clone();
+                    let new_leaf =
+                        PaneNode::Leaf { pane_id: new_pane_id, surface_id: new_surface_id };
+                    *node = PaneNode::Split {
+                        direction,
+                        ratio: 0.5,
+                        first: Box::new(old_leaf),
+                        second: Box::new(new_leaf),
+                    };
+                    true
+                } else {
+                    false
+                }
+            }
+            PaneNode::Split { first, second, .. } => {
+                Self::split_node(first, target, direction, new_pane_id, new_surface_id)
+                    || Self::split_node(second, target, direction, new_pane_id, new_surface_id)
+            }
+        }
     }
 
     /// Remove a pane. Returns the closed surface ID.
     /// If it was the last pane, returns `LastPane` error.
-    pub fn close_pane(&mut self, _pane_id: PaneId) -> Result<Option<SurfaceId>, WorkspaceError> {
-        todo!()
+    pub fn close_pane(&mut self, pane_id: PaneId) -> Result<Option<SurfaceId>, WorkspaceError> {
+        // If the layout is a single leaf, we can't close it.
+        if let PaneNode::Leaf { pane_id: leaf_id, .. } = &self.layout {
+            if *leaf_id == pane_id {
+                return Err(WorkspaceError::LastPane);
+            }
+            return Err(WorkspaceError::PaneNotFound(pane_id));
+        }
+
+        // Check the pane exists before attempting removal.
+        if self.layout.find_pane(pane_id).is_none() {
+            return Err(WorkspaceError::PaneNotFound(pane_id));
+        }
+
+        let surface_id = Self::remove_pane(&mut self.layout, pane_id);
+        Ok(surface_id)
+    }
+
+    /// Recursively remove a pane from the tree, promoting its sibling.
+    /// Returns the surface ID of the removed pane if found.
+    fn remove_pane(node: &mut PaneNode, target: PaneId) -> Option<SurfaceId> {
+        match node {
+            PaneNode::Leaf { .. } => None,
+            PaneNode::Split { first, second, .. } => {
+                // Check if the target is a direct child.
+                if let PaneNode::Leaf { pane_id, surface_id } = first.as_ref() {
+                    if *pane_id == target {
+                        let closed_surface = *surface_id;
+                        *node = *second.clone();
+                        return Some(closed_surface);
+                    }
+                }
+                if let PaneNode::Leaf { pane_id, surface_id } = second.as_ref() {
+                    if *pane_id == target {
+                        let closed_surface = *surface_id;
+                        *node = *first.clone();
+                        return Some(closed_surface);
+                    }
+                }
+                // Recurse into children.
+                Self::remove_pane(first, target).or_else(|| Self::remove_pane(second, target))
+            }
+        }
     }
 
     /// Get all pane IDs in this workspace.
