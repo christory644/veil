@@ -264,32 +264,67 @@ pub enum ConfigError {
 /// 2. macOS: `~/Library/Application Support/com.veil.app/config.toml`
 /// 3. Windows: `%APPDATA%\veil\config.toml`
 pub fn discover_config_path() -> Option<PathBuf> {
-    // STUB: always returns None
+    // 1. Check ~/.config/veil/config.toml (all platforms)
+    if let Some(home) = dirs::home_dir() {
+        let primary = home.join(".config").join("veil").join("config.toml");
+        if primary.is_file() {
+            return Some(primary);
+        }
+    }
+
+    // 2. macOS: ~/Library/Application Support/com.veil.app/config.toml
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = dirs::home_dir() {
+            let macos_alt = home
+                .join("Library")
+                .join("Application Support")
+                .join("com.veil.app")
+                .join("config.toml");
+            if macos_alt.is_file() {
+                return Some(macos_alt);
+            }
+        }
+    }
+
+    // 3. Windows: %APPDATA%\veil\config.toml
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(appdata) = dirs::config_dir() {
+            let win_path = appdata.join("veil").join("config.toml");
+            if win_path.is_file() {
+                return Some(win_path);
+            }
+        }
+    }
+
     None
 }
 
 /// Return the primary config directory path (for creating defaults).
 /// `~/.config/veil/` on all platforms.
 pub fn primary_config_dir() -> Option<PathBuf> {
-    // STUB: returns None — should return a real path
-    None
+    dirs::home_dir().map(|home| home.join(".config").join("veil"))
 }
 
 /// Load and parse a config file from the given path.
 /// Returns the parsed config or a descriptive error.
 pub fn load_config(path: &Path) -> Result<AppConfig, ConfigError> {
-    // STUB: always returns an error
-    Err(ConfigError::ReadError {
-        path: path.to_path_buf(),
-        source: std::io::Error::new(std::io::ErrorKind::NotFound, "stub: not implemented"),
-    })
+    let contents = std::fs::read_to_string(path)
+        .map_err(|e| ConfigError::ReadError { path: path.to_path_buf(), source: e })?;
+    parse_config(&contents, path)
 }
 
 /// Load config from the discovered path, or return defaults if no file exists.
 /// Returns (config, `Option<path>`) -- the path is None if using defaults.
 pub fn load_or_default() -> (AppConfig, Option<PathBuf>) {
-    // STUB: returns defaults with None path
-    (AppConfig::default(), None)
+    match discover_config_path() {
+        Some(path) => match load_config(&path) {
+            Ok(config) => (config, Some(path)),
+            Err(_) => (AppConfig::default(), Some(path)),
+        },
+        None => (AppConfig::default(), None),
+    }
 }
 
 // ============================================================
@@ -309,11 +344,34 @@ pub struct ConfigWarning {
 /// On failure, returns a `ConfigError` with line/column and a
 /// human-readable message describing the problem and suggesting fixes.
 pub fn parse_config(toml_str: &str, source_path: &Path) -> Result<AppConfig, ConfigError> {
-    // STUB: always returns an error instead of parsing
-    let _ = toml_str;
-    Err(ConfigError::ParseError {
-        path: source_path.to_path_buf(),
-        message: "stub: not implemented".to_string(),
+    toml::from_str(toml_str).map_err(|e| {
+        let message = e.message().to_string();
+        match e.span() {
+            Some(span) => {
+                // Calculate line and column from the byte offset
+                let start = span.start;
+                let mut line = 1;
+                let mut col = 1;
+                for (i, ch) in toml_str.char_indices() {
+                    if i >= start {
+                        break;
+                    }
+                    if ch == '\n' {
+                        line += 1;
+                        col = 1;
+                    } else {
+                        col += 1;
+                    }
+                }
+                ConfigError::ParseErrorWithLocation {
+                    path: source_path.to_path_buf(),
+                    line,
+                    column: col,
+                    message,
+                }
+            }
+            None => ConfigError::ParseError { path: source_path.to_path_buf(), message },
+        }
     })
 }
 
@@ -326,8 +384,61 @@ pub fn parse_config(toml_str: &str, source_path: &Path) -> Result<AppConfig, Con
 ///
 /// Returns the validated config and a list of warnings.
 pub fn validate_config(config: AppConfig) -> (AppConfig, Vec<ConfigWarning>) {
-    // STUB: returns config unchanged without any validation
-    (config, Vec::new())
+    let mut config = config;
+    let mut warnings = Vec::new();
+
+    // sidebar.width: clamp to 100..=1000
+    if config.sidebar.width < 100 {
+        warnings.push(ConfigWarning {
+            field: "sidebar.width".to_string(),
+            message: format!(
+                "sidebar.width {} is below minimum 100, clamped to 100",
+                config.sidebar.width
+            ),
+        });
+        config.sidebar.width = 100;
+    } else if config.sidebar.width > 1000 {
+        warnings.push(ConfigWarning {
+            field: "sidebar.width".to_string(),
+            message: format!(
+                "sidebar.width {} is above maximum 1000, clamped to 1000",
+                config.sidebar.width
+            ),
+        });
+        config.sidebar.width = 1000;
+    }
+
+    // terminal.font_size: clamp to 6.0..=72.0
+    if config.terminal.font_size < 6.0 {
+        warnings.push(ConfigWarning {
+            field: "terminal.font_size".to_string(),
+            message: format!(
+                "terminal.font_size {} is below minimum 6.0, clamped to 6.0",
+                config.terminal.font_size
+            ),
+        });
+        config.terminal.font_size = 6.0;
+    } else if config.terminal.font_size > 72.0 {
+        warnings.push(ConfigWarning {
+            field: "terminal.font_size".to_string(),
+            message: format!(
+                "terminal.font_size {} is above maximum 72.0, clamped to 72.0",
+                config.terminal.font_size
+            ),
+        });
+        config.terminal.font_size = 72.0;
+    }
+
+    // terminal.scrollback_lines: if 0, set to 1
+    if config.terminal.scrollback_lines == 0 {
+        warnings.push(ConfigWarning {
+            field: "terminal.scrollback_lines".to_string(),
+            message: "terminal.scrollback_lines is 0, set to 1".to_string(),
+        });
+        config.terminal.scrollback_lines = 1;
+    }
+
+    (config, warnings)
 }
 
 // ============================================================
