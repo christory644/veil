@@ -101,13 +101,15 @@ pub struct Channels {
 
 impl Channels {
     /// Create the channel pairs with the given buffer size.
-    pub fn new(_buffer_size: usize) -> Self {
-        todo!()
+    pub fn new(buffer_size: usize) -> Self {
+        let (state_tx, state_rx) = tokio::sync::mpsc::channel(buffer_size);
+        let (command_tx, _) = tokio::sync::broadcast::channel(buffer_size);
+        Self { state_tx, state_rx, command_tx }
     }
 
     /// Create a new subscriber for the command channel.
     pub fn command_subscriber(&self) -> tokio::sync::broadcast::Receiver<AppCommand> {
-        todo!()
+        self.command_tx.subscribe()
     }
 }
 
