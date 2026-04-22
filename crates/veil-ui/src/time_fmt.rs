@@ -3,7 +3,7 @@
 //! Converts absolute `DateTime<Utc>` values into human-readable relative
 //! strings like "just now", "5m ago", "yesterday", etc.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Utc};
 
 /// Format a timestamp as a relative string ("just now", "5m ago", "2h ago",
 /// "yesterday", "3 days ago", "2 weeks ago", "Jan 15").
@@ -25,16 +25,17 @@ pub fn format_relative(timestamp: DateTime<Utc>, now: DateTime<Utc>) -> String {
     if total_seconds < 60 {
         "just now".to_string()
     } else if total_minutes < 60 {
-        format!("{}m ago", total_minutes)
+        format!("{total_minutes}m ago")
     } else if total_hours < 24 {
-        format!("{}h ago", total_hours)
+        format!("{total_hours}h ago")
     } else if total_hours < 48 {
         "yesterday".to_string()
     } else if total_days < 14 {
-        format!("{} days ago", total_days)
+        format!("{total_days} days ago")
     } else if total_days < 60 {
-        format!("{} weeks ago", total_days / 7)
-    } else if timestamp.format("%Y").to_string() == now.format("%Y").to_string() {
+        let weeks = total_days / 7;
+        format!("{weeks} weeks ago")
+    } else if timestamp.year() == now.year() {
         timestamp.format("%b %-d").to_string()
     } else {
         timestamp.format("%b %-d, %Y").to_string()

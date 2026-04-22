@@ -243,8 +243,10 @@ mod tests {
     #[test]
     fn sidebar_response_selected_conversation_field_is_accessible() {
         // Verify the field exists and can be set/read.
-        let mut response = SidebarResponse::default();
-        response.selected_conversation = Some(SessionId::new("test-session"));
+        let response = SidebarResponse {
+            selected_conversation: Some(SessionId::new("test-session")),
+            ..SidebarResponse::default()
+        };
         assert_eq!(
             response.selected_conversation,
             Some(SessionId::new("test-session")),

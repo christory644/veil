@@ -50,8 +50,8 @@ pub struct ConversationGroup {
 ///
 /// `now` is passed explicitly for deterministic testing.
 pub fn extract_conversation_groups(state: &AppState, now: DateTime<Utc>) -> Vec<ConversationGroup> {
-    // AgentKind does not implement Hash, so we group by its Display string.
-    // BTreeMap gives deterministic iteration before we re-sort by recency.
+    // AgentKind implements neither Hash nor Ord, so we group by its Display
+    // string. BTreeMap gives deterministic iteration before we re-sort by recency.
     let mut groups_by_name: BTreeMap<String, (AgentKind, Vec<&SessionEntry>)> = BTreeMap::new();
 
     for session in &state.conversations.sessions {
@@ -63,25 +63,25 @@ pub fn extract_conversation_groups(state: &AppState, now: DateTime<Utc>) -> Vec<
             .push(session);
     }
 
-    // Build intermediate vec with max started_at for inter-group sorting.
-    let mut intermediate: Vec<(DateTime<Utc>, AgentKind, Vec<&SessionEntry>)> = groups_by_name
-        .into_values()
-        .map(|(agent_kind, mut sessions)| {
-            // Sort within group by started_at descending (most recent first).
-            sessions.sort_by(|a, b| b.started_at.cmp(&a.started_at));
-            let max_started_at =
-                sessions.first().map(|s| s.started_at).unwrap_or(DateTime::<Utc>::MIN_UTC);
-            (max_started_at, agent_kind, sessions)
-        })
-        .collect();
+    // Build vec with (max_started_at, display_name, agent_kind, sessions) for sorting.
+    let mut sorted_groups: Vec<(DateTime<Utc>, String, AgentKind, Vec<&SessionEntry>)> =
+        groups_by_name
+            .into_iter()
+            .map(|(agent_name, (agent_kind, mut sessions))| {
+                // Sort within group by started_at descending (most recent first).
+                sessions.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+                let max_started_at =
+                    sessions.first().map_or(DateTime::<Utc>::MIN_UTC, |s| s.started_at);
+                (max_started_at, agent_name, agent_kind, sessions)
+            })
+            .collect();
 
     // Sort groups by most recent session descending (newer groups first).
-    intermediate.sort_by(|a, b| b.0.cmp(&a.0));
+    sorted_groups.sort_by(|a, b| b.0.cmp(&a.0));
 
-    intermediate
+    sorted_groups
         .into_iter()
-        .map(|(_max_ts, agent_kind, sessions)| {
-            let agent_name = agent_kind.to_string();
+        .map(|(_max_ts, agent_name, agent_kind, sessions)| {
             let session_count = sessions.len();
             let entries = sessions.iter().map(|s| session_to_entry_data(s, now)).collect();
             ConversationGroup { agent_name, agent_kind, session_count, entries }

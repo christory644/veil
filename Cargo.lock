@@ -2732,6 +2732,7 @@ dependencies = [
 name = "veil-ui"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "dirs",
  "egui",
  "tracing",
