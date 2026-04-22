@@ -4,6 +4,7 @@
 //! a unified interface for session discovery, preview lookup, and watch path collection.
 
 use std::path::PathBuf;
+use tracing::warn;
 use veil_core::session::{AgentKind, SessionEntry, SessionId, SessionPreview};
 
 use crate::adapter::AgentAdapter;
@@ -34,8 +35,12 @@ impl AdapterRegistry {
             for result in adapter.discover_sessions() {
                 match result {
                     Ok(entry) => entries.push(entry),
-                    Err(_err) => {
-                        // Errors are logged but do not prevent other sessions from being collected.
+                    Err(err) => {
+                        warn!(
+                            adapter = adapter.name(),
+                            %err,
+                            "skipping session that failed to load from adapter"
+                        );
                     }
                 }
             }
@@ -79,109 +84,8 @@ impl Default for AdapterRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapter::{AdapterError, AgentAdapter};
-    use chrono::Utc;
-    use veil_core::session::{SessionEntry, SessionStatus};
-
-    /// Test adapter with configurable behavior.
-    struct MockAdapter {
-        adapter_name: String,
-        kind: AgentKind,
-        paths: Vec<PathBuf>,
-        sessions: Vec<SessionEntry>,
-        errors: Vec<AdapterError>,
-        preview: Option<SessionPreview>,
-    }
-
-    impl MockAdapter {
-        fn new(name: &str, kind: AgentKind) -> Self {
-            Self {
-                adapter_name: name.to_string(),
-                kind,
-                paths: vec![],
-                sessions: vec![],
-                errors: vec![],
-                preview: None,
-            }
-        }
-
-        fn with_sessions(mut self, sessions: Vec<SessionEntry>) -> Self {
-            self.sessions = sessions;
-            self
-        }
-
-        fn with_errors(mut self, errors: Vec<AdapterError>) -> Self {
-            self.errors = errors;
-            self
-        }
-
-        fn with_watch_paths(mut self, paths: Vec<PathBuf>) -> Self {
-            self.paths = paths;
-            self
-        }
-
-        fn with_preview(mut self, preview: SessionPreview) -> Self {
-            self.preview = Some(preview);
-            self
-        }
-    }
-
-    impl AgentAdapter for MockAdapter {
-        fn name(&self) -> &str {
-            &self.adapter_name
-        }
-
-        fn agent_kind(&self) -> AgentKind {
-            self.kind.clone()
-        }
-
-        fn watch_paths(&self) -> Vec<PathBuf> {
-            self.paths.clone()
-        }
-
-        fn discover_sessions(&self) -> Vec<Result<SessionEntry, AdapterError>> {
-            let mut results: Vec<Result<SessionEntry, AdapterError>> =
-                self.sessions.iter().cloned().map(Ok).collect();
-            for err in &self.errors {
-                match err {
-                    AdapterError::DataDirNotFound(p) => {
-                        results.push(Err(AdapterError::DataDirNotFound(p.clone())));
-                    }
-                    AdapterError::ParseError { path, .. } => {
-                        results.push(Err(AdapterError::ParseError {
-                            path: path.clone(),
-                            source: "mock error".into(),
-                        }));
-                    }
-                    AdapterError::IoError(_) => {
-                        results.push(Err(AdapterError::IoError(std::io::Error::other("mock io"))));
-                    }
-                }
-            }
-            results
-        }
-
-        fn session_preview(&self, _id: &SessionId) -> Result<Option<SessionPreview>, AdapterError> {
-            Ok(self.preview.clone())
-        }
-    }
-
-    fn make_entry(id: &str, agent: AgentKind) -> SessionEntry {
-        SessionEntry {
-            id: SessionId::new(id),
-            agent,
-            title: format!("Session {id}"),
-            working_dir: PathBuf::from("/tmp"),
-            branch: None,
-            pr_number: None,
-            pr_url: None,
-            plan_content: None,
-            status: SessionStatus::Active,
-            started_at: Utc::now(),
-            ended_at: None,
-            indexed_at: Utc::now(),
-        }
-    }
+    use crate::adapter::AdapterError;
+    use crate::testutil::{make_test_entry, MockAdapter};
 
     #[test]
     fn empty_registry_discover_all_returns_empty() {
@@ -194,8 +98,8 @@ mod tests {
     fn single_adapter_returns_its_sessions() {
         let mut registry = AdapterRegistry::new();
         let adapter = MockAdapter::new("Claude Code", AgentKind::ClaudeCode).with_sessions(vec![
-            make_entry("s1", AgentKind::ClaudeCode),
-            make_entry("s2", AgentKind::ClaudeCode),
+            make_test_entry("s1", AgentKind::ClaudeCode),
+            make_test_entry("s2", AgentKind::ClaudeCode),
         ]);
         registry.register(Box::new(adapter));
 
@@ -208,9 +112,9 @@ mod tests {
         let mut registry = AdapterRegistry::new();
 
         let adapter1 = MockAdapter::new("Claude Code", AgentKind::ClaudeCode)
-            .with_sessions(vec![make_entry("cc1", AgentKind::ClaudeCode)]);
+            .with_sessions(vec![make_test_entry("cc1", AgentKind::ClaudeCode)]);
         let adapter2 = MockAdapter::new("Codex", AgentKind::Codex)
-            .with_sessions(vec![make_entry("cx1", AgentKind::Codex)]);
+            .with_sessions(vec![make_test_entry("cx1", AgentKind::Codex)]);
 
         registry.register(Box::new(adapter1));
         registry.register(Box::new(adapter2));
@@ -225,12 +129,12 @@ mod tests {
 
         // Adapter with a mix of good sessions and errors
         let adapter_with_errors = MockAdapter::new("Buggy", AgentKind::ClaudeCode)
-            .with_sessions(vec![make_entry("good1", AgentKind::ClaudeCode)])
+            .with_sessions(vec![make_test_entry("good1", AgentKind::ClaudeCode)])
             .with_errors(vec![AdapterError::DataDirNotFound(PathBuf::from("/missing"))]);
 
         // A healthy adapter
         let healthy_adapter = MockAdapter::new("Codex", AgentKind::Codex)
-            .with_sessions(vec![make_entry("cx1", AgentKind::Codex)]);
+            .with_sessions(vec![make_test_entry("cx1", AgentKind::Codex)]);
 
         registry.register(Box::new(adapter_with_errors));
         registry.register(Box::new(healthy_adapter));

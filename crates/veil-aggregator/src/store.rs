@@ -61,6 +61,38 @@ impl From<std::io::Error> for StoreError {
     }
 }
 
+/// SQL for inserting or replacing a session row.
+const UPSERT_SQL: &str = "INSERT OR REPLACE INTO sessions
+    (id, agent, title, working_dir, branch, pr_number, pr_url,
+     plan_content, status, started_at, ended_at, indexed_at)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)";
+
+/// Build the parameter array for a session upsert statement.
+fn upsert_params(entry: &SessionEntry) -> [Box<dyn rusqlite::types::ToSql>; 12] {
+    [
+        Box::new(entry.id.as_str().to_string()),
+        Box::new(entry.agent.to_string()),
+        Box::new(entry.title.clone()),
+        Box::new(entry.working_dir.to_string_lossy().to_string()),
+        Box::new(entry.branch.clone()),
+        Box::new(entry.pr_number.map(u64::cast_signed)),
+        Box::new(entry.pr_url.clone()),
+        Box::new(entry.plan_content.clone()),
+        Box::new(entry.status.to_string()),
+        Box::new(entry.started_at.to_rfc3339()),
+        Box::new(entry.ended_at.map(|dt| dt.to_rfc3339())),
+        Box::new(entry.indexed_at.to_rfc3339()),
+    ]
+}
+
+/// Parse an RFC 3339 timestamp string into a `DateTime<Utc>`, mapping
+/// parse failures into `rusqlite::Error` for use inside row-mapping closures.
+fn parse_rfc3339(s: &str) -> Result<DateTime<Utc>, rusqlite::Error> {
+    DateTime::parse_from_rfc3339(s).map(|dt| dt.with_timezone(&Utc)).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+    })
+}
+
 impl SessionStore {
     /// Open or create the database at the given path.
     /// Runs migrations on first open.
@@ -117,26 +149,8 @@ impl SessionStore {
     /// Insert or update a session entry.
     /// Uses INSERT OR REPLACE -- the session ID is the natural key.
     pub fn upsert_session(&self, entry: &SessionEntry) -> Result<(), StoreError> {
-        self.conn.execute(
-            "INSERT OR REPLACE INTO sessions
-             (id, agent, title, working_dir, branch, pr_number, pr_url,
-              plan_content, status, started_at, ended_at, indexed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            rusqlite::params![
-                entry.id.as_str(),
-                entry.agent.to_string(),
-                entry.title,
-                entry.working_dir.to_string_lossy().to_string(),
-                entry.branch,
-                entry.pr_number.map(u64::cast_signed),
-                entry.pr_url,
-                entry.plan_content,
-                entry.status.to_string(),
-                entry.started_at.to_rfc3339(),
-                entry.ended_at.map(|dt| dt.to_rfc3339()),
-                entry.indexed_at.to_rfc3339(),
-            ],
-        )?;
+        let params = upsert_params(entry);
+        self.conn.execute(UPSERT_SQL, params)?;
         Ok(())
     }
 
@@ -147,26 +161,8 @@ impl SessionStore {
         }
         let tx = self.conn.unchecked_transaction()?;
         for entry in entries {
-            tx.execute(
-                "INSERT OR REPLACE INTO sessions
-                 (id, agent, title, working_dir, branch, pr_number, pr_url,
-                  plan_content, status, started_at, ended_at, indexed_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-                rusqlite::params![
-                    entry.id.as_str(),
-                    entry.agent.to_string(),
-                    entry.title,
-                    entry.working_dir.to_string_lossy().to_string(),
-                    entry.branch,
-                    entry.pr_number.map(u64::cast_signed),
-                    entry.pr_url,
-                    entry.plan_content,
-                    entry.status.to_string(),
-                    entry.started_at.to_rfc3339(),
-                    entry.ended_at.map(|dt| dt.to_rfc3339()),
-                    entry.indexed_at.to_rfc3339(),
-                ],
-            )?;
+            let params = upsert_params(entry);
+            tx.execute(UPSERT_SQL, params)?;
         }
         let count = entries.len();
         tx.commit()?;
@@ -191,37 +187,9 @@ impl SessionStore {
         let agent = AgentKind::from_str(&agent_str).unwrap_or(AgentKind::Unknown(agent_str));
         let status = SessionStatus::from_str(&status_str).unwrap_or_default();
 
-        let started_at = DateTime::parse_from_rfc3339(&started_at_str)
-            .map(|dt| dt.with_timezone(&Utc))
-            .map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    0,
-                    rusqlite::types::Type::Text,
-                    Box::new(e),
-                )
-            })?;
-
-        let ended_at = ended_at_str
-            .map(|s| {
-                DateTime::parse_from_rfc3339(&s).map(|dt| dt.with_timezone(&Utc)).map_err(|e| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        0,
-                        rusqlite::types::Type::Text,
-                        Box::new(e),
-                    )
-                })
-            })
-            .transpose()?;
-
-        let indexed_at = DateTime::parse_from_rfc3339(&indexed_at_str)
-            .map(|dt| dt.with_timezone(&Utc))
-            .map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    0,
-                    rusqlite::types::Type::Text,
-                    Box::new(e),
-                )
-            })?;
+        let started_at = parse_rfc3339(&started_at_str)?;
+        let ended_at = ended_at_str.map(|s| parse_rfc3339(&s)).transpose()?;
+        let indexed_at = parse_rfc3339(&indexed_at_str)?;
 
         Ok(SessionEntry {
             id: SessionId::new(id),

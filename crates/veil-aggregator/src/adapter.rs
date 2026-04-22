@@ -82,103 +82,12 @@ pub trait AgentAdapter: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
-
-    /// A test adapter that returns configurable results.
-    struct TestAdapter {
-        adapter_name: String,
-        kind: AgentKind,
-        paths: Vec<PathBuf>,
-        sessions: Vec<Result<SessionEntry, AdapterError>>,
-        preview: Option<SessionPreview>,
-    }
-
-    impl TestAdapter {
-        fn new(name: &str, kind: AgentKind) -> Self {
-            Self {
-                adapter_name: name.to_string(),
-                kind,
-                paths: vec![],
-                sessions: vec![],
-                preview: None,
-            }
-        }
-
-        fn with_sessions(mut self, sessions: Vec<Result<SessionEntry, AdapterError>>) -> Self {
-            self.sessions = sessions;
-            self
-        }
-
-        fn with_watch_paths(mut self, paths: Vec<PathBuf>) -> Self {
-            self.paths = paths;
-            self
-        }
-
-        fn with_preview(mut self, preview: SessionPreview) -> Self {
-            self.preview = Some(preview);
-            self
-        }
-    }
-
-    impl AgentAdapter for TestAdapter {
-        fn name(&self) -> &str {
-            &self.adapter_name
-        }
-
-        fn agent_kind(&self) -> AgentKind {
-            self.kind.clone()
-        }
-
-        fn watch_paths(&self) -> Vec<PathBuf> {
-            self.paths.clone()
-        }
-
-        fn discover_sessions(&self) -> Vec<Result<SessionEntry, AdapterError>> {
-            // Return cloned entries where possible; for errors, recreate them
-            self.sessions
-                .iter()
-                .map(|r| match r {
-                    Ok(entry) => Ok(entry.clone()),
-                    Err(AdapterError::DataDirNotFound(p)) => {
-                        Err(AdapterError::DataDirNotFound(p.clone()))
-                    }
-                    Err(AdapterError::ParseError { path, .. }) => Err(AdapterError::ParseError {
-                        path: path.clone(),
-                        source: "test error".into(),
-                    }),
-                    Err(AdapterError::IoError(_)) => {
-                        Err(AdapterError::IoError(std::io::Error::other("test io error")))
-                    }
-                })
-                .collect()
-        }
-
-        fn session_preview(&self, _id: &SessionId) -> Result<Option<SessionPreview>, AdapterError> {
-            Ok(self.preview.clone())
-        }
-    }
-
-    fn make_test_entry(id: &str) -> SessionEntry {
-        SessionEntry {
-            id: SessionId::new(id),
-            agent: AgentKind::ClaudeCode,
-            title: format!("Session {id}"),
-            working_dir: PathBuf::from("/tmp"),
-            branch: None,
-            pr_number: None,
-            pr_url: None,
-            plan_content: None,
-            status: veil_core::session::SessionStatus::Active,
-            started_at: Utc::now(),
-            ended_at: None,
-            indexed_at: Utc::now(),
-        }
-    }
+    use crate::testutil::{make_test_entry, MockAdapter};
 
     #[test]
     fn trait_is_object_safe() {
         // This compiles only if AgentAdapter is object-safe.
-        let adapter = TestAdapter::new("Test", AgentKind::ClaudeCode);
+        let adapter = MockAdapter::new("Test", AgentKind::ClaudeCode);
         let _boxed: Box<dyn AgentAdapter> = Box::new(adapter);
     }
 
@@ -190,18 +99,17 @@ mod tests {
 
     #[test]
     fn mock_adapter_name_and_kind() {
-        let adapter = TestAdapter::new("Claude Code", AgentKind::ClaudeCode);
+        let adapter = MockAdapter::new("Claude Code", AgentKind::ClaudeCode);
         assert_eq!(adapter.name(), "Claude Code");
         assert_eq!(adapter.agent_kind(), AgentKind::ClaudeCode);
     }
 
     #[test]
     fn discover_sessions_with_mixed_ok_and_err() {
-        let entry = make_test_entry("ok-session");
-        let adapter = TestAdapter::new("Test", AgentKind::ClaudeCode).with_sessions(vec![
-            Ok(entry),
-            Err(AdapterError::DataDirNotFound(PathBuf::from("/missing"))),
-        ]);
+        let entry = make_test_entry("ok-session", AgentKind::ClaudeCode);
+        let adapter = MockAdapter::new("Test", AgentKind::ClaudeCode)
+            .with_sessions(vec![entry])
+            .with_errors(vec![AdapterError::DataDirNotFound(PathBuf::from("/missing"))]);
 
         let results = adapter.discover_sessions();
         assert_eq!(results.len(), 2);
@@ -211,7 +119,7 @@ mod tests {
 
     #[test]
     fn session_preview_returns_none_for_unknown_id() {
-        let adapter = TestAdapter::new("Test", AgentKind::ClaudeCode);
+        let adapter = MockAdapter::new("Test", AgentKind::ClaudeCode);
         let result =
             adapter.session_preview(&SessionId::new("nonexistent")).expect("should not error");
         assert!(result.is_none());
@@ -226,7 +134,7 @@ mod tests {
             message_count: 10,
             tool_call_count: 3,
         };
-        let adapter = TestAdapter::new("Test", AgentKind::ClaudeCode).with_preview(preview);
+        let adapter = MockAdapter::new("Test", AgentKind::ClaudeCode).with_preview(preview);
         let result =
             adapter.session_preview(&SessionId::new("preview-session")).expect("should not error");
         assert!(result.is_some());
@@ -263,7 +171,7 @@ mod tests {
 
     #[test]
     fn watch_paths_returns_configured_paths() {
-        let adapter = TestAdapter::new("Test", AgentKind::ClaudeCode)
+        let adapter = MockAdapter::new("Test", AgentKind::ClaudeCode)
             .with_watch_paths(vec![PathBuf::from("/home/user/.claude"), PathBuf::from("/tmp")]);
         let paths = adapter.watch_paths();
         assert_eq!(paths.len(), 2);

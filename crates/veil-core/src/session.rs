@@ -69,6 +69,18 @@ impl fmt::Display for ParseAgentKindError {
 
 impl std::error::Error for ParseAgentKindError {}
 
+/// Error returned when parsing a `SessionStatus` from a string fails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseSessionStatusError;
+
+impl fmt::Display for ParseSessionStatusError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "unknown session status")
+    }
+}
+
+impl std::error::Error for ParseSessionStatusError {}
+
 impl FromStr for AgentKind {
     type Err = ParseAgentKindError;
 
@@ -109,7 +121,7 @@ impl fmt::Display for SessionStatus {
 }
 
 impl FromStr for SessionStatus {
-    type Err = ParseAgentKindError;
+    type Err = ParseSessionStatusError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
@@ -117,7 +129,7 @@ impl FromStr for SessionStatus {
             "completed" => Ok(Self::Completed),
             "errored" => Ok(Self::Errored),
             "unknown" => Ok(Self::Unknown),
-            _ => Err(ParseAgentKindError),
+            _ => Err(ParseSessionStatusError),
         }
     }
 }
