@@ -12,6 +12,10 @@ thiserror.workspace = true
 tracing.workspace = true
 serde.workspace = true
 chrono.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["sync", "macros", "rt", "time"] }
 
 [lints]
 workspace = true
