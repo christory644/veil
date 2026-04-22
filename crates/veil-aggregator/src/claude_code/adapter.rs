@@ -71,7 +71,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
                     id: SessionId::new(&parsed.session_id),
                     agent: AgentKind::ClaudeCode,
                     title: title::generate_title(None, parsed.first_user_message.as_deref()),
-                    working_dir: PathBuf::from(parsed.cwd.as_deref().unwrap_or("")),
+                    working_dir: parsed.cwd.map_or_else(|| PathBuf::from("."), PathBuf::from),
                     branch: None,
                     pr_number: None,
                     pr_url: None,
