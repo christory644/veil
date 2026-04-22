@@ -1,11 +1,35 @@
+//! Tracing subscriber initialization for Veil.
+//!
+//! This crate configures the `tracing` subscriber stack with two output layers:
+//!
+//! - **stderr**: human-readable, ANSI-colored format for development
+//! - **file**: structured JSON logs to `~/.local/share/veil/logs/` for diagnostics
+//!
+//! It also installs a panic hook that emits panic info as a tracing event, and
+//! on Unix, registers a signal handler for SIGABRT (best-effort crash safety).
+//!
+//! # Usage
+//!
+//! Call [`init()`] exactly once at the start of `main()`. Hold the returned
+//! [`TracingGuard`] until the application exits — dropping it flushes the file
+//! appender.
+//!
+//! ```no_run
+//! let _guard = veil_tracing::init();
+//! tracing::info!("hello from veil");
+//! ```
+
 use std::path::PathBuf;
 
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
-/// Guards returned by `init()` that must be held for the lifetime of the application.
-/// Dropping this flushes and closes the file appender.
+/// Guard returned by [`init()`] that must be held for the lifetime of the application.
+///
+/// Dropping this flushes and closes the file appender's background writer thread.
+/// If file logging was unavailable (e.g., the log directory could not be created),
+/// the guard still exists but dropping it is a no-op.
 pub struct TracingGuard {
     /// Holds the `tracing_appender::non_blocking::WorkerGuard`
     /// so the background writer thread stays alive.
@@ -30,7 +54,7 @@ pub fn log_dir() -> Option<PathBuf> {
 /// Initialize the tracing subscriber stack.
 ///
 /// This MUST be called exactly once, as early as possible in `main()`.
-/// Returns a `TracingGuard` that must be held (not dropped) until
+/// Returns a [`TracingGuard`] that must be held (not dropped) until
 /// the application exits. Dropping the guard flushes pending log writes.
 ///
 /// # Behavior
@@ -40,25 +64,24 @@ pub fn log_dir() -> Option<PathBuf> {
 /// - If the log directory cannot be created, falls back to stderr-only
 /// - Reads `VEIL_LOG` env var for level filtering (falls back to
 ///   INFO in release, DEBUG in debug builds)
-/// - Installs a panic hook that flushes tracing buffers
+/// - Installs a panic hook that logs panic info via tracing
+/// - On Unix, registers a signal handler for SIGABRT
 ///
 /// # Panics
 ///
 /// Panics if called more than once (tracing global subscriber is already set).
 pub fn init() -> TracingGuard {
-    let default_level = if cfg!(debug_assertions) { "debug" } else { "info" };
+    let env_filter = build_env_filter();
 
-    let env_filter =
-        EnvFilter::try_from_env("VEIL_LOG").unwrap_or_else(|_| EnvFilter::new(default_level));
-
-    // Stderr layer: human-readable, with ANSI colors, targets, and thread IDs
+    // Stderr layer: human-readable, ANSI-colored, with targets and thread IDs.
     let stderr_layer = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stderr)
         .with_ansi(true)
         .with_target(true)
         .with_thread_ids(true);
 
-    // File layer: JSON format with daily rotation, if log directory is available
+    // File layer: JSON format with daily rotation, if log directory is available.
+    // Falls back to stderr-only if the directory cannot be created.
     let (file_layer, file_guard) = if let Some(dir) = log_dir() {
         let file_appender = tracing_appender::rolling::daily(dir, "veil.log");
         let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
@@ -87,27 +110,65 @@ pub fn init() -> TracingGuard {
 
 /// Initialize tracing for test contexts.
 ///
-/// Uses a stderr-only subscriber with no file output.
-/// Safe to call multiple times (uses `try_init` internally).
-/// Useful for integration tests that want to see tracing output.
+/// Uses a stderr-only subscriber with no file output and no panic hook.
+/// Defaults to `WARN` level to keep test output clean unless the developer
+/// sets `VEIL_LOG` (or `RUST_LOG`) to opt into more verbose output.
+///
+/// Safe to call multiple times — subsequent calls are silently ignored.
 pub fn init_test() {
-    let _ = tracing_subscriber::fmt::try_init();
+    let filter = EnvFilter::try_from_env("VEIL_LOG")
+        .or_else(|_| EnvFilter::try_from_default_env())
+        .unwrap_or_else(|_| EnvFilter::new("warn"));
+
+    let _ = tracing_subscriber::fmt().with_env_filter(filter).with_test_writer().try_init();
 }
 
-/// Install a panic hook that logs panic info via tracing
-/// and flushes the file appender before the default handler runs.
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+/// Build the [`EnvFilter`] from `VEIL_LOG`, falling back to a default level.
+///
+/// If `VEIL_LOG` is set but unparseable, prints a warning to stderr and
+/// falls back to the default level (DEBUG in debug builds, INFO in release).
+fn build_env_filter() -> EnvFilter {
+    let default_level = if cfg!(debug_assertions) { "debug" } else { "info" };
+
+    match std::env::var("VEIL_LOG") {
+        Ok(ref val) if !val.is_empty() => EnvFilter::try_new(val).unwrap_or_else(|e| {
+            eprintln!(
+                "veil-tracing: invalid VEIL_LOG value {val:?}, \
+                 falling back to {default_level}: {e}"
+            );
+            EnvFilter::new(default_level)
+        }),
+        _ => EnvFilter::new(default_level),
+    }
+}
+
+/// Extract a human-readable message from a panic payload.
+fn panic_message(payload: &dyn std::any::Any) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic payload".to_string()
+    }
+}
+
+/// Install a panic hook that logs panic info via tracing before the
+/// default handler runs.
+///
+/// This ensures the panic is captured in the JSON log file. The
+/// [`TracingGuard`]'s `Drop` impl will flush the non-blocking writer
+/// during unwinding, so the event is not lost.
 fn install_panic_hook() {
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
         let location =
             panic_info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()));
-        let message = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
-            (*s).to_string()
-        } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
-            s.clone()
-        } else {
-            "unknown panic payload".to_string()
-        };
+        let message = panic_message(panic_info.payload());
 
         tracing::error!(
             panic.message = %message,
@@ -120,37 +181,30 @@ fn install_panic_hook() {
 }
 
 /// Install best-effort signal handlers for crash signals (Unix only).
-/// These write a short message to stderr and exit.
-/// They cannot safely flush the tracing file appender.
 ///
-/// Registers a handler for SIGABRT (e.g., from C assertion failures in FFI).
-/// SIGSEGV is not registered because `signal-hook` forbids it (it's in the
+/// Registers a flag-based handler for SIGABRT (e.g., from C assertion failures
+/// in FFI code). When the signal arrives, the flag is set atomically
+/// (async-signal-safe), and then the OS default handler terminates the process.
+///
+/// SIGSEGV is **not** registered because `signal-hook` forbids it (it is in the
 /// forbidden signals list alongside SIGKILL, SIGSTOP, SIGILL, and SIGFPE).
-/// For SIGSEGV, the OS default handler (core dump) is the best diagnostic.
+/// For SIGSEGV, the OS default handler (core dump) provides the best diagnostics.
 #[cfg(unix)]
 fn install_signal_handlers() {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
 
-    // Register a flag for SIGABRT. When the signal arrives, the flag is set
-    // atomically (async-signal-safe), then the default handler runs and
-    // terminates the process. The flag is best-effort: it allows any
-    // monitoring thread to detect the signal was received, though in
-    // practice the process terminates immediately after.
-    let abrt_flag = Arc::new(AtomicBool::new(false));
-    let _ = signal_hook::flag::register(signal_hook::consts::SIGABRT, Arc::clone(&abrt_flag));
-
-    // Log that signal handlers are installed (the flag is used to confirm
-    // registration succeeded; we don't need to read it at runtime since
-    // the default handler will terminate the process).
-    let _ = abrt_flag.load(Ordering::Relaxed);
+    let flag = Arc::new(AtomicBool::new(false));
+    if signal_hook::flag::register(signal_hook::consts::SIGABRT, Arc::clone(&flag)).is_err() {
+        eprintln!("veil-tracing: failed to register SIGABRT handler");
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ===== Unit 1: Log directory management =====
+    // ===== Log directory management =====
 
     #[test]
     fn log_dir_returns_some() {
@@ -181,16 +235,14 @@ mod tests {
         let first = log_dir();
         let second = log_dir();
         assert_eq!(first, second, "log_dir() should return the same path on repeated calls");
-        // Both should be Some
         assert!(first.is_some(), "first log_dir() call should return Some");
         assert!(second.is_some(), "second log_dir() call should return Some");
     }
 
-    // ===== Unit 2: Subscriber initialization =====
+    // ===== Subscriber initialization =====
 
     #[test]
     fn init_test_can_be_called_multiple_times() {
-        // This should not panic even when called repeatedly
         init_test();
         init_test();
         init_test();
@@ -199,14 +251,33 @@ mod tests {
     #[test]
     fn init_test_enables_tracing_macros_without_panic() {
         init_test();
-        // These tracing macro calls should not panic after init_test
         tracing::info!("test info event");
         tracing::warn!("test warn event");
         tracing::debug!("test debug event");
         tracing::error!("test error event");
     }
 
-    // ===== Unit 3: Panic hook =====
+    // ===== Panic hook helpers =====
+
+    #[test]
+    fn panic_message_extracts_str_payload() {
+        let msg = panic_message(&"something went wrong" as &dyn std::any::Any);
+        assert_eq!(msg, "something went wrong");
+    }
+
+    #[test]
+    fn panic_message_extracts_string_payload() {
+        let owned = String::from("owned error");
+        let msg = panic_message(&owned as &dyn std::any::Any);
+        assert_eq!(msg, "owned error");
+    }
+
+    #[test]
+    fn panic_message_returns_unknown_for_other_types() {
+        let val = 42_i32;
+        let msg = panic_message(&val as &dyn std::any::Any);
+        assert_eq!(msg, "unknown panic payload");
+    }
 
     #[test]
     fn catch_unwind_after_init_does_not_lose_events() {
@@ -216,11 +287,10 @@ mod tests {
             panic!("test panic for tracing flush");
         });
         assert!(result.is_err(), "catch_unwind should capture the panic");
-        // If we get here, the panic hook didn't abort and tracing is still functional
         tracing::info!("after caught panic");
     }
 
-    // ===== Unit 4: Signal handler (Unix) =====
+    // ===== Signal handler (Unix) =====
 
     #[cfg(unix)]
     #[test]
@@ -228,12 +298,10 @@ mod tests {
         install_signal_handlers();
     }
 
-    // ===== Unit 6: init_test =====
+    // ===== init_test idempotency =====
 
     #[test]
     fn init_test_multiple_calls_are_safe() {
-        // Verify that init_test can be called from multiple test functions
-        // in the same process without issue
         for _ in 0..10 {
             init_test();
         }

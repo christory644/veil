@@ -16,8 +16,7 @@ fn init_sets_up_tracing_and_creates_log_directory() {
     let _guard = init();
 
     // After init(), tracing macros should route events to the subscriber.
-    // With the stub, no subscriber is set, so these are no-ops -- but they
-    // should not panic regardless.
+    // These should produce output on stderr and in the JSON log file.
     tracing::info!("integration test: info event");
     tracing::warn!("integration test: warn event");
     tracing::error!("integration test: error event");
