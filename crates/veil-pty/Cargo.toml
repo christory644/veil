@@ -10,6 +10,11 @@ authors.workspace = true
 [dependencies]
 veil-core = { path = "../veil-core" }
 tracing.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
 
 [lints]
 workspace = true
