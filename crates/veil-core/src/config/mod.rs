@@ -8,216 +8,24 @@
 //! - Config diffing to determine what changed between two versions
 //! - File watcher for hot-reload via the `notify` crate
 
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+mod diff;
+mod discovery;
+mod model;
+mod parse;
+mod watcher;
 
-use notify::{RecursiveMode, Watcher};
-use serde::{Deserialize, Serialize};
-use tracing::{debug, warn};
+use std::path::PathBuf;
 
-use crate::lifecycle::ShutdownHandle;
-
-// ============================================================
-// Unit 1: Config data model and defaults
-// ============================================================
-
-/// Top-level application configuration, deserialized from config.toml.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct AppConfig {
-    /// General application settings.
-    pub general: GeneralConfig,
-    /// Sidebar settings.
-    pub sidebar: SidebarConfig,
-    /// Terminal settings.
-    pub terminal: TerminalConfig,
-    /// Conversations/adapters settings.
-    pub conversations: ConversationsConfig,
-    /// Keybinding settings.
-    pub keybindings: KeybindingsConfig,
-    /// Ghostty integration settings.
-    pub ghostty: GhosttyConfig,
-}
-
-/// Theme preference.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ThemeMode {
-    /// Dark theme.
-    #[default]
-    Dark,
-    /// Light theme.
-    Light,
-    /// Follow system setting.
-    System,
-}
-
-/// Workspace persistence behavior on exit/launch.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PersistenceMode {
-    /// Restore previous session.
-    Restore,
-    /// Start fresh.
-    Fresh,
-    /// Ask the user.
-    #[default]
-    Ask,
-}
-
-/// `[general]` section.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct GeneralConfig {
-    /// Theme preference.
-    pub theme: ThemeMode,
-    /// Persistence behavior.
-    pub persistence: PersistenceMode,
-}
-
-/// Which sidebar tab to show by default.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum DefaultTab {
-    /// Show workspaces tab.
-    #[default]
-    Workspaces,
-    /// Show conversations tab.
-    Conversations,
-}
-
-/// `[sidebar]` section.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct SidebarConfig {
-    /// Default tab to show.
-    pub default_tab: DefaultTab,
-    /// Width in pixels.
-    pub width: u32,
-    /// Whether sidebar is visible on startup.
-    pub visible: bool,
-}
-
-impl Default for SidebarConfig {
-    fn default() -> Self {
-        Self { default_tab: DefaultTab::default(), width: 250, visible: true }
-    }
-}
-
-/// Font weight specification.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum FontWeight {
-    /// 100 weight.
-    Thin,
-    /// 200 weight.
-    ExtraLight,
-    /// 300 weight.
-    Light,
-    /// 400 weight.
-    #[default]
-    Regular,
-    /// 500 weight.
-    Medium,
-    /// 600 weight.
-    SemiBold,
-    /// 700 weight.
-    Bold,
-    /// 800 weight.
-    ExtraBold,
-    /// 900 weight.
-    Black,
-}
-
-/// `[terminal]` section.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct TerminalConfig {
-    /// Number of lines in the scrollback buffer.
-    pub scrollback_lines: u32,
-    /// Font family name, or None for system default.
-    pub font_family: Option<String>,
-    /// Font size in points.
-    pub font_size: f32,
-    /// Font weight.
-    pub font_weight: FontWeight,
-}
-
-impl Default for TerminalConfig {
-    fn default() -> Self {
-        Self {
-            scrollback_lines: 10000,
-            font_family: None,
-            font_size: 14.0,
-            font_weight: FontWeight::default(),
-        }
-    }
-}
-
-/// `[conversations]` section.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ConversationsConfig {
-    /// List of adapter names to enable.
-    pub adapters: Vec<String>,
-}
-
-impl Default for ConversationsConfig {
-    fn default() -> Self {
-        Self { adapters: vec!["claude-code".to_string()] }
-    }
-}
-
-/// `[keybindings]` section.
-/// Keys are action names, values are shortcut strings.
-/// Unknown keys are ignored with a warning.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct KeybindingsConfig {
-    /// Toggle sidebar visibility.
-    pub toggle_sidebar: Option<String>,
-    /// Switch to workspace tab.
-    pub workspace_tab: Option<String>,
-    /// Switch to conversations tab.
-    pub conversations_tab: Option<String>,
-    /// Create new workspace.
-    pub new_workspace: Option<String>,
-    /// Close current workspace.
-    pub close_workspace: Option<String>,
-    /// Split pane horizontally.
-    pub split_horizontal: Option<String>,
-    /// Split pane vertically.
-    pub split_vertical: Option<String>,
-    /// Close current pane.
-    pub close_pane: Option<String>,
-    /// Focus next pane.
-    pub focus_next_pane: Option<String>,
-    /// Focus previous pane.
-    pub focus_previous_pane: Option<String>,
-    /// Toggle pane zoom.
-    pub zoom_pane: Option<String>,
-    /// Focus pane to the left.
-    pub focus_pane_left: Option<String>,
-    /// Focus pane to the right.
-    pub focus_pane_right: Option<String>,
-    /// Focus pane above.
-    pub focus_pane_up: Option<String>,
-    /// Focus pane below.
-    pub focus_pane_down: Option<String>,
-}
-
-/// `[ghostty]` section.
-/// Placeholder for Ghostty config import (VEI-35).
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct GhosttyConfig {
-    /// Path to Ghostty config file.
-    pub config_path: Option<String>,
-}
-
-// ============================================================
-// Unit 2: Config file discovery
-// ============================================================
+// Re-export the public API as a flat namespace so callers don't need to
+// know about the internal module structure.
+pub use self::diff::ConfigDelta;
+pub use self::discovery::{discover_config_path, load_config, load_or_default, primary_config_dir};
+pub use self::model::{
+    AppConfig, ConversationsConfig, DefaultTab, FontWeight, GeneralConfig, GhosttyConfig,
+    KeybindingsConfig, PersistenceMode, SidebarConfig, TerminalConfig, ThemeMode,
+};
+pub use self::parse::{parse_config, validate_config, ConfigWarning};
+pub use self::watcher::{ConfigEvent, ConfigWatcher};
 
 /// Errors related to config file operations.
 #[derive(Debug, thiserror::Error)]
@@ -258,508 +66,16 @@ pub enum ConfigError {
     NoConfigDir,
 }
 
-/// Search for the config file in platform-specific locations.
-/// Returns the path to the first config file found, or None if
-/// no config file exists (the app should use defaults).
-///
-/// Search order:
-/// 1. `~/.config/veil/config.toml` (all platforms)
-/// 2. macOS: `~/Library/Application Support/com.veil.app/config.toml`
-/// 3. Windows: `%APPDATA%\veil\config.toml`
-pub fn discover_config_path() -> Option<PathBuf> {
-    // 1. Check ~/.config/veil/config.toml (all platforms)
-    if let Some(home) = dirs::home_dir() {
-        let primary = home.join(".config").join("veil").join("config.toml");
-        if primary.is_file() {
-            return Some(primary);
-        }
-    }
-
-    // 2. macOS: ~/Library/Application Support/com.veil.app/config.toml
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(home) = dirs::home_dir() {
-            let macos_alt = home
-                .join("Library")
-                .join("Application Support")
-                .join("com.veil.app")
-                .join("config.toml");
-            if macos_alt.is_file() {
-                return Some(macos_alt);
-            }
-        }
-    }
-
-    // 3. Windows: %APPDATA%\veil\config.toml
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(appdata) = dirs::config_dir() {
-            let win_path = appdata.join("veil").join("config.toml");
-            if win_path.is_file() {
-                return Some(win_path);
-            }
-        }
-    }
-
-    None
-}
-
-/// Return the primary config directory path (for creating defaults).
-/// `~/.config/veil/` on all platforms.
-pub fn primary_config_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(".config").join("veil"))
-}
-
-/// Load and parse a config file from the given path.
-/// Returns the parsed config or a descriptive error.
-pub fn load_config(path: &Path) -> Result<AppConfig, ConfigError> {
-    let contents = std::fs::read_to_string(path)
-        .map_err(|e| ConfigError::ReadError { path: path.to_path_buf(), source: e })?;
-    parse_config(&contents, path)
-}
-
-/// Load config from the discovered path, or return defaults if no file exists.
-/// Returns (config, `Option<path>`) -- the path is None if using defaults.
-pub fn load_or_default() -> (AppConfig, Option<PathBuf>) {
-    match discover_config_path() {
-        Some(path) => match load_config(&path) {
-            Ok(config) => (config, Some(path)),
-            Err(_) => (AppConfig::default(), Some(path)),
-        },
-        None => (AppConfig::default(), None),
-    }
-}
-
-// ============================================================
-// Unit 3: TOML parsing with rich error reporting
-// ============================================================
-
-/// A non-fatal issue found during config validation.
-#[derive(Debug, Clone)]
-pub struct ConfigWarning {
-    /// The field path that triggered the warning (e.g., "sidebar.width").
-    pub field: String,
-    /// Human-readable warning message.
-    pub message: String,
-}
-
-/// Parse a TOML string into `AppConfig` with rich error reporting.
-/// On failure, returns a `ConfigError` with line/column and a
-/// human-readable message describing the problem and suggesting fixes.
-pub fn parse_config(toml_str: &str, source_path: &Path) -> Result<AppConfig, ConfigError> {
-    toml::from_str(toml_str).map_err(|e| {
-        let message = e.message().to_string();
-        match e.span() {
-            Some(span) => {
-                // Calculate line and column from the byte offset
-                let start = span.start;
-                let mut line = 1;
-                let mut col = 1;
-                for (i, ch) in toml_str.char_indices() {
-                    if i >= start {
-                        break;
-                    }
-                    if ch == '\n' {
-                        line += 1;
-                        col = 1;
-                    } else {
-                        col += 1;
-                    }
-                }
-                ConfigError::ParseErrorWithLocation {
-                    path: source_path.to_path_buf(),
-                    line,
-                    column: col,
-                    message,
-                }
-            }
-            None => ConfigError::ParseError { path: source_path.to_path_buf(), message },
-        }
-    })
-}
-
-/// Validate a parsed config for semantic correctness.
-///
-/// Catches issues that are syntactically valid TOML but semantically wrong:
-/// - `sidebar.width` < 100 or > 1000 (warning, clamp to range)
-/// - `terminal.font_size` < 6.0 or > 72.0 (warning, clamp to range)
-/// - `terminal.scrollback_lines` == 0 (warning, set to 1)
-///
-/// Returns the validated config and a list of warnings.
-pub fn validate_config(config: AppConfig) -> (AppConfig, Vec<ConfigWarning>) {
-    let mut config = config;
-    let mut warnings = Vec::new();
-
-    // sidebar.width: clamp to 100..=1000
-    if config.sidebar.width < 100 {
-        warnings.push(ConfigWarning {
-            field: "sidebar.width".to_string(),
-            message: format!(
-                "sidebar.width {} is below minimum 100, clamped to 100",
-                config.sidebar.width
-            ),
-        });
-        config.sidebar.width = 100;
-    } else if config.sidebar.width > 1000 {
-        warnings.push(ConfigWarning {
-            field: "sidebar.width".to_string(),
-            message: format!(
-                "sidebar.width {} is above maximum 1000, clamped to 1000",
-                config.sidebar.width
-            ),
-        });
-        config.sidebar.width = 1000;
-    }
-
-    // terminal.font_size: clamp to 6.0..=72.0
-    if config.terminal.font_size < 6.0 {
-        warnings.push(ConfigWarning {
-            field: "terminal.font_size".to_string(),
-            message: format!(
-                "terminal.font_size {} is below minimum 6.0, clamped to 6.0",
-                config.terminal.font_size
-            ),
-        });
-        config.terminal.font_size = 6.0;
-    } else if config.terminal.font_size > 72.0 {
-        warnings.push(ConfigWarning {
-            field: "terminal.font_size".to_string(),
-            message: format!(
-                "terminal.font_size {} is above maximum 72.0, clamped to 72.0",
-                config.terminal.font_size
-            ),
-        });
-        config.terminal.font_size = 72.0;
-    }
-
-    // terminal.scrollback_lines: if 0, set to 1
-    if config.terminal.scrollback_lines == 0 {
-        warnings.push(ConfigWarning {
-            field: "terminal.scrollback_lines".to_string(),
-            message: "terminal.scrollback_lines is 0, set to 1".to_string(),
-        });
-        config.terminal.scrollback_lines = 1;
-    }
-
-    (config, warnings)
-}
-
-// ============================================================
-// Unit 4: Config diffing
-// ============================================================
-
-/// Describes what changed between two config versions.
-/// Each field is `true` if that aspect of the config changed.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-#[allow(clippy::struct_excessive_bools)]
-pub struct ConfigDelta {
-    /// Theme setting changed.
-    pub theme_changed: bool,
-    /// Persistence setting changed.
-    pub persistence_changed: bool,
-    /// Sidebar settings changed.
-    pub sidebar_changed: bool,
-    /// Font settings changed.
-    pub font_changed: bool,
-    /// Scrollback setting changed.
-    pub scrollback_changed: bool,
-    /// Keybinding settings changed.
-    pub keybindings_changed: bool,
-    /// Adapter list changed.
-    pub adapters_changed: bool,
-    /// Ghostty config path changed.
-    pub ghostty_path_changed: bool,
-}
-
-impl ConfigDelta {
-    /// Returns true if nothing changed.
-    pub fn is_empty(&self) -> bool {
-        !self.theme_changed
-            && !self.persistence_changed
-            && !self.sidebar_changed
-            && !self.font_changed
-            && !self.scrollback_changed
-            && !self.keybindings_changed
-            && !self.adapters_changed
-            && !self.ghostty_path_changed
-    }
-
-    /// Compute the delta between an old and new config.
-    pub fn diff(old: &AppConfig, new: &AppConfig) -> Self {
-        Self {
-            theme_changed: old.general.theme != new.general.theme,
-            persistence_changed: old.general.persistence != new.general.persistence,
-            sidebar_changed: old.sidebar != new.sidebar,
-            font_changed: old.terminal.font_family != new.terminal.font_family
-                || (old.terminal.font_size - new.terminal.font_size).abs() > f32::EPSILON
-                || old.terminal.font_weight != new.terminal.font_weight,
-            scrollback_changed: old.terminal.scrollback_lines != new.terminal.scrollback_lines,
-            keybindings_changed: old.keybindings != new.keybindings,
-            adapters_changed: old.conversations != new.conversations,
-            ghostty_path_changed: old.ghostty != new.ghostty,
-        }
-    }
-}
-
-// ============================================================
-// Unit 5: Config file watcher (hot-reload)
-// ============================================================
-
-/// Event emitted by the config watcher.
-#[derive(Debug)]
-pub enum ConfigEvent {
-    /// Config was successfully reloaded.
-    Reloaded {
-        /// The new config.
-        config: Box<AppConfig>,
-        /// What changed.
-        delta: ConfigDelta,
-        /// Non-fatal validation warnings.
-        warnings: Vec<ConfigWarning>,
-    },
-    /// Config file was modified but had errors; previous config retained.
-    Error(ConfigError),
-}
-
-/// Watches the config file for changes and emits `ConfigEvent`s.
-pub struct ConfigWatcher {
-    config_path: PathBuf,
-    /// The current valid config, owned by the main thread for `&self` access.
-    current_config: AppConfig,
-    event_tx: tokio::sync::mpsc::Sender<ConfigEvent>,
-    /// The background thread's copy of the current config, used for diffing.
-    bg_config: Arc<Mutex<AppConfig>>,
-    /// Holds the notify watcher so it stays alive while watching.
-    #[allow(dead_code)]
-    notify_watcher: Option<notify::RecommendedWatcher>,
-    /// Handle to the background watcher thread.
-    #[allow(dead_code)]
-    watcher_thread: Option<std::thread::JoinHandle<()>>,
-}
-
-impl ConfigWatcher {
-    /// Create a new watcher for the given config file path.
-    /// `event_tx` is a channel sender for delivering config events.
-    /// The watcher does NOT start until `start()` is called.
-    pub fn new(
-        config_path: PathBuf,
-        initial_config: AppConfig,
-        event_tx: tokio::sync::mpsc::Sender<ConfigEvent>,
-    ) -> Result<Self, ConfigError> {
-        let bg_config = Arc::new(Mutex::new(initial_config.clone()));
-        Ok(Self {
-            config_path,
-            current_config: initial_config,
-            event_tx,
-            bg_config,
-            notify_watcher: None,
-            watcher_thread: None,
-        })
-    }
-
-    /// Start watching for file changes.
-    /// This spawns an internal task that runs until the watcher is dropped
-    /// or a shutdown signal is received.
-    pub fn start(&mut self, shutdown: ShutdownHandle) -> Result<(), ConfigError> {
-        let config_path = self.config_path.clone();
-        let bg_config = Arc::clone(&self.bg_config);
-        let event_tx = self.event_tx.clone();
-
-        // Channel for notify events to the background thread.
-        let (notify_tx, notify_rx) = std::sync::mpsc::channel::<notify::Result<notify::Event>>();
-
-        // Create the notify watcher, sending events through the std channel.
-        let config_path_for_err = config_path.clone();
-        let mut watcher = notify::recommended_watcher(move |res| {
-            let _ = notify_tx.send(res);
-        })
-        .map_err(|e| ConfigError::ReadError {
-            path: config_path_for_err,
-            source: std::io::Error::other(format!("failed to create file watcher: {e}")),
-        })?;
-
-        // Watch the parent directory (not the file itself) to catch delete+recreate.
-        let watch_dir = self.config_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
-        watcher.watch(&watch_dir, RecursiveMode::NonRecursive).map_err(|e| {
-            ConfigError::ReadError {
-                path: self.config_path.clone(),
-                source: std::io::Error::other(format!("failed to watch directory: {e}")),
-            }
-        })?;
-
-        self.notify_watcher = Some(watcher);
-
-        // Spawn background thread that processes notify events.
-        let thread = std::thread::spawn(move || {
-            let debounce = std::time::Duration::from_millis(50);
-
-            loop {
-                // Check shutdown.
-                if shutdown.is_triggered() {
-                    debug!("config watcher shutting down");
-                    break;
-                }
-
-                // Try to receive a notify event with a short timeout so we can
-                // check shutdown periodically.
-                let event = notify_rx.recv_timeout(std::time::Duration::from_millis(100));
-
-                if shutdown.is_triggered() {
-                    debug!("config watcher shutting down after recv");
-                    break;
-                }
-
-                match event {
-                    Ok(Ok(notify_event)) => {
-                        if !is_relevant_event(&notify_event, &config_path) {
-                            continue;
-                        }
-
-                        // Debounce: drain any additional events that arrive
-                        // within the debounce window. This ensures we process
-                        // the file only after a quiet period, which handles
-                        // both multi-event writes (Create+Modify) and rapid
-                        // successive writes.
-                        loop {
-                            match notify_rx.recv_timeout(debounce) {
-                                // Drain any events arriving within the debounce
-                                // window; loop back to wait for quiet again.
-                                Ok(Ok(_) | Err(_)) => {}
-                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                                    // Quiet period elapsed, proceed with reload.
-                                    break;
-                                }
-                                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-                            }
-                        }
-
-                        if shutdown.is_triggered() {
-                            break;
-                        }
-
-                        // Perform reload.
-                        let config_event = reload_from_disk(&config_path, &bg_config);
-                        if event_tx.blocking_send(config_event).is_err() {
-                            debug!("config event receiver dropped, stopping watcher");
-                            break;
-                        }
-                    }
-                    Ok(Err(e)) => {
-                        warn!("file watcher error: {e}");
-                    }
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                        // Normal timeout, loop back and check shutdown.
-                    }
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                        debug!("notify watcher disconnected, stopping");
-                        break;
-                    }
-                }
-            }
-
-            // Drop event_tx to signal channel closure.
-            drop(event_tx);
-        });
-
-        self.watcher_thread = Some(thread);
-        Ok(())
-    }
-
-    /// Get the currently active (valid) config.
-    pub fn current_config(&self) -> &AppConfig {
-        &self.current_config
-    }
-
-    /// Manually trigger a reload (useful for testing or user-initiated reload).
-    pub fn reload(&mut self) -> Result<ConfigEvent, ConfigError> {
-        // Read the file.
-        let contents = std::fs::read_to_string(&self.config_path)
-            .map_err(|e| ConfigError::ReadError { path: self.config_path.clone(), source: e })?;
-
-        // Parse.
-        match parse_config(&contents, &self.config_path) {
-            Ok(parsed) => {
-                let (validated, warnings) = validate_config(parsed);
-                let delta = ConfigDelta::diff(&self.current_config, &validated);
-                self.current_config = validated.clone();
-                // Keep bg_config in sync for the background thread.
-                if let Ok(mut bg) = self.bg_config.lock() {
-                    *bg = validated.clone();
-                }
-                Ok(ConfigEvent::Reloaded { config: Box::new(validated), delta, warnings })
-            }
-            Err(e) => {
-                // Keep current config unchanged; return the error as an event.
-                Ok(ConfigEvent::Error(e))
-            }
-        }
-    }
-}
-
-/// Check whether a notify event is relevant (affects our config file and is
-/// a Modify or Create event).
-fn is_relevant_event(event: &notify::Event, config_path: &Path) -> bool {
-    // Check event kind first (cheapest check).
-    match event.kind {
-        notify::EventKind::Modify(_) | notify::EventKind::Create(_) => {}
-        _ => return false,
-    }
-    // Check if any path in the event matches our config file.
-    event.paths.iter().any(|p| {
-        if let (Ok(ep), Ok(tp)) = (std::fs::canonicalize(p), std::fs::canonicalize(config_path)) {
-            return ep == tp;
-        }
-        p.file_name() == config_path.file_name() && p.parent() == config_path.parent()
-    })
-}
-
-/// Internal helper used by the background watcher thread: reload the config
-/// from disk, diff against the shared current config, and update it if valid.
-fn reload_from_disk(config_path: &Path, bg_config: &Arc<Mutex<AppConfig>>) -> ConfigEvent {
-    // Read the file.
-    let contents = match std::fs::read_to_string(config_path) {
-        Ok(s) => s,
-        Err(e) => {
-            return ConfigEvent::Error(ConfigError::ReadError {
-                path: config_path.to_path_buf(),
-                source: e,
-            });
-        }
-    };
-
-    // Parse.
-    let parsed = match parse_config(&contents, config_path) {
-        Ok(c) => c,
-        Err(e) => {
-            return ConfigEvent::Error(e);
-        }
-    };
-
-    // Validate.
-    let (validated, warnings) = validate_config(parsed);
-
-    // Diff against current and update.
-    let mut current = bg_config.lock().unwrap();
-    let delta = ConfigDelta::diff(&current, &validated);
-    *current = validated.clone();
-
-    ConfigEvent::Reloaded { config: Box::new(validated), delta, warnings }
-}
-
-// ============================================================
-// Tests
-// ============================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    // ============================================================
-    // Unit 1: Config data model and defaults
-    // ============================================================
+    // --------------------------------------------------------
+    // Data model and defaults
+    // --------------------------------------------------------
 
-    mod unit1_defaults {
+    mod defaults {
         use super::*;
 
         #[test]
@@ -881,7 +197,7 @@ mod tests {
         }
     }
 
-    mod unit1_serde {
+    mod serde_round_trips {
         use super::*;
 
         #[test]
@@ -898,7 +214,6 @@ mod tests {
 theme = "dark"
 "#;
             let config: AppConfig = toml::from_str(toml_str).expect("partial TOML should parse");
-            // Sidebar, terminal, etc. should all be default
             assert_eq!(config.sidebar, SidebarConfig::default());
             assert_eq!(config.terminal, TerminalConfig::default());
             assert_eq!(config.conversations, ConversationsConfig::default());
@@ -912,12 +227,8 @@ theme = "light"
 "#;
             let config: AppConfig = toml::from_str(toml_str).expect("should parse");
             assert_eq!(config.general.theme, ThemeMode::Light);
-            // persistence should be default
             assert_eq!(config.general.persistence, PersistenceMode::default());
         }
-
-        // TOML requires enums to be inside a struct for serialization.
-        // We use a full AppConfig round-trip to test enum serde.
 
         #[test]
         fn theme_mode_round_trip_dark() {
@@ -1084,7 +395,7 @@ config_path = "/home/user/.config/ghostty/config"
         }
     }
 
-    mod unit1_equality {
+    mod equality {
         use super::*;
 
         #[test]
@@ -1103,11 +414,11 @@ config_path = "/home/user/.config/ghostty/config"
         }
     }
 
-    // ============================================================
-    // Unit 2: Config file discovery
-    // ============================================================
+    // --------------------------------------------------------
+    // Config file discovery and loading
+    // --------------------------------------------------------
 
-    mod unit2_discovery {
+    mod discovery_tests {
         use super::*;
 
         #[test]
@@ -1119,18 +430,14 @@ config_path = "/home/user/.config/ghostty/config"
         }
 
         #[test]
-        fn discover_config_path_returns_none_when_no_files_exist() {
+        fn discover_config_path_does_not_panic() {
             // When no config files exist at any search location, should return None.
-            // This test uses the real filesystem — if the user has a real config file,
-            // this may pass anyway, but that's fine since this is a RED test.
-            let result = discover_config_path();
-            // We can't assert None because the user might have a real config file.
-            // Instead, this test verifies the function doesn't panic.
-            let _ = result;
+            // If the user has a real config file this may return Some, which is fine.
+            let _ = discover_config_path();
         }
     }
 
-    mod unit2_loading {
+    mod loading {
         use super::*;
 
         #[test]
@@ -1217,18 +524,13 @@ theme = "light"
             assert!(result.is_ok(), "partial TOML should succeed");
             let config = result.unwrap();
             assert_eq!(config.general.theme, ThemeMode::Light);
-            // Rest should be defaults
             assert_eq!(config.sidebar, SidebarConfig::default());
         }
 
         #[test]
         fn load_or_default_returns_defaults_when_no_file() {
-            let (config, path) = load_or_default();
-            // Even if this returns defaults + None, we verify the config is the default
+            let (config, _path) = load_or_default();
             assert_eq!(config, AppConfig::default());
-            // path should be None when no config file exists
-            // (This may not hold if user has a real config, but tests the stub)
-            assert!(path.is_none());
         }
 
         #[test]
@@ -1238,11 +540,8 @@ theme = "light"
                 message: "unexpected character".to_string(),
             };
             let display = format!("{err}");
-            assert!(
-                display.contains("/home/user/.config/veil/config.toml"),
-                "error should contain the file path"
-            );
-            assert!(display.contains("unexpected character"), "error should contain the message");
+            assert!(display.contains("/home/user/.config/veil/config.toml"));
+            assert!(display.contains("unexpected character"));
         }
 
         #[test]
@@ -1254,10 +553,10 @@ theme = "light"
                 message: "invalid type".to_string(),
             };
             let display = format!("{err}");
-            assert!(display.contains("line 5"), "should contain line number");
-            assert!(display.contains("column 12"), "should contain column number");
-            assert!(display.contains("invalid type"), "should contain message");
-            assert!(display.contains("/config.toml"), "should contain path");
+            assert!(display.contains("line 5"));
+            assert!(display.contains("column 12"));
+            assert!(display.contains("invalid type"));
+            assert!(display.contains("/config.toml"));
         }
 
         #[test]
@@ -1268,32 +567,27 @@ theme = "light"
                 source: io_err,
             };
             let display = format!("{err}");
-            assert!(display.contains("/etc/veil/config.toml"), "should contain path");
-            assert!(display.contains("access denied"), "should contain IO error");
+            assert!(display.contains("/etc/veil/config.toml"));
+            assert!(display.contains("access denied"));
         }
 
         #[test]
         fn no_config_dir_error_is_informative() {
             let err = ConfigError::NoConfigDir;
             let display = format!("{err}");
-            assert!(
-                display.contains("config directory"),
-                "NoConfigDir should mention config directory"
-            );
+            assert!(display.contains("config directory"));
         }
 
         #[test]
         fn toml_parse_error_includes_line_column_when_available() {
             let dir = TempDir::new().expect("create temp dir");
             let config_path = dir.path().join("config.toml");
-            // Write TOML with a syntax error on a specific line
             std::fs::write(&config_path, "# line 1\n# line 2\n[general\ntheme = \"dark\"\n")
                 .expect("write");
 
             let result = load_config(&config_path);
             assert!(result.is_err());
             let err = result.unwrap_err();
-            // The error should contain location info
             let display = format!("{err}");
             assert!(
                 display.contains("line") || display.contains('3'),
@@ -1302,11 +596,11 @@ theme = "light"
         }
     }
 
-    // ============================================================
-    // Unit 3: TOML parsing with rich error reporting
-    // ============================================================
+    // --------------------------------------------------------
+    // TOML parsing with rich error reporting
+    // --------------------------------------------------------
 
-    mod unit3_parsing {
+    mod parsing {
         use super::*;
 
         #[test]
@@ -1371,7 +665,6 @@ theme = "light"
             assert!(result.is_ok(), "minimal config should parse: {result:?}");
             let config = result.unwrap();
             assert_eq!(config.general.theme, ThemeMode::Light);
-            // Everything else should be defaults
             assert_eq!(config.sidebar, SidebarConfig::default());
         }
 
@@ -1433,8 +726,6 @@ theme = "dark"
 "#;
             let path = PathBuf::from("test.toml");
             let result = parse_config(toml_str, &path);
-            // This depends on serde's deny_unknown_fields vs default behavior.
-            // By default, serde ignores unknown fields, so this should succeed.
             assert!(result.is_ok(), "unknown section should be ignored: {result:?}");
         }
 
@@ -1453,7 +744,7 @@ width = 300
         }
     }
 
-    mod unit3_validation {
+    mod validation {
         use super::*;
 
         #[test]
@@ -1462,10 +753,7 @@ width = 300
             config.sidebar.width = 50;
             let (validated, warnings) = validate_config(config);
             assert_eq!(validated.sidebar.width, 100);
-            assert!(
-                warnings.iter().any(|w| w.field.contains("sidebar.width")),
-                "should have a warning about sidebar.width"
-            );
+            assert!(warnings.iter().any(|w| w.field.contains("sidebar.width")));
         }
 
         #[test]
@@ -1474,10 +762,7 @@ width = 300
             config.sidebar.width = 2000;
             let (validated, warnings) = validate_config(config);
             assert_eq!(validated.sidebar.width, 1000);
-            assert!(
-                warnings.iter().any(|w| w.field.contains("sidebar.width")),
-                "should have a warning about sidebar.width"
-            );
+            assert!(warnings.iter().any(|w| w.field.contains("sidebar.width")));
         }
 
         #[test]
@@ -1486,10 +771,7 @@ width = 300
             config.terminal.font_size = 2.0;
             let (validated, warnings) = validate_config(config);
             assert!((validated.terminal.font_size - 6.0).abs() < f32::EPSILON);
-            assert!(
-                warnings.iter().any(|w| w.field.contains("terminal.font_size")),
-                "should have a warning about font_size"
-            );
+            assert!(warnings.iter().any(|w| w.field.contains("terminal.font_size")));
         }
 
         #[test]
@@ -1498,10 +780,7 @@ width = 300
             config.terminal.font_size = 100.0;
             let (validated, warnings) = validate_config(config);
             assert!((validated.terminal.font_size - 72.0).abs() < f32::EPSILON);
-            assert!(
-                warnings.iter().any(|w| w.field.contains("terminal.font_size")),
-                "should have a warning about font_size"
-            );
+            assert!(warnings.iter().any(|w| w.field.contains("terminal.font_size")));
         }
 
         #[test]
@@ -1510,10 +789,7 @@ width = 300
             config.terminal.scrollback_lines = 0;
             let (validated, warnings) = validate_config(config);
             assert_eq!(validated.terminal.scrollback_lines, 1);
-            assert!(
-                warnings.iter().any(|w| w.field.contains("terminal.scrollback_lines")),
-                "should have a warning about scrollback_lines"
-            );
+            assert!(warnings.iter().any(|w| w.field.contains("terminal.scrollback_lines")));
         }
 
         #[test]
@@ -1538,11 +814,11 @@ width = 300
         }
     }
 
-    // ============================================================
-    // Unit 4: Config diffing
-    // ============================================================
+    // --------------------------------------------------------
+    // Config diffing
+    // --------------------------------------------------------
 
-    mod unit4_diffing {
+    mod diffing {
         use super::*;
 
         #[test]
@@ -1573,7 +849,7 @@ width = 300
             let mut b = a.clone();
             b.general.theme = ThemeMode::System;
             let delta = ConfigDelta::diff(&a, &b);
-            assert!(delta.theme_changed, "theme_changed should be true");
+            assert!(delta.theme_changed);
             assert!(!delta.persistence_changed);
             assert!(!delta.sidebar_changed);
             assert!(!delta.font_changed);
@@ -1589,7 +865,7 @@ width = 300
             let mut b = a.clone();
             b.general.persistence = PersistenceMode::Restore;
             let delta = ConfigDelta::diff(&a, &b);
-            assert!(delta.persistence_changed, "persistence_changed should be true");
+            assert!(delta.persistence_changed);
             assert!(!delta.theme_changed);
         }
 
@@ -1599,7 +875,7 @@ width = 300
             let mut b = a.clone();
             b.sidebar.width = 400;
             let delta = ConfigDelta::diff(&a, &b);
-            assert!(delta.sidebar_changed, "sidebar_changed should be true");
+            assert!(delta.sidebar_changed);
             assert!(!delta.theme_changed);
         }
 
@@ -1609,7 +885,7 @@ width = 300
             let mut b = a.clone();
             b.sidebar.visible = !a.sidebar.visible;
             let delta = ConfigDelta::diff(&a, &b);
-            assert!(delta.sidebar_changed, "sidebar_changed should be true");
+            assert!(delta.sidebar_changed);
         }
 
         #[test]
@@ -1618,7 +894,7 @@ width = 300
             let mut b = a.clone();
             b.sidebar.default_tab = DefaultTab::Conversations;
             let delta = ConfigDelta::diff(&a, &b);
-            assert!(delta.sidebar_changed, "sidebar_changed should be true");
+            assert!(delta.sidebar_changed);
         }
 
         #[test]
@@ -1627,7 +903,7 @@ width = 300
             let mut b = a.clone();
             b.terminal.font_family = Some("Fira Code".to_string());
             let delta = ConfigDelta::diff(&a, &b);
-            assert!(delta.font_changed, "font_changed should be true");
+            assert!(delta.font_changed);
             assert!(!delta.scrollback_changed);
         }
 
@@ -1637,7 +913,7 @@ width = 300
             let mut b = a.clone();
             b.terminal.font_size = 18.0;
             let delta = ConfigDelta::diff(&a, &b);
-            assert!(delta.font_changed, "font_changed should be true");
+            assert!(delta.font_changed);
         }
 
         #[test]
@@ -1646,7 +922,7 @@ width = 300
             let mut b = a.clone();
             b.terminal.font_weight = FontWeight::Bold;
             let delta = ConfigDelta::diff(&a, &b);
-            assert!(delta.font_changed, "font_changed should be true");
+            assert!(delta.font_changed);
         }
 
         #[test]
@@ -1655,7 +931,7 @@ width = 300
             let mut b = a.clone();
             b.terminal.scrollback_lines = 50000;
             let delta = ConfigDelta::diff(&a, &b);
-            assert!(delta.scrollback_changed, "scrollback_changed should be true");
+            assert!(delta.scrollback_changed);
             assert!(!delta.font_changed);
         }
 
@@ -1665,7 +941,7 @@ width = 300
             let mut b = a.clone();
             b.keybindings.toggle_sidebar = Some("ctrl+b".to_string());
             let delta = ConfigDelta::diff(&a, &b);
-            assert!(delta.keybindings_changed, "keybindings_changed should be true");
+            assert!(delta.keybindings_changed);
         }
 
         #[test]
@@ -1674,7 +950,7 @@ width = 300
             let mut b = a.clone();
             b.conversations.adapters = vec!["codex".to_string()];
             let delta = ConfigDelta::diff(&a, &b);
-            assert!(delta.adapters_changed, "adapters_changed should be true");
+            assert!(delta.adapters_changed);
         }
 
         #[test]
@@ -1683,7 +959,7 @@ width = 300
             let mut b = a.clone();
             b.ghostty.config_path = Some("/path/to/ghostty".to_string());
             let delta = ConfigDelta::diff(&a, &b);
-            assert!(delta.ghostty_path_changed, "ghostty_path_changed should be true");
+            assert!(delta.ghostty_path_changed);
         }
 
         #[test]
@@ -1702,15 +978,15 @@ width = 300
         #[test]
         fn is_empty_returns_false_when_any_field_true() {
             let delta = ConfigDelta { theme_changed: true, ..ConfigDelta::default() };
-            assert!(!delta.is_empty(), "is_empty should be false when any field is true");
+            assert!(!delta.is_empty());
         }
     }
 
-    // ============================================================
-    // Unit 5: Config file watcher (hot-reload)
-    // ============================================================
+    // --------------------------------------------------------
+    // Config file watcher (hot-reload)
+    // --------------------------------------------------------
 
-    mod unit5_watcher {
+    mod watcher_tests {
         use super::*;
 
         #[test]
@@ -1721,7 +997,7 @@ width = 300
 
             let (tx, _rx) = tokio::sync::mpsc::channel(16);
             let result = ConfigWatcher::new(config_path, AppConfig::default(), tx);
-            assert!(result.is_ok(), "ConfigWatcher::new should succeed");
+            assert!(result.is_ok());
         }
 
         #[test]
@@ -1747,7 +1023,6 @@ width = 300
             let mut watcher = ConfigWatcher::new(config_path.clone(), AppConfig::default(), tx)
                 .expect("create watcher");
 
-            // Write a new valid config
             std::fs::write(
                 &config_path,
                 r#"
@@ -1762,7 +1037,6 @@ theme = "light"
             match result.unwrap() {
                 ConfigEvent::Reloaded { config, delta, .. } => {
                     assert_eq!(config.general.theme, ThemeMode::Light);
-                    // Delta should show theme changed
                     assert!(delta.theme_changed);
                 }
                 ConfigEvent::Error(e) => panic!("expected Reloaded, got Error: {e}"),
@@ -1779,15 +1053,11 @@ theme = "light"
             let mut watcher = ConfigWatcher::new(config_path.clone(), AppConfig::default(), tx)
                 .expect("create watcher");
 
-            // Write invalid TOML
             std::fs::write(&config_path, "[broken").expect("write invalid config");
 
             let result = watcher.reload();
             assert!(result.is_ok(), "reload should return Ok(ConfigEvent::Error)");
-            match result.unwrap() {
-                ConfigEvent::Error(_) => {} // expected
-                ConfigEvent::Reloaded { .. } => panic!("expected Error event, got Reloaded"),
-            }
+            assert!(matches!(result.unwrap(), ConfigEvent::Error(_)));
         }
 
         #[test]
@@ -1801,7 +1071,7 @@ theme = "light"
                 ConfigWatcher::new(config_path, AppConfig::default(), tx).expect("create watcher");
 
             let result = watcher.reload();
-            assert!(result.is_ok(), "reload with no changes should succeed");
+            assert!(result.is_ok());
             match result.unwrap() {
                 ConfigEvent::Reloaded { delta, .. } => {
                     assert!(delta.is_empty(), "delta should be empty when nothing changed");
@@ -1821,16 +1091,10 @@ theme = "light"
             let mut watcher = ConfigWatcher::new(config_path.clone(), initial.clone(), tx)
                 .expect("create watcher");
 
-            // Write invalid TOML
             std::fs::write(&config_path, "[broken").expect("write invalid");
             let _ = watcher.reload();
 
-            // Current config should still be the initial
-            assert_eq!(
-                watcher.current_config(),
-                &initial,
-                "config should be unchanged after failed reload"
-            );
+            assert_eq!(watcher.current_config(), &initial);
         }
 
         #[tokio::test]
@@ -1847,7 +1111,6 @@ theme = "light"
             let handle = signal.handle();
             watcher.start(handle).expect("start watcher");
 
-            // Modify the file
             std::fs::write(
                 &config_path,
                 r#"
@@ -1857,10 +1120,7 @@ theme = "light"
             )
             .expect("write new config");
 
-            // Wait for event with timeout
             let event = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await;
-
-            // Shut down
             signal.trigger();
 
             assert!(event.is_ok(), "should receive event within timeout");
@@ -1888,22 +1148,15 @@ theme = "light"
             let handle = signal.handle();
             watcher.start(handle).expect("start watcher");
 
-            // Write invalid TOML
             std::fs::write(&config_path, "[broken syntax").expect("write invalid");
 
             let event = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await;
-
             signal.trigger();
 
             assert!(event.is_ok(), "should receive event");
             let event = event.unwrap();
             assert!(event.is_some());
-            match event.unwrap() {
-                ConfigEvent::Error(_) => {} // expected
-                ConfigEvent::Reloaded { .. } => {
-                    panic!("expected Error, got Reloaded for invalid TOML")
-                }
-            }
+            assert!(matches!(event.unwrap(), ConfigEvent::Error(_)));
         }
 
         #[tokio::test]
@@ -1920,11 +1173,9 @@ theme = "light"
             let handle = signal.handle();
             watcher.start(handle).expect("start watcher");
 
-            // Write invalid TOML first
             std::fs::write(&config_path, "[broken").expect("write invalid");
             let _ = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await;
 
-            // Now write valid TOML
             std::fs::write(
                 &config_path,
                 r#"
@@ -1935,7 +1186,6 @@ theme = "system"
             .expect("write valid");
 
             let event = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await;
-
             signal.trigger();
 
             assert!(event.is_ok(), "should receive recovery event");
@@ -1946,7 +1196,7 @@ theme = "system"
                     assert_eq!(config.general.theme, ThemeMode::System);
                 }
                 ConfigEvent::Error(_) => {
-                    // This is also acceptable if the watcher sends the error first
+                    // Also acceptable if the watcher sends the error first
                 }
             }
         }
@@ -1965,12 +1215,9 @@ theme = "system"
             let handle = signal.handle();
             watcher.start(handle).expect("start watcher");
 
-            // Delete the file
             std::fs::remove_file(&config_path).expect("delete file");
-            // Small delay to let filesystem notify
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-            // Recreate with new content
             std::fs::write(
                 &config_path,
                 r#"
@@ -1981,7 +1228,6 @@ theme = "light"
             .expect("recreate file");
 
             let event = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await;
-
             signal.trigger();
 
             assert!(event.is_ok(), "should receive event after recreate");
@@ -1997,7 +1243,6 @@ theme = "light"
             let mut watcher = ConfigWatcher::new(config_path.clone(), AppConfig::default(), tx)
                 .expect("create watcher");
 
-            // Write a config that only changes theme
             std::fs::write(
                 &config_path,
                 r#"
@@ -2011,9 +1256,9 @@ theme = "light"
             assert!(result.is_ok());
             match result.unwrap() {
                 ConfigEvent::Reloaded { delta, .. } => {
-                    assert!(delta.theme_changed, "theme_changed should be true");
-                    assert!(!delta.sidebar_changed, "sidebar_changed should be false");
-                    assert!(!delta.font_changed, "font_changed should be false");
+                    assert!(delta.theme_changed);
+                    assert!(!delta.sidebar_changed);
+                    assert!(!delta.font_changed);
                 }
                 ConfigEvent::Error(e) => panic!("expected Reloaded, got Error: {e}"),
             }
@@ -2045,9 +1290,9 @@ font_size = 18.0
             assert!(result.is_ok());
             match result.unwrap() {
                 ConfigEvent::Reloaded { delta, .. } => {
-                    assert!(delta.sidebar_changed, "sidebar_changed should be true");
-                    assert!(delta.font_changed, "font_changed should be true");
-                    assert!(!delta.theme_changed, "theme_changed should be false");
+                    assert!(delta.sidebar_changed);
+                    assert!(delta.font_changed);
+                    assert!(!delta.theme_changed);
                 }
                 ConfigEvent::Error(e) => panic!("expected Reloaded, got Error: {e}"),
             }
@@ -2067,26 +1312,19 @@ font_size = 18.0
             let handle = signal.handle();
             watcher.start(handle).expect("start watcher");
 
-            // Trigger shutdown
             signal.trigger();
-
-            // Give watcher time to stop
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-            // After shutdown, the channel should be closed (no more senders)
-            // This checks that the watcher dropped its sender
             let result = rx.try_recv();
-            // Either Empty (no events) or Disconnected (channel closed) is acceptable
             assert!(result.is_err(), "after shutdown, no events should be pending");
         }
     }
 
-    // ============================================================
-    // Unit 6: StateUpdate::ConfigReloaded tests
-    // (These test the new variant shape in message.rs)
-    // ============================================================
+    // --------------------------------------------------------
+    // StateUpdate::ConfigReloaded integration
+    // --------------------------------------------------------
 
-    mod unit6_state_update {
+    mod state_update_integration {
         use super::*;
         use crate::message::{Channels, StateUpdate};
 
