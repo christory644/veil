@@ -95,18 +95,27 @@ fn extract_topic_from_message(message: &str) -> String {
 
     let result = result.trim();
 
-    // Truncate to ~80 characters, breaking at a word boundary if possible.
+    // Truncate to ~80 characters, breaking at a char boundary and preferring
+    // a word boundary when possible. We must not slice mid-codepoint or the
+    // program will panic on non-ASCII input (emoji, CJK, accented chars).
     let max_len = 80;
     if result.len() <= max_len {
         return result.to_string();
     }
 
-    // Find the last space before the limit.
-    let truncated = &result[..max_len];
+    // Find the last char boundary at or before `max_len` bytes.
+    let safe_end = result
+        .char_indices()
+        .take_while(|(i, _)| *i < max_len)
+        .last()
+        .map_or(0, |(i, c)| i + c.len_utf8());
+
+    // Find the last space before the safe boundary for a clean word break.
+    let truncated = &result[..safe_end];
     if let Some(last_space) = truncated.rfind(' ') {
         format!("{}...", &result[..last_space])
     } else {
-        // No space found — hard truncate.
+        // No space found — hard truncate at the char boundary.
         format!("{truncated}...")
     }
 }

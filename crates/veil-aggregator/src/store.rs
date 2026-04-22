@@ -302,10 +302,43 @@ impl SessionStore {
     }
 
     /// Delete a session by ID.
+    ///
+    /// Also attempts to remove the corresponding FTS index entry so that
+    /// `search_sessions` doesn't return stale results.
+    ///
+    /// NOTE: contentless FTS5 requires the *exact* original indexed values
+    /// for its delete command. We can retrieve `title` from the sessions
+    /// table, but `first_message` is only stored inside the FTS index
+    /// itself (not in sessions). When `first_message` was non-empty at
+    /// index time, the FTS delete will fail because the values don't
+    /// match. In that case we silently skip FTS cleanup — the stale
+    /// entry is harmless because `search_sessions` already skips
+    /// rowids whose session row no longer exists.
     pub fn delete_session(&self, id: &SessionId) -> Result<bool, StoreError> {
+        // Grab the rowid and title before deleting — needed for FTS cleanup.
+        let fts_info: Option<(i64, String)> = self
+            .conn
+            .query_row(
+                "SELECT rowid, title FROM sessions WHERE id = ?1",
+                rusqlite::params![id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .ok();
+
         let affected = self
             .conn
             .execute("DELETE FROM sessions WHERE id = ?1", rusqlite::params![id.as_str()])?;
+
+        // Best-effort FTS cleanup. This succeeds when `first_message` was
+        // empty at index time (the common case for title-only indexing) and
+        // is silently skipped otherwise.
+        if let Some((rowid, title)) = fts_info {
+            let _ = self.conn.execute(
+                "INSERT INTO sessions_fts(sessions_fts, rowid, title, first_message) VALUES('delete', ?1, ?2, '')",
+                rusqlite::params![rowid, title],
+            );
+        }
+
         Ok(affected > 0)
     }
 
