@@ -211,7 +211,19 @@ fn is_relevant_event(event: &notify::Event, config_path: &Path) -> bool {
         if let (Ok(ep), Ok(tp)) = (std::fs::canonicalize(p), std::fs::canonicalize(config_path)) {
             return ep == tp;
         }
-        p.file_name() == config_path.file_name() && p.parent() == config_path.parent()
+        // Fallback: normalize relative paths to absolute before comparing.
+        let abs_p = if p.is_relative() {
+            std::env::current_dir().map_or_else(|_| p.clone(), |cwd| cwd.join(p))
+        } else {
+            p.clone()
+        };
+        let abs_cfg = if config_path.is_relative() {
+            std::env::current_dir()
+                .map_or_else(|_| config_path.to_path_buf(), |cwd| cwd.join(config_path))
+        } else {
+            config_path.to_path_buf()
+        };
+        abs_p.file_name() == abs_cfg.file_name() && abs_p.parent() == abs_cfg.parent()
     })
 }
 

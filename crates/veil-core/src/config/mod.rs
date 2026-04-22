@@ -812,6 +812,36 @@ width = 300
             let (_, warnings) = validate_config(config);
             assert!(warnings.len() >= 3, "should have at least 3 warnings, got {}", warnings.len());
         }
+
+        #[test]
+        fn font_size_nan_clamped_to_minimum_with_warning() {
+            let mut config = AppConfig::default();
+            config.terminal.font_size = f32::NAN;
+            let (validated, warnings) = validate_config(config);
+            assert!((validated.terminal.font_size - 6.0).abs() < f32::EPSILON);
+            assert!(warnings.iter().any(|w| w.field.contains("terminal.font_size")
+                && w.message.contains("not a finite number")));
+        }
+
+        #[test]
+        fn font_size_infinity_clamped_to_minimum_with_warning() {
+            let mut config = AppConfig::default();
+            config.terminal.font_size = f32::INFINITY;
+            let (validated, warnings) = validate_config(config);
+            assert!((validated.terminal.font_size - 6.0).abs() < f32::EPSILON);
+            assert!(warnings.iter().any(|w| w.field.contains("terminal.font_size")
+                && w.message.contains("not a finite number")));
+        }
+
+        #[test]
+        fn font_size_neg_infinity_clamped_to_minimum_with_warning() {
+            let mut config = AppConfig::default();
+            config.terminal.font_size = f32::NEG_INFINITY;
+            let (validated, warnings) = validate_config(config);
+            assert!((validated.terminal.font_size - 6.0).abs() < f32::EPSILON);
+            assert!(warnings.iter().any(|w| w.field.contains("terminal.font_size")
+                && w.message.contains("not a finite number")));
+        }
     }
 
     // --------------------------------------------------------

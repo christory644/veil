@@ -96,7 +96,16 @@ fn clamp_u32(value: &mut u32, min: u32, max: u32, field: &str, warnings: &mut Ve
 }
 
 /// Clamp an `f32` field to `[min, max]`, pushing a warning if out of range.
+/// Also rejects NaN and Infinity values, clamping them to `min`.
 fn clamp_f32(value: &mut f32, min: f32, max: f32, field: &str, warnings: &mut Vec<ConfigWarning>) {
+    if !value.is_finite() {
+        warnings.push(ConfigWarning {
+            field: field.to_string(),
+            message: format!("{field} {} is not a finite number, clamped to {min}", *value),
+        });
+        *value = min;
+        return;
+    }
     if *value < min {
         warnings.push(ConfigWarning {
             field: field.to_string(),
