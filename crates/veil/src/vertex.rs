@@ -18,7 +18,12 @@ pub struct Vertex {
 /// Vertices are in pixel coordinates, ordered:
 /// 0: top-left, 1: top-right, 2: bottom-left, 3: bottom-right
 pub fn quad_vertices(x: f32, y: f32, width: f32, height: f32, color: [f32; 4]) -> [Vertex; 4] {
-    todo!()
+    [
+        Vertex { position: [x, y], color },
+        Vertex { position: [x + width, y], color },
+        Vertex { position: [x, y + height], color },
+        Vertex { position: [x + width, y + height], color },
+    ]
 }
 
 /// Generate the 6 index values for a quad (two triangles),
@@ -27,13 +32,13 @@ pub fn quad_vertices(x: f32, y: f32, width: f32, height: f32, color: [f32; 4]) -
 ///
 /// Triangles: (base+0, base+2, base+1), (base+1, base+2, base+3)
 pub fn quad_indices(base: u16) -> [u16; 6] {
-    todo!()
+    [base, base + 2, base + 1, base + 1, base + 2, base + 3]
 }
 
 /// Compute the vertex base index for the Nth quad in a batch.
 /// Each quad uses 4 vertices, so quad N starts at vertex index N * 4.
 pub fn vertex_base(quad_index: usize) -> u16 {
-    todo!()
+    (quad_index * 4) as u16
 }
 
 #[cfg(test)]

@@ -27,7 +27,37 @@ pub struct CellGridParams {
 ///
 /// Returns (vertices, indices) ready for GPU upload.
 pub fn build_cell_background_quads(params: &CellGridParams) -> (Vec<Vertex>, Vec<u16>) {
-    todo!()
+    if params.cols == 0 || params.rows == 0 {
+        return (Vec::new(), Vec::new());
+    }
+
+    let cols = params.cols as usize;
+    let rows = params.rows as usize;
+    let total_quads = cols * rows;
+    let cell_width = params.rect.width / params.cols as f32;
+    let cell_height = params.rect.height / params.rows as f32;
+
+    let mut vertices = Vec::with_capacity(total_quads * 4);
+    let mut indices = Vec::with_capacity(total_quads * 6);
+    let mut quad_count: usize = 0;
+
+    for row in 0..rows {
+        for col in 0..cols {
+            let x = params.rect.x + col as f32 * cell_width;
+            let y = params.rect.y + row as f32 * cell_height;
+            vertices.extend_from_slice(&quad_vertices(
+                x,
+                y,
+                cell_width,
+                cell_height,
+                params.bg_color,
+            ));
+            indices.extend_from_slice(&quad_indices(vertex_base(quad_count)));
+            quad_count += 1;
+        }
+    }
+
+    (vertices, indices)
 }
 
 /// Build a cursor quad at the given grid position within a pane rect.
@@ -44,7 +74,21 @@ pub fn build_cursor_quad(
     row: u16,
     color: [f32; 4],
 ) -> (Vec<Vertex>, Vec<u16>) {
-    todo!()
+    if cols == 0 || rows == 0 {
+        return (Vec::new(), Vec::new());
+    }
+
+    let clamped_col = col.min(cols - 1);
+    let clamped_row = row.min(rows - 1);
+    let cell_width = rect.width / cols as f32;
+    let cell_height = rect.height / rows as f32;
+    let x = rect.x + clamped_col as f32 * cell_width;
+    let y = rect.y + clamped_row as f32 * cell_height;
+
+    let vertices = quad_vertices(x, y, cell_width, cell_height, color).to_vec();
+    let indices = quad_indices(0).to_vec();
+
+    (vertices, indices)
 }
 
 /// Build divider quads between adjacent pane edges.
@@ -58,7 +102,81 @@ pub fn build_divider_quads(
     pane_layouts: &[PaneLayout],
     divider_color: [f32; 4],
 ) -> (Vec<Vertex>, Vec<u16>) {
-    todo!()
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    let mut quad_count: usize = 0;
+    let tolerance = 1.0_f32;
+
+    for i in 0..pane_layouts.len() {
+        for j in (i + 1)..pane_layouts.len() {
+            let rect_a = &pane_layouts[i].rect;
+            let rect_b = &pane_layouts[j].rect;
+
+            let a_right = rect_a.x + rect_a.width;
+            let a_bottom = rect_a.y + rect_a.height;
+            let b_right = rect_b.x + rect_b.width;
+            let b_bottom = rect_b.y + rect_b.height;
+
+            // Helper: check vertical overlap and return divider span
+            let check_vertical = |edge: f32, left: &Rect, right: &Rect| {
+                let overlap_top = left.y.max(right.y);
+                let overlap_bottom = (left.y + left.height).min(right.y + right.height);
+                if overlap_bottom > overlap_top {
+                    Some((edge, overlap_top, overlap_bottom))
+                } else {
+                    None
+                }
+            };
+
+            // Helper: check horizontal overlap and return divider span
+            let check_horizontal = |edge: f32, top: &Rect, bottom: &Rect| {
+                let overlap_left = top.x.max(bottom.x);
+                let overlap_right = (top.x + top.width).min(bottom.x + bottom.width);
+                if overlap_right > overlap_left {
+                    Some((edge, overlap_left, overlap_right))
+                } else {
+                    None
+                }
+            };
+
+            // Emit a divider quad and advance the quad counter.
+            let mut emit_quad = |qx: f32, qy: f32, qw: f32, qh: f32| {
+                vertices.extend_from_slice(&quad_vertices(qx, qy, qw, qh, divider_color));
+                indices.extend_from_slice(&quad_indices(vertex_base(quad_count)));
+                quad_count += 1;
+            };
+
+            // Vertical: rect_a's right edge == rect_b's left edge
+            if (a_right - rect_b.x).abs() < tolerance {
+                if let Some((edge, top, bottom)) = check_vertical(a_right, rect_a, rect_b) {
+                    emit_quad(edge - 0.5, top, 1.0, bottom - top);
+                }
+            }
+
+            // Vertical: rect_b's right edge == rect_a's left edge
+            if (b_right - rect_a.x).abs() < tolerance {
+                if let Some((edge, top, bottom)) = check_vertical(b_right, rect_b, rect_a) {
+                    emit_quad(edge - 0.5, top, 1.0, bottom - top);
+                }
+            }
+
+            // Horizontal: rect_a's bottom edge == rect_b's top edge
+            if (a_bottom - rect_b.y).abs() < tolerance {
+                if let Some((edge, left, right)) = check_horizontal(a_bottom, rect_a, rect_b) {
+                    emit_quad(left, edge - 0.5, right - left, 1.0);
+                }
+            }
+
+            // Horizontal: rect_b's bottom edge == rect_a's top edge
+            if (b_bottom - rect_a.y).abs() < tolerance {
+                if let Some((edge, left, right)) = check_horizontal(b_bottom, rect_b, rect_a) {
+                    emit_quad(left, edge - 0.5, right - left, 1.0);
+                }
+            }
+        }
+    }
+
+    (vertices, indices)
 }
 
 /// Build focus border quads around a pane rect.
@@ -72,7 +190,44 @@ pub fn build_focus_border(
     border_thickness: f32,
     color: [f32; 4],
 ) -> (Vec<Vertex>, Vec<u16>) {
-    todo!()
+    let mut vertices = Vec::with_capacity(16);
+    let mut indices = Vec::with_capacity(24);
+
+    // Top border
+    vertices.extend_from_slice(&quad_vertices(rect.x, rect.y, rect.width, border_thickness, color));
+    indices.extend_from_slice(&quad_indices(vertex_base(0)));
+
+    // Bottom border
+    vertices.extend_from_slice(&quad_vertices(
+        rect.x,
+        rect.y + rect.height - border_thickness,
+        rect.width,
+        border_thickness,
+        color,
+    ));
+    indices.extend_from_slice(&quad_indices(vertex_base(1)));
+
+    // Left border (between top and bottom)
+    vertices.extend_from_slice(&quad_vertices(
+        rect.x,
+        rect.y + border_thickness,
+        border_thickness,
+        rect.height - 2.0 * border_thickness,
+        color,
+    ));
+    indices.extend_from_slice(&quad_indices(vertex_base(2)));
+
+    // Right border (between top and bottom)
+    vertices.extend_from_slice(&quad_vertices(
+        rect.x + rect.width - border_thickness,
+        rect.y + border_thickness,
+        border_thickness,
+        rect.height - 2.0 * border_thickness,
+        color,
+    ));
+    indices.extend_from_slice(&quad_indices(vertex_base(3)));
+
+    (vertices, indices)
 }
 
 #[cfg(test)]
