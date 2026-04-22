@@ -56,8 +56,8 @@ pub fn discover_sessions(base_dir: &Path) -> Vec<DiscoveredSession> {
         for file_entry in files.flatten() {
             let file_path = file_entry.path();
 
-            // Skip anything inside a subagents directory
-            if file_path.to_string_lossy().contains("subagents") {
+            // Skip files inside subagent directories (/subagents/...)
+            if file_path.components().any(|c| c.as_os_str() == "subagents") {
                 continue;
             }
 
