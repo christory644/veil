@@ -43,8 +43,24 @@ impl Rasterizer {
     ///
     /// Returns `None` if the glyph cannot be rasterized (e.g., notdef
     /// glyph with no outline, or a glyph ID that doesn't exist).
-    pub fn rasterize(&mut self, _font_data: &FontData, _glyph_id: u16) -> Option<RasterizedGlyph> {
-        None
+    pub fn rasterize(&mut self, font_data: &FontData, glyph_id: u16) -> Option<RasterizedGlyph> {
+        let font_ref = font_data.font_ref();
+        let mut scaler = self.context.builder(font_ref).size(font_data.size_px()).build();
+        let image = swash::scale::Render::new(&[
+            swash::scale::Source::ColorOutline(0),
+            swash::scale::Source::Outline,
+        ])
+        .format(swash::zeno::Format::Alpha)
+        .render(&mut scaler, glyph_id)?;
+
+        Some(RasterizedGlyph {
+            glyph_id,
+            bitmap: image.data,
+            width: image.placement.width,
+            height: image.placement.height,
+            bearing_x: image.placement.left,
+            bearing_y: image.placement.top,
+        })
     }
 }
 
