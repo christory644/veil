@@ -64,24 +64,15 @@ impl FontData {
         let leading = metrics.leading;
         let cell_height = ascent + descent + leading;
 
-        // Get cell width from the advance of 'M', falling back to space.
+        // Cell width: use advance of 'M', fall back to space, then estimate.
         let charmap = font_ref.charmap();
         let glyph_metrics = font_ref.glyph_metrics(&[]).scale(size_px);
 
-        let cell_width = {
-            let m_id = charmap.map('M');
-            if m_id != 0 {
-                glyph_metrics.advance_width(m_id)
-            } else {
-                let space_id = charmap.map(' ');
-                if space_id != 0 {
-                    glyph_metrics.advance_width(space_id)
-                } else {
-                    // Last resort: estimate from average width
-                    size_px * 0.6
-                }
-            }
-        };
+        let cell_width = ['M', ' ']
+            .iter()
+            .map(|&ch| charmap.map(ch))
+            .find(|&id| id != 0)
+            .map_or(size_px * 0.6, |id| glyph_metrics.advance_width(id));
 
         Ok(Self { data, index: 0, size_px, cell_width, cell_height, ascent, descent })
     }

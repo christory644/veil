@@ -5,6 +5,7 @@
 //! and a foreground RGBA color.
 
 use crate::font::atlas::AtlasRegion;
+use crate::vertex::quad_indices;
 
 /// Byte offset of the `uv` field within `TextVertex`.
 ///
@@ -102,9 +103,10 @@ pub fn text_quad_vertices(
 
 /// Generate 6 indices for a textured quad (two triangles).
 ///
-/// Triangles: (base+0, base+2, base+1), (base+1, base+2, base+3)
+/// Delegates to [`crate::vertex::quad_indices`] -- the index pattern is
+/// identical for solid-color and textured quads.
 pub fn text_quad_indices(base: u16) -> [u16; 6] {
-    [base, base + 2, base + 1, base + 1, base + 2, base + 3]
+    quad_indices(base)
 }
 
 #[cfg(test)]

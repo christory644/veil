@@ -150,8 +150,9 @@ impl GlyphAtlas {
     fn try_place(&mut self, glyph_w: u32, glyph_h: u32) -> Option<(u32, u32)> {
         // Try the current (last) shelf.
         if let Some(shelf) = self.shelves.last_mut() {
-            if shelf.x + glyph_w + PADDING <= self.width || shelf.x + glyph_w == self.width {
-                // Fits on the current shelf (allow exact fit without trailing padding).
+            let fits_with_padding = shelf.x + glyph_w + PADDING <= self.width;
+            let exact_fit = shelf.x + glyph_w == self.width;
+            if fits_with_padding || exact_fit {
                 let px = shelf.x;
                 let py = shelf.y;
                 shelf.x += glyph_w + PADDING;

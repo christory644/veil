@@ -64,7 +64,7 @@ impl Shaper {
 
         let glyph_buffer = rustybuzz::shape(&face, &[], buffer);
 
-        #[allow(clippy::cast_precision_loss)]
+        #[allow(clippy::cast_precision_loss)] // Units-per-em fits in f32.
         let scale = self.size_px / face.units_per_em() as f32;
         let infos = glyph_buffer.glyph_infos();
         let positions = glyph_buffer.glyph_positions();
@@ -72,19 +72,25 @@ impl Shaper {
         infos
             .iter()
             .zip(positions.iter())
-            .map(|(info, pos)| {
-                #[allow(clippy::cast_possible_truncation)]
-                let glyph_id = info.glyph_id as u16;
-                #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
-                let x_offset = (f64::from(pos.x_offset) * f64::from(scale)).round() as i32;
-                #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
-                let y_offset = (f64::from(pos.y_offset) * f64::from(scale)).round() as i32;
-                #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
-                let x_advance = (f64::from(pos.x_advance) * f64::from(scale)).round() as i32;
-                ShapedGlyph { glyph_id, cluster: info.cluster, x_offset, y_offset, x_advance }
-            })
+            .map(|(info, pos)| scaled_glyph(info, pos, scale))
             .collect()
     }
+}
+
+/// Convert a rustybuzz glyph info/position pair into a `ShapedGlyph`.
+///
+/// Scales font-unit offsets and advances to pixel coordinates using `scale`.
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+fn scaled_glyph(
+    info: &rustybuzz::GlyphInfo,
+    pos: &rustybuzz::GlyphPosition,
+    scale: f32,
+) -> ShapedGlyph {
+    let glyph_id = info.glyph_id as u16;
+    let x_offset = (f64::from(pos.x_offset) * f64::from(scale)).round() as i32;
+    let y_offset = (f64::from(pos.y_offset) * f64::from(scale)).round() as i32;
+    let x_advance = (f64::from(pos.x_advance) * f64::from(scale)).round() as i32;
+    ShapedGlyph { glyph_id, cluster: info.cluster, x_offset, y_offset, x_advance }
 }
 
 #[cfg(test)]

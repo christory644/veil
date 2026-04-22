@@ -64,20 +64,20 @@ impl Rasterizer {
     }
 }
 
-/// Helper to get the glyph ID for a character from a loaded font.
-///
-/// Useful in tests to get glyph IDs without going through the shaper.
-fn glyph_id_for_char(font_data: &FontData, ch: char) -> u16 {
-    let font_ref = font_data.font_ref();
-    font_ref.charmap().map(ch)
-}
-
 #[cfg(test)]
 #[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
     use crate::font::loader::{FontConfig, FontData};
     use std::path::PathBuf;
+
+    /// Get the glyph ID for a character from a loaded font.
+    ///
+    /// Useful in tests to get glyph IDs without going through the shaper.
+    fn glyph_id_for_char(font_data: &FontData, ch: char) -> u16 {
+        let font_ref = font_data.font_ref();
+        font_ref.charmap().map(ch)
+    }
 
     /// Path to the test font fixture.
     fn test_font_path() -> PathBuf {
