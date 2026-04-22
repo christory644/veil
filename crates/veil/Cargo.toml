@@ -1,0 +1,21 @@
+[package]
+name = "veil"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+veil-core = { path = "../veil-core" }
+veil-ghostty = { path = "../veil-ghostty" }
+veil-ui = { path = "../veil-ui" }
+veil-pty = { path = "../veil-pty" }
+veil-aggregator = { path = "../veil-aggregator" }
+veil-socket = { path = "../veil-socket" }
+anyhow.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

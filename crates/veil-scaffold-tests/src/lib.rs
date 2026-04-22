@@ -6,12 +6,7 @@ mod tests {
     /// Returns the workspace root directory (two levels up from this crate's manifest dir).
     fn workspace_root() -> PathBuf {
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        manifest_dir
-            .parent()
-            .expect("crates/ dir")
-            .parent()
-            .expect("workspace root")
-            .to_path_buf()
+        manifest_dir.parent().expect("crates/ dir").parent().expect("workspace root").to_path_buf()
     }
 
     // =========================================================================
@@ -30,14 +25,8 @@ mod tests {
     ];
 
     /// Library crates (have src/lib.rs).
-    const LIBRARY_CRATES: &[&str] = &[
-        "veil-core",
-        "veil-ghostty",
-        "veil-ui",
-        "veil-pty",
-        "veil-aggregator",
-        "veil-socket",
-    ];
+    const LIBRARY_CRATES: &[&str] =
+        &["veil-core", "veil-ghostty", "veil-ui", "veil-pty", "veil-aggregator", "veil-socket"];
 
     /// The single binary crate (has src/main.rs).
     const BINARY_CRATE: &str = "veil";
@@ -46,11 +35,7 @@ mod tests {
     fn workspace_cargo_toml_exists() {
         let root = workspace_root();
         let cargo_toml = root.join("Cargo.toml");
-        assert!(
-            cargo_toml.exists(),
-            "expected {} to exist",
-            cargo_toml.display()
-        );
+        assert!(cargo_toml.exists(), "expected {} to exist", cargo_toml.display());
     }
 
     #[test]
@@ -119,11 +104,7 @@ mod tests {
         let root = workspace_root();
         for krate in EXPECTED_CRATES {
             let cargo_toml = root.join("crates").join(krate).join("Cargo.toml");
-            assert!(
-                cargo_toml.exists(),
-                "expected {} to exist",
-                cargo_toml.display()
-            );
+            assert!(cargo_toml.exists(), "expected {} to exist", cargo_toml.display());
         }
     }
 
@@ -139,11 +120,7 @@ mod tests {
     #[test]
     fn binary_crate_has_main_rs() {
         let root = workspace_root();
-        let main_rs = root
-            .join("crates")
-            .join(BINARY_CRATE)
-            .join("src")
-            .join("main.rs");
+        let main_rs = root.join("crates").join(BINARY_CRATE).join("src").join("main.rs");
         assert!(main_rs.exists(), "expected {} to exist", main_rs.display());
     }
 
@@ -151,11 +128,8 @@ mod tests {
     fn library_crates_deny_unsafe_code() {
         let root = workspace_root();
         // All library crates except veil-ghostty must have #![deny(unsafe_code)]
-        let deny_unsafe_crates: Vec<&str> = LIBRARY_CRATES
-            .iter()
-            .filter(|&&c| c != "veil-ghostty")
-            .copied()
-            .collect();
+        let deny_unsafe_crates: Vec<&str> =
+            LIBRARY_CRATES.iter().filter(|&&c| c != "veil-ghostty").copied().collect();
 
         for krate in &deny_unsafe_crates {
             let lib_rs = root.join("crates").join(krate).join("src").join("lib.rs");
@@ -185,11 +159,7 @@ mod tests {
     #[test]
     fn binary_crate_denies_unsafe_code() {
         let root = workspace_root();
-        let main_rs = root
-            .join("crates")
-            .join(BINARY_CRATE)
-            .join("src")
-            .join("main.rs");
+        let main_rs = root.join("crates").join(BINARY_CRATE).join("src").join("main.rs");
         let content = fs::read_to_string(&main_rs).unwrap_or_default();
         assert!(
             content.contains("#![deny(unsafe_code)]"),
@@ -200,11 +170,7 @@ mod tests {
     #[test]
     fn veil_ghostty_denies_unsafe_op_in_unsafe_fn() {
         let root = workspace_root();
-        let lib_rs = root
-            .join("crates")
-            .join("veil-ghostty")
-            .join("src")
-            .join("lib.rs");
+        let lib_rs = root.join("crates").join("veil-ghostty").join("src").join("lib.rs");
         let content = fs::read_to_string(&lib_rs).unwrap_or_default();
         assert!(
             content.contains("#![deny(unsafe_op_in_unsafe_fn)]"),
@@ -235,20 +201,13 @@ mod tests {
     fn library_crates_depend_on_veil_core() {
         let root = workspace_root();
         // All library crates except veil-core itself should depend on veil-core
-        let dependent_crates: Vec<&str> = LIBRARY_CRATES
-            .iter()
-            .filter(|&&c| c != "veil-core")
-            .copied()
-            .collect();
+        let dependent_crates: Vec<&str> =
+            LIBRARY_CRATES.iter().filter(|&&c| c != "veil-core").copied().collect();
 
         for krate in &dependent_crates {
             let cargo_toml = root.join("crates").join(krate).join("Cargo.toml");
             let content = fs::read_to_string(&cargo_toml).unwrap_or_default();
-            assert!(
-                content.contains("veil-core"),
-                "{}/Cargo.toml must depend on veil-core",
-                krate
-            );
+            assert!(content.contains("veil-core"), "{}/Cargo.toml must depend on veil-core", krate);
         }
     }
 
@@ -259,11 +218,7 @@ mod tests {
         let content = fs::read_to_string(&cargo_toml).unwrap_or_default();
 
         for krate in LIBRARY_CRATES {
-            assert!(
-                content.contains(krate),
-                "veil/Cargo.toml must depend on '{}'",
-                krate
-            );
+            assert!(content.contains(krate), "veil/Cargo.toml must depend on '{}'", krate);
         }
     }
 
@@ -293,11 +248,7 @@ mod tests {
     fn veil_ghostty_has_build_rs() {
         let root = workspace_root();
         let build_rs = root.join("crates").join("veil-ghostty").join("build.rs");
-        assert!(
-            build_rs.exists(),
-            "expected {} to exist",
-            build_rs.display()
-        );
+        assert!(build_rs.exists(), "expected {} to exist", build_rs.display());
     }
 
     #[test]
@@ -397,22 +348,10 @@ mod tests {
         let path = root.join(".github").join("workflows").join("ci.yml");
         let content = fs::read_to_string(&path).unwrap_or_default();
 
-        assert!(
-            content.contains("cargo fmt"),
-            "CI workflow must include 'cargo fmt' step"
-        );
-        assert!(
-            content.contains("cargo clippy"),
-            "CI workflow must include 'cargo clippy' step"
-        );
-        assert!(
-            content.contains("cargo build"),
-            "CI workflow must include 'cargo build' step"
-        );
-        assert!(
-            content.contains("cargo test"),
-            "CI workflow must include 'cargo test' step"
-        );
+        assert!(content.contains("cargo fmt"), "CI workflow must include 'cargo fmt' step");
+        assert!(content.contains("cargo clippy"), "CI workflow must include 'cargo clippy' step");
+        assert!(content.contains("cargo build"), "CI workflow must include 'cargo build' step");
+        assert!(content.contains("cargo test"), "CI workflow must include 'cargo test' step");
     }
 
     #[test]
@@ -421,14 +360,8 @@ mod tests {
         let path = root.join(".github").join("workflows").join("ci.yml");
         let content = fs::read_to_string(&path).unwrap_or_default();
 
-        assert!(
-            content.contains("main"),
-            "CI workflow must trigger on 'main' branch"
-        );
-        assert!(
-            content.contains("ralph-loop"),
-            "CI workflow must trigger on 'ralph-loop' branch"
-        );
+        assert!(content.contains("main"), "CI workflow must trigger on 'main' branch");
+        assert!(content.contains("ralph-loop"), "CI workflow must trigger on 'ralph-loop' branch");
     }
 
     #[test]
@@ -492,13 +425,8 @@ mod tests {
         let root = workspace_root();
         let content = fs::read_to_string(root.join("CONTRIBUTING.md")).unwrap_or_default();
 
-        let required_sections = [
-            "Getting Started",
-            "Development Workflow",
-            "Agent Adapter",
-            "Code Review",
-            "License",
-        ];
+        let required_sections =
+            ["Getting Started", "Development Workflow", "Agent Adapter", "Code Review", "License"];
         for section in &required_sections {
             assert!(
                 content.contains(section),
@@ -540,9 +468,6 @@ mod tests {
             trimmed == "target/" || trimmed == "/target/" || trimmed == "target"
         });
 
-        assert!(
-            ignores_target,
-            ".gitignore must still ignore the target/ directory"
-        );
+        assert!(ignores_target, ".gitignore must still ignore the target/ directory");
     }
 }

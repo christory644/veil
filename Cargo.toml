@@ -1,3 +1,35 @@
 [workspace]
 resolver = "2"
-members = ["crates/veil-scaffold-tests"]
+members = [
+    "crates/veil",
+    "crates/veil-core",
+    "crates/veil-ghostty",
+    "crates/veil-ui",
+    "crates/veil-pty",
+    "crates/veil-aggregator",
+    "crates/veil-socket",
+    "crates/veil-scaffold-tests",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.92.0"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/veil-term/veil"
+authors = ["Christopher Story"]
+
+[workspace.dependencies]
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
