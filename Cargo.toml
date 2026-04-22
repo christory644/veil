@@ -33,6 +33,9 @@ tempfile = "3"
 winit = "0.30"
 libc = "0.2"
 proptest = "1"
+wgpu = "24"
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "0.4"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

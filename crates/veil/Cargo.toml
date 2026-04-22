@@ -18,6 +18,9 @@ anyhow.workspace = true
 tracing.workspace = true
 winit = { workspace = true }
 tokio = { workspace = true }
+wgpu = { workspace = true }
+bytemuck = { workspace = true }
+pollster = { workspace = true }
 
 [lints]
 workspace = true
