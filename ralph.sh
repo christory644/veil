@@ -56,8 +56,8 @@ iteration=0
 start_time=$(date +%s)
 
 echo -e "${CYAN}╔══════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║           Veil Ralph Loop v1.0               ║${NC}"
-echo -e "${CYAN}║   Autonomous Development with Superpowers    ║${NC}"
+echo -e "${CYAN}║           Veil Ralph Loop v3.0               ║${NC}"
+echo -e "${CYAN}║   Subagent-Driven Autonomous Development     ║${NC}"
 echo -e "${CYAN}╠══════════════════════════════════════════════╣${NC}"
 echo -e "${CYAN}║${NC} Working dir: ${BLUE}${SCRIPT_DIR}${NC}"
 echo -e "${CYAN}║${NC} Prompt:      ${BLUE}${PROMPT_FILE}${NC}"

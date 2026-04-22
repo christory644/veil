@@ -3,12 +3,12 @@
     "PreToolUse": [
       {
         "matcher": "Bash",
-        "if": "Bash(git push *)",
         "hooks": [
           {
             "type": "command",
             "command": ".claude/hooks/pre-push-gate.sh",
-            "timeout": 120
+            "timeout": 120,
+            "if": "Bash(git push *)"
           }
         ]
       }
