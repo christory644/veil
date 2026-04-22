@@ -28,8 +28,9 @@ pub fn apply_sidebar_response(
             .map_err(|e| format!("failed to switch workspace: {e}"))?;
 
         if let Some(ws) = app_state.workspace(ws_id) {
-            let surface_id = ws.layout.surface_ids()[0];
-            focus.focus_surface(surface_id);
+            if let Some(&surface_id) = ws.layout.surface_ids().first() {
+                focus.focus_surface(surface_id);
+            }
         }
     }
 
