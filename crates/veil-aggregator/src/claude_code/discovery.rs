@@ -4,7 +4,6 @@
 //! which project directory they belong to.
 
 #![allow(unused_imports)]
-#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 
@@ -26,21 +25,97 @@ pub struct DiscoveredSession {
 /// Looks for `<base>/<project-hash>/<uuid>.jsonl` files.
 /// Skips subagent files (those are inside `<uuid>/subagents/`).
 /// Returns one `DiscoveredSession` per JSONL file found.
-pub fn discover_sessions(_base_dir: &Path) -> Vec<DiscoveredSession> {
-    unimplemented!("discover_sessions: will be implemented in GREEN phase")
+pub fn discover_sessions(base_dir: &Path) -> Vec<DiscoveredSession> {
+    let mut sessions = Vec::new();
+
+    // If the base directory doesn't exist or isn't a directory, return empty.
+    let Ok(project_dirs) = std::fs::read_dir(base_dir) else {
+        return sessions;
+    };
+
+    // First level: project directories
+    for project_entry in project_dirs.flatten() {
+        let project_path = project_entry.path();
+        if !project_path.is_dir() {
+            continue;
+        }
+
+        let Some(project_hash) =
+            project_path.file_name().and_then(|n| n.to_str()).map(ToString::to_string)
+        else {
+            continue;
+        };
+
+        // Second level: JSONL files within each project directory
+        let Ok(files) = std::fs::read_dir(&project_path) else {
+            continue;
+        };
+
+        for file_entry in files.flatten() {
+            let file_path = file_entry.path();
+
+            // Skip anything inside a subagents directory
+            if file_path.to_string_lossy().contains("subagents") {
+                continue;
+            }
+
+            // Only process files (not directories)
+            if !file_path.is_file() {
+                continue;
+            }
+
+            // Extract filename and check for UUID pattern
+            let Some(filename) = file_path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+
+            if let Some(session_id) = extract_session_id(filename) {
+                sessions.push(DiscoveredSession {
+                    jsonl_path: file_path,
+                    session_id,
+                    project_dir: project_path.clone(),
+                    project_hash: project_hash.clone(),
+                });
+            }
+        }
+    }
+
+    sessions
 }
 
 /// Resolve the Claude Code projects directory.
 /// Returns `~/.claude/projects/` with home directory expansion.
 /// Returns `None` if the directory does not exist.
 pub fn resolve_projects_dir() -> Option<PathBuf> {
-    unimplemented!("resolve_projects_dir: will be implemented in GREEN phase")
+    let home = dirs::home_dir()?;
+    let projects_dir = home.join(".claude").join("projects");
+    if projects_dir.is_dir() {
+        Some(projects_dir)
+    } else {
+        None
+    }
 }
 
 /// Extract a session UUID from a JSONL filename.
 /// Returns `None` if the filename doesn't match the UUID pattern.
-fn extract_session_id(_filename: &str) -> Option<String> {
-    unimplemented!("extract_session_id: will be implemented in GREEN phase")
+fn extract_session_id(filename: &str) -> Option<String> {
+    // Must end with .jsonl
+    let stem = filename.strip_suffix(".jsonl")?;
+
+    // Validate UUID format: 8-4-4-4-12 hex characters
+    let parts: Vec<&str> = stem.split('-').collect();
+    if parts.len() != 5 {
+        return None;
+    }
+
+    let expected_lengths = [8, 4, 4, 4, 12];
+    for (part, &expected_len) in parts.iter().zip(&expected_lengths) {
+        if part.len() != expected_len || !part.chars().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+    }
+
+    Some(stem.to_string())
 }
 
 #[cfg(test)]

@@ -5,7 +5,6 @@
 //! bad line does not prevent parsing the rest of the file.
 
 #![allow(unused_imports)]
-#![allow(dead_code)]
 
 use std::path::Path;
 
@@ -41,40 +40,243 @@ pub struct ParsedSession {
     pub user_message_count: usize,
     /// Total count of assistant messages.
     pub assistant_message_count: usize,
-    /// Total count of tool_use blocks across all assistant messages.
+    /// Total count of `tool_use` blocks across all assistant messages.
     pub tool_use_count: usize,
     /// Number of lines that failed to parse.
     pub parse_error_count: usize,
+}
+
+/// Mutable accumulator used while scanning a JSONL file line by line.
+struct SessionAccumulator {
+    session_id_from_records: Option<String>,
+    cwd: Option<String>,
+    git_branch: Option<String>,
+    version: Option<String>,
+    slug: Option<String>,
+    started_at: Option<DateTime<Utc>>,
+    ended_at: Option<DateTime<Utc>>,
+    first_user_message: Option<String>,
+    first_assistant_message: Option<String>,
+    user_message_count: usize,
+    assistant_message_count: usize,
+    tool_use_count: usize,
+    parse_error_count: usize,
+    /// Whether the last user record was a compact summary, so we can
+    /// skip the paired assistant response as well.
+    last_user_was_compact_summary: bool,
+}
+
+impl SessionAccumulator {
+    fn new() -> Self {
+        Self {
+            session_id_from_records: None,
+            cwd: None,
+            git_branch: None,
+            version: None,
+            slug: None,
+            started_at: None,
+            ended_at: None,
+            first_user_message: None,
+            first_assistant_message: None,
+            user_message_count: 0,
+            assistant_message_count: 0,
+            tool_use_count: 0,
+            parse_error_count: 0,
+            last_user_was_compact_summary: false,
+        }
+    }
+
+    /// Set a field to `value` if it is currently `None`.
+    fn set_first(slot: &mut Option<String>, value: Option<&String>) {
+        if slot.is_none() {
+            if let Some(v) = value {
+                *slot = Some(v.clone());
+            }
+        }
+    }
+
+    /// Update `started_at` / `ended_at` timestamps, keeping earliest and latest.
+    fn update_timestamps(&mut self, ts: DateTime<Utc>) {
+        match self.started_at {
+            Some(existing) if existing <= ts => {}
+            _ => self.started_at = Some(ts),
+        }
+        match self.ended_at {
+            Some(existing) if existing >= ts => {}
+            _ => self.ended_at = Some(ts),
+        }
+    }
+
+    fn process_user(&mut self, user: &UserRecord) {
+        Self::set_first(&mut self.session_id_from_records, user.session_id.as_ref());
+        Self::set_first(&mut self.cwd, user.cwd.as_ref());
+        Self::set_first(&mut self.git_branch, user.git_branch.as_ref());
+        Self::set_first(&mut self.version, user.version.as_ref());
+
+        if let Some(ts) = user.timestamp {
+            self.update_timestamps(ts);
+        }
+
+        if user.is_compact_summary {
+            self.last_user_was_compact_summary = true;
+            return;
+        }
+        self.last_user_was_compact_summary = false;
+
+        if let Some(text) = extract_user_text(user) {
+            self.user_message_count += 1;
+            if self.first_user_message.is_none() {
+                self.first_user_message = Some(text.to_string());
+            }
+        }
+    }
+
+    fn process_assistant(&mut self, asst: &AssistantRecord) {
+        Self::set_first(&mut self.session_id_from_records, asst.session_id.as_ref());
+        Self::set_first(&mut self.cwd, asst.cwd.as_ref());
+        Self::set_first(&mut self.git_branch, asst.git_branch.as_ref());
+        Self::set_first(&mut self.version, asst.version.as_ref());
+        Self::set_first(&mut self.slug, asst.slug.as_ref());
+
+        if let Some(ts) = asst.timestamp {
+            self.update_timestamps(ts);
+        }
+
+        if self.last_user_was_compact_summary {
+            self.last_user_was_compact_summary = false;
+            return;
+        }
+
+        self.assistant_message_count += 1;
+
+        if let Some(ref msg) = asst.message {
+            if let Some(ref content) = msg.content {
+                self.tool_use_count += count_tool_uses(content);
+                if self.first_assistant_message.is_none() {
+                    if let Some(text) = extract_assistant_text(content) {
+                        self.first_assistant_message = Some(text.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    fn track_session_id_and_timestamp(
+        &mut self,
+        session_id: Option<&String>,
+        timestamp: Option<DateTime<Utc>>,
+    ) {
+        Self::set_first(&mut self.session_id_from_records, session_id);
+        if let Some(ts) = timestamp {
+            self.update_timestamps(ts);
+        }
+    }
+
+    fn into_parsed_session(self, filename_stem: String) -> ParsedSession {
+        ParsedSession {
+            session_id: self.session_id_from_records.unwrap_or(filename_stem),
+            cwd: self.cwd,
+            git_branch: self.git_branch,
+            version: self.version,
+            slug: self.slug,
+            started_at: self.started_at,
+            ended_at: self.ended_at,
+            first_user_message: self.first_user_message,
+            first_assistant_message: self.first_assistant_message,
+            user_message_count: self.user_message_count,
+            assistant_message_count: self.assistant_message_count,
+            tool_use_count: self.tool_use_count,
+            parse_error_count: self.parse_error_count,
+        }
+    }
 }
 
 /// Parse a single JSONL file into a `ParsedSession`.
 ///
 /// Reads line by line, accumulating metadata. Malformed lines are counted
 /// in `parse_error_count` but do not prevent parsing the rest of the file.
-pub fn parse_session_file(_path: &Path) -> Result<ParsedSession, AdapterError> {
-    unimplemented!("parse_session_file: will be implemented in GREEN phase")
+pub fn parse_session_file(path: &Path) -> Result<ParsedSession, AdapterError> {
+    use std::io::{BufRead, BufReader};
+
+    let file = std::fs::File::open(path)?;
+    let reader = BufReader::new(file);
+    let filename_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+    let mut acc = SessionAccumulator::new();
+
+    for line in reader.lines() {
+        let line = line?;
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let Some(record) = parse_line(line) else {
+            acc.parse_error_count += 1;
+            continue;
+        };
+
+        match record {
+            JournalRecord::User(ref user) => acc.process_user(user),
+            JournalRecord::Assistant(ref asst) => acc.process_assistant(asst),
+            JournalRecord::System(ref r) => {
+                acc.track_session_id_and_timestamp(r.session_id.as_ref(), r.timestamp);
+            }
+            JournalRecord::QueueOperation(ref r) => {
+                acc.track_session_id_and_timestamp(r.session_id.as_ref(), r.timestamp);
+            }
+            JournalRecord::PrLink(ref r) => {
+                acc.track_session_id_and_timestamp(r.session_id.as_ref(), r.timestamp);
+            }
+            JournalRecord::Progress(ref r) => {
+                acc.track_session_id_and_timestamp(r.session_id.as_ref(), r.timestamp);
+            }
+            JournalRecord::LastPrompt(ref r) => {
+                acc.track_session_id_and_timestamp(r.session_id.as_ref(), None);
+            }
+            JournalRecord::FileHistorySnapshot(ref r) => {
+                acc.track_session_id_and_timestamp(r.session_id.as_ref(), None);
+            }
+        }
+    }
+
+    Ok(acc.into_parsed_session(filename_stem))
 }
 
 /// Parse a single JSONL line into a `JournalRecord`.
 /// Returns `None` for lines that fail to parse (with a `tracing::debug` log).
-pub fn parse_line(_line: &str) -> Option<JournalRecord> {
-    unimplemented!("parse_line: will be implemented in GREEN phase")
+pub fn parse_line(line: &str) -> Option<JournalRecord> {
+    serde_json::from_str::<JournalRecord>(line).ok()
 }
 
 /// Extract the first plain-text user message from a `UserRecord`,
 /// skipping compact summaries and `tool_result` messages.
-fn extract_user_text(_record: &UserRecord) -> Option<&str> {
-    unimplemented!("extract_user_text: will be implemented in GREEN phase")
+fn extract_user_text(record: &UserRecord) -> Option<&str> {
+    // Skip compact summaries entirely.
+    if record.is_compact_summary {
+        return None;
+    }
+
+    let message = record.message.as_ref()?;
+    match &message.content {
+        MessageContent::Text(text) => Some(text.as_str()),
+        // Blocks content means tool_result — not a text user message.
+        MessageContent::Blocks(_) => None,
+    }
 }
 
 /// Extract the first text block from an assistant message's content array.
-fn extract_assistant_text(_content: &[ContentBlock]) -> Option<&str> {
-    unimplemented!("extract_assistant_text: will be implemented in GREEN phase")
+fn extract_assistant_text(content: &[ContentBlock]) -> Option<&str> {
+    for block in content {
+        if let ContentBlock::Text { text } = block {
+            return Some(text.as_str());
+        }
+    }
+    None
 }
 
 /// Count `tool_use` blocks in an assistant message's content array.
-fn count_tool_uses(_content: &[ContentBlock]) -> usize {
-    unimplemented!("count_tool_uses: will be implemented in GREEN phase")
+fn count_tool_uses(content: &[ContentBlock]) -> usize {
+    content.iter().filter(|block| matches!(block, ContentBlock::ToolUse { .. })).count()
 }
 
 #[cfg(test)]
