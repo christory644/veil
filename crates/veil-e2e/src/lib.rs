@@ -85,24 +85,15 @@ impl JsonRpcClient {
 }
 
 /// Errors from the E2E test harness.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum VeilTestError {
     /// Functionality not yet implemented (waiting on VEI-20).
+    #[error("not implemented: {0}")]
     NotImplemented(&'static str),
     /// I/O error communicating with the Veil process.
-    Io(std::io::Error),
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
     /// JSON serialization/deserialization error.
-    Json(serde_json::Error),
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
 }
-
-impl std::fmt::Display for VeilTestError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NotImplemented(msg) => write!(f, "not implemented: {msg}"),
-            Self::Io(err) => write!(f, "I/O error: {err}"),
-            Self::Json(err) => write!(f, "JSON error: {err}"),
-        }
-    }
-}
-
-impl std::error::Error for VeilTestError {}

@@ -11,6 +11,7 @@ publish = false
 [dependencies]
 veil-socket = { path = "../veil-socket" }
 veil-core = { path = "../veil-core" }
+thiserror.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
