@@ -4,6 +4,7 @@
 //! a surface ID (opaque handle to a terminal surface managed by veil-ghostty/veil-pty).
 
 use std::fmt;
+use std::mem;
 use std::path::PathBuf;
 
 /// Unique identifier for a workspace.
@@ -198,7 +199,10 @@ impl Workspace {
         match node {
             PaneNode::Leaf { pane_id, .. } => {
                 if *pane_id == target {
-                    let old_leaf = node.clone();
+                    // Use a sentinel leaf to move the old node out without cloning.
+                    let sentinel =
+                        PaneNode::Leaf { pane_id: PaneId::new(0), surface_id: SurfaceId::new(0) };
+                    let old_leaf = mem::replace(node, sentinel);
                     let new_leaf =
                         PaneNode::Leaf { pane_id: new_pane_id, surface_id: new_surface_id };
                     *node = PaneNode::Split {
@@ -230,40 +234,44 @@ impl Workspace {
             return Err(WorkspaceError::PaneNotFound(pane_id));
         }
 
-        // Check the pane exists before attempting removal.
-        if self.layout.find_pane(pane_id).is_none() {
-            return Err(WorkspaceError::PaneNotFound(pane_id));
-        }
-
-        let surface_id = Self::remove_pane(&mut self.layout, pane_id);
-        Ok(surface_id)
+        // Single traversal: find and remove the pane, promoting its sibling.
+        Self::remove_pane(&mut self.layout, pane_id)
+            .ok_or(WorkspaceError::PaneNotFound(pane_id))
+            .map(Some)
     }
 
     /// Recursively remove a pane from the tree, promoting its sibling.
     /// Returns the surface ID of the removed pane if found.
     fn remove_pane(node: &mut PaneNode, target: PaneId) -> Option<SurfaceId> {
-        match node {
-            PaneNode::Leaf { .. } => None,
-            PaneNode::Split { first, second, .. } => {
-                // Check if the target is a direct child.
-                if let PaneNode::Leaf { pane_id, surface_id } = first.as_ref() {
-                    if *pane_id == target {
-                        let closed_surface = *surface_id;
-                        *node = *second.clone();
-                        return Some(closed_surface);
-                    }
-                }
-                if let PaneNode::Leaf { pane_id, surface_id } = second.as_ref() {
-                    if *pane_id == target {
-                        let closed_surface = *surface_id;
-                        *node = *first.clone();
-                        return Some(closed_surface);
-                    }
-                }
-                // Recurse into children.
-                Self::remove_pane(first, target).or_else(|| Self::remove_pane(second, target))
+        let PaneNode::Split { first, second, .. } = node else {
+            return None;
+        };
+
+        // Check if the target is a direct child — if so, promote the sibling.
+        if let PaneNode::Leaf { pane_id, surface_id } = first.as_ref() {
+            if *pane_id == target {
+                let closed_surface = *surface_id;
+                // Move the sibling into this node's slot without cloning.
+                let sentinel =
+                    PaneNode::Leaf { pane_id: PaneId::new(0), surface_id: SurfaceId::new(0) };
+                let sibling = mem::replace(second.as_mut(), sentinel);
+                *node = sibling;
+                return Some(closed_surface);
             }
         }
+        if let PaneNode::Leaf { pane_id, surface_id } = second.as_ref() {
+            if *pane_id == target {
+                let closed_surface = *surface_id;
+                let sentinel =
+                    PaneNode::Leaf { pane_id: PaneId::new(0), surface_id: SurfaceId::new(0) };
+                let sibling = mem::replace(first.as_mut(), sentinel);
+                *node = sibling;
+                return Some(closed_surface);
+            }
+        }
+
+        // Recurse into children.
+        Self::remove_pane(first, target).or_else(|| Self::remove_pane(second, target))
     }
 
     /// Get all pane IDs in this workspace.

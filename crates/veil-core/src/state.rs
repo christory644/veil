@@ -166,9 +166,15 @@ impl AppState {
         self.workspaces.iter().find(|ws| ws.id == id)
     }
 
+    /// Look up a workspace by ID, returning a mutable reference.
+    fn workspace_mut(&mut self, id: WorkspaceId) -> Result<&mut Workspace, StateError> {
+        self.workspaces.iter_mut().find(|ws| ws.id == id).ok_or(StateError::WorkspaceNotFound(id))
+    }
+
     /// Switch the active workspace.
     pub fn set_active_workspace(&mut self, id: WorkspaceId) -> Result<(), StateError> {
-        if !self.workspaces.iter().any(|ws| ws.id == id) {
+        // Verify the workspace exists via the immutable lookup.
+        if self.workspace(id).is_none() {
             return Err(StateError::WorkspaceNotFound(id));
         }
         self.active_workspace_id = Some(id);
@@ -184,12 +190,12 @@ impl AppState {
     ) -> Result<(PaneId, SurfaceId), StateError> {
         let new_pane_id = PaneId::new(self.next_id());
         let new_surface_id = SurfaceId::new(self.next_id());
-        let ws = self
-            .workspaces
-            .iter_mut()
-            .find(|ws| ws.id == workspace_id)
-            .ok_or(StateError::WorkspaceNotFound(workspace_id))?;
-        ws.split_pane(pane_id, direction, new_pane_id, new_surface_id)?;
+        self.workspace_mut(workspace_id)?.split_pane(
+            pane_id,
+            direction,
+            new_pane_id,
+            new_surface_id,
+        )?;
         Ok((new_pane_id, new_surface_id))
     }
 
@@ -199,12 +205,7 @@ impl AppState {
         workspace_id: WorkspaceId,
         pane_id: PaneId,
     ) -> Result<Option<SurfaceId>, StateError> {
-        let ws = self
-            .workspaces
-            .iter_mut()
-            .find(|ws| ws.id == workspace_id)
-            .ok_or(StateError::WorkspaceNotFound(workspace_id))?;
-        Ok(ws.close_pane(pane_id)?)
+        Ok(self.workspace_mut(workspace_id)?.close_pane(pane_id)?)
     }
 
     /// Toggle sidebar visibility.
