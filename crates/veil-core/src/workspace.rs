@@ -238,9 +238,14 @@ impl Workspace {
         }
 
         // Single traversal: find and remove the pane, promoting its sibling.
-        Self::remove_pane(&mut self.layout, pane_id)
-            .ok_or(WorkspaceError::PaneNotFound(pane_id))
-            .map(Some)
+        let surface_id = Self::remove_pane(&mut self.layout, pane_id)
+            .ok_or(WorkspaceError::PaneNotFound(pane_id))?;
+
+        if self.zoomed_pane == Some(pane_id) {
+            self.zoomed_pane = None;
+        }
+
+        Ok(Some(surface_id))
     }
 
     /// Recursively remove a pane from the tree, promoting its sibling.
@@ -285,9 +290,16 @@ impl Workspace {
     /// Toggle zoom on a pane. If the pane is already zoomed, unzoom it.
     /// If a different pane is zoomed, switch zoom to the new pane.
     /// Returns the new zoom state.
-    pub fn toggle_zoom(&mut self, _pane_id: PaneId) -> Result<Option<PaneId>, WorkspaceError> {
-        // STUB: always returns None (unzoomed) — tests will fail until implemented.
-        Ok(None)
+    pub fn toggle_zoom(&mut self, pane_id: PaneId) -> Result<Option<PaneId>, WorkspaceError> {
+        if self.layout.find_pane(pane_id).is_none() {
+            return Err(WorkspaceError::PaneNotFound(pane_id));
+        }
+        if self.zoomed_pane == Some(pane_id) {
+            self.zoomed_pane = None;
+        } else {
+            self.zoomed_pane = Some(pane_id);
+        }
+        Ok(self.zoomed_pane)
     }
 
     /// Clear zoom state (e.g., when the zoomed pane is closed).
