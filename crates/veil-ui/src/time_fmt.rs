@@ -9,9 +9,36 @@ use chrono::{DateTime, Utc};
 /// "yesterday", "3 days ago", "2 weeks ago", "Jan 15").
 ///
 /// Uses `now` as the reference time to enable deterministic testing.
-pub fn format_relative(_timestamp: DateTime<Utc>, _now: DateTime<Utc>) -> String {
-    // Stub: returns wrong value so tests compile but fail.
-    String::new()
+pub fn format_relative(timestamp: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let duration = now.signed_duration_since(timestamp);
+    let total_seconds = duration.num_seconds();
+
+    // Future or same instant: defensive fallback
+    if total_seconds <= 0 {
+        return "just now".to_string();
+    }
+
+    let total_minutes = duration.num_minutes();
+    let total_hours = duration.num_hours();
+    let total_days = duration.num_days();
+
+    if total_seconds < 60 {
+        "just now".to_string()
+    } else if total_minutes < 60 {
+        format!("{}m ago", total_minutes)
+    } else if total_hours < 24 {
+        format!("{}h ago", total_hours)
+    } else if total_hours < 48 {
+        "yesterday".to_string()
+    } else if total_days < 14 {
+        format!("{} days ago", total_days)
+    } else if total_days < 60 {
+        format!("{} weeks ago", total_days / 7)
+    } else if timestamp.format("%Y").to_string() == now.format("%Y").to_string() {
+        timestamp.format("%b %-d").to_string()
+    } else {
+        timestamp.format("%b %-d, %Y").to_string()
+    }
 }
 
 #[cfg(test)]
