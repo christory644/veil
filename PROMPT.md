@@ -8,6 +8,8 @@ You are an autonomous development agent working on Veil, a cross-platform GPU-ac
 
 ## Phase 0: Orient
 
+**Use direct tool calls only in this phase — no subagents.** This phase should take under 30 seconds.
+
 1. Read `AGENTS.md` for build commands, conventions, and project structure.
 2. Run `cargo build 2>&1` — if no Cargo.toml, project scaffolding is the first task.
 3. Run `cargo test 2>&1` — note the current test status.
@@ -18,6 +20,27 @@ You are an autonomous development agent working on Veil, a cross-platform GPU-ac
 6. **Record the current HEAD commit hash as `BASE_COMMIT`.** You will need this for coderabbit later.
 
 ## Phase 1: Select Task from Linear
+
+### 1a. Check for interrupted work
+
+First, check for any issue in "In Progress" status on team "Veil-term". If one exists, a previous iteration was interrupted — **resume it** instead of picking a new task.
+
+To determine where to resume, check the git log for commits referencing the issue number (e.g., `git log --oneline --grep='VEI-XX'`):
+
+| Last commit found | Resume from |
+|-------------------|-------------|
+| No commits | Phase 2 (Plan) |
+| `plan(VEI-XX)` | Phase 3 (Write Failing Tests) — read the existing spec at `docs/specs/VEI-XX-*.md` |
+| `test(VEI-XX)` | Phase 4 (Implement) — read the spec, check which units' tests exist |
+| `feat(VEI-XX)` | Phase 4 (Implement) — run `cargo test` to find remaining failing tests for unfinished units |
+| `refactor(VEI-XX)` | Phase 6 (Review) |
+| `fix(VEI-XX)` after review | Phase 7 (Push) — review was already done |
+
+Leave a comment on the issue: "Resuming interrupted work. Last commit: `<hash> <message>`."
+
+### 1b. Pick a new task
+
+If no issue is "In Progress":
 
 1. List issues from team "Veil-term" in "Backlog" or "Todo" status.
 2. Check `blockedBy` relationships — skip blocked issues.
