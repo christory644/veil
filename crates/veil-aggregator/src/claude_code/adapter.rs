@@ -38,7 +38,7 @@ impl ClaudeCodeAdapter {
 }
 
 impl AgentAdapter for ClaudeCodeAdapter {
-    #[allow(clippy::unnecessary_literal_bound)]
+    #[allow(clippy::unnecessary_literal_bound)] // trait signature uses &str, not &'static str
     fn name(&self) -> &str {
         "Claude Code"
     }
@@ -57,9 +57,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
         discovered
             .into_iter()
             .map(|ds| {
-                let parsed = parser::parse_session_file(&ds.jsonl_path).map_err(|e| {
-                    AdapterError::ParseError { path: ds.jsonl_path.clone(), source: Box::new(e) }
-                })?;
+                let parsed = parser::parse_session_file(&ds.jsonl_path)?;
 
                 Ok(SessionEntry {
                     id: SessionId::new(&parsed.session_id),

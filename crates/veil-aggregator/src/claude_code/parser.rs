@@ -4,8 +4,6 @@
 //! summary. Handles I/O errors and malformed lines gracefully -- a single
 //! bad line does not prevent parsing the rest of the file.
 
-#![allow(unused_imports)]
-
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
@@ -16,7 +14,12 @@ use super::jsonl::{AssistantRecord, ContentBlock, JournalRecord, MessageContent,
 
 /// Summary of a parsed Claude Code session JSONL file.
 /// Contains the extracted metadata needed to build a `SessionEntry`.
+///
+/// Some fields (e.g., `git_branch`, `version`, `slug`) are populated during
+/// parsing but not yet consumed by the adapter. They exist for VEI-27
+/// (metadata extraction) and test assertions.
 #[derive(Debug)]
+#[allow(dead_code)] // fields used in tests and reserved for VEI-27
 pub struct ParsedSession {
     /// Session UUID (from sessionId field in records).
     pub session_id: String,
@@ -243,9 +246,15 @@ pub fn parse_session_file(path: &Path) -> Result<ParsedSession, AdapterError> {
 }
 
 /// Parse a single JSONL line into a `JournalRecord`.
-/// Returns `None` for lines that fail to parse (with a `tracing::debug` log).
-pub fn parse_line(line: &str) -> Option<JournalRecord> {
-    serde_json::from_str::<JournalRecord>(line).ok()
+/// Returns `None` for lines that fail to parse.
+fn parse_line(line: &str) -> Option<JournalRecord> {
+    match serde_json::from_str::<JournalRecord>(line) {
+        Ok(record) => Some(record),
+        Err(e) => {
+            tracing::debug!(error = %e, "skipping unparseable JSONL line");
+            None
+        }
+    }
 }
 
 /// Extract the first plain-text user message from a `UserRecord`,

@@ -3,12 +3,14 @@
 //! Scans `~/.claude/projects/` to find all session JSONL files and determine
 //! which project directory they belong to.
 
-#![allow(unused_imports)]
-
 use std::path::{Path, PathBuf};
 
 /// A discovered session file on disk, not yet parsed.
+///
+/// Fields beyond `jsonl_path` are populated for downstream consumers and
+/// future features (VEI-27 metadata extraction).
 #[derive(Debug)]
+#[allow(dead_code)] // fields used in tests and reserved for VEI-27
 pub struct DiscoveredSession {
     /// Path to the session JSONL file.
     pub jsonl_path: PathBuf,

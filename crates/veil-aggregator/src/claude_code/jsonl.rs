@@ -2,6 +2,10 @@
 //!
 //! These types map directly to the observed JSONL format in `~/.claude/projects/`.
 //! All fields are `Option<T>` for resilience against format evolution.
+//! Many fields exist for correct serde deserialization even if not yet read
+//! by the parser — they will be used by VEI-27 (metadata extraction).
+
+#![allow(dead_code)] // serde fields must exist for deserialization; read access comes in VEI-27
 
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
