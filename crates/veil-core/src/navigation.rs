@@ -25,12 +25,54 @@ pub enum Direction {
 /// The algorithm finds the nearest pane whose center is in the target
 /// direction from the focused pane's center.
 pub fn find_pane_in_direction(
-    _panes: &[PaneLayout],
-    _focused: PaneId,
-    _direction: Direction,
+    panes: &[PaneLayout],
+    focused: PaneId,
+    direction: Direction,
 ) -> Option<PaneId> {
-    // STUB: returns None -- tests will fail until implemented.
-    None
+    // 1. Find the focused pane's rect.
+    let focused_layout = panes.iter().find(|p| p.pane_id == focused)?;
+    let fr = &focused_layout.rect;
+    let cx = fr.x + fr.width / 2.0;
+    let cy = fr.y + fr.height / 2.0;
+
+    // 2. Filter candidates whose center is strictly in the target direction,
+    //    then pick the nearest by Euclidean distance (tie-break on perpendicular axis).
+    panes
+        .iter()
+        .filter(|p| p.pane_id != focused)
+        .filter_map(|p| {
+            let r = &p.rect;
+            let px = r.x + r.width / 2.0;
+            let py = r.y + r.height / 2.0;
+
+            let in_direction = match direction {
+                Direction::Left => px < cx,
+                Direction::Right => px > cx,
+                Direction::Up => py < cy,
+                Direction::Down => py > cy,
+            };
+
+            if in_direction {
+                let dx = px - cx;
+                let dy = py - cy;
+                let dist_sq = dx * dx + dy * dy;
+                // Perpendicular distance for tie-breaking:
+                // left/right -> prefer closest y; up/down -> prefer closest x
+                let perp = match direction {
+                    Direction::Left | Direction::Right => (py - cy).abs(),
+                    Direction::Up | Direction::Down => (px - cx).abs(),
+                };
+                Some((p.pane_id, dist_sq, perp))
+            } else {
+                None
+            }
+        })
+        .min_by(|a, b| {
+            a.1.partial_cmp(&b.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+        })
+        .map(|(id, _, _)| id)
 }
 
 #[cfg(test)]
