@@ -30,10 +30,8 @@ pub enum ConfigEvent {
 /// Watches the config file for changes and emits `ConfigEvent`s.
 pub struct ConfigWatcher {
     config_path: PathBuf,
-    /// The current valid config, owned by the main thread for `&self` access.
-    current_config: AppConfig,
     event_tx: tokio::sync::mpsc::Sender<ConfigEvent>,
-    /// The background thread's copy of the current config, used for diffing.
+    /// Shared config state, updated by both manual `reload()` and background file-triggered reloads.
     bg_config: Arc<Mutex<AppConfig>>,
     /// Holds the notify watcher so it stays alive while watching.
     #[allow(dead_code)]
@@ -52,15 +50,8 @@ impl ConfigWatcher {
         initial_config: AppConfig,
         event_tx: tokio::sync::mpsc::Sender<ConfigEvent>,
     ) -> Result<Self, ConfigError> {
-        let bg_config = Arc::new(Mutex::new(initial_config.clone()));
-        Ok(Self {
-            config_path,
-            current_config: initial_config,
-            event_tx,
-            bg_config,
-            notify_watcher: None,
-            watcher_thread: None,
-        })
+        let bg_config = Arc::new(Mutex::new(initial_config));
+        Ok(Self { config_path, event_tx, bg_config, notify_watcher: None, watcher_thread: None })
     }
 
     /// Start watching for file changes.
@@ -106,8 +97,17 @@ impl ConfigWatcher {
     }
 
     /// Get the currently active (valid) config.
-    pub fn current_config(&self) -> &AppConfig {
-        &self.current_config
+    ///
+    /// This reflects changes from both manual `reload()` calls and
+    /// background file-triggered reloads.
+    pub fn current_config(&self) -> AppConfig {
+        match self.bg_config.lock() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => {
+                warn!("bg_config mutex poisoned in current_config(); returning last known config");
+                poisoned.into_inner().clone()
+            }
+        }
     }
 
     /// Manually trigger a reload (useful for testing or user-initiated reload).
@@ -118,11 +118,17 @@ impl ConfigWatcher {
         match parse_config(&contents, &self.config_path) {
             Ok(parsed) => {
                 let (validated, warnings) = validate_config(parsed);
-                let delta = ConfigDelta::diff(&self.current_config, &validated);
-                self.current_config = validated.clone();
-                if let Ok(mut bg) = self.bg_config.lock() {
-                    *bg = validated.clone();
-                }
+
+                let mut current = match self.bg_config.lock() {
+                    Ok(guard) => guard,
+                    Err(poisoned) => {
+                        warn!("bg_config mutex poisoned in reload(); recovering");
+                        poisoned.into_inner()
+                    }
+                };
+                let delta = ConfigDelta::diff(&current, &validated);
+                *current = validated.clone();
+
                 Ok(ConfigEvent::Reloaded { config: Box::new(validated), delta, warnings })
             }
             Err(e) => Ok(ConfigEvent::Error(e)),
@@ -229,7 +235,13 @@ fn reload_from_disk(config_path: &Path, bg_config: &Arc<Mutex<AppConfig>>) -> Co
 
     let (validated, warnings) = validate_config(parsed);
 
-    let mut current = bg_config.lock().unwrap();
+    let mut current = match bg_config.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            warn!("bg_config mutex poisoned in reload_from_disk(); recovering");
+            poisoned.into_inner()
+        }
+    };
     let delta = ConfigDelta::diff(&current, &validated);
     *current = validated.clone();
 

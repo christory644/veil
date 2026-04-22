@@ -1010,7 +1010,7 @@ width = 300
             let initial = AppConfig::default();
             let watcher =
                 ConfigWatcher::new(config_path, initial.clone(), tx).expect("create watcher");
-            assert_eq!(watcher.current_config(), &initial);
+            assert_eq!(watcher.current_config(), initial);
         }
 
         #[test]
@@ -1094,7 +1094,7 @@ theme = "light"
             std::fs::write(&config_path, "[broken").expect("write invalid");
             let _ = watcher.reload();
 
-            assert_eq!(watcher.current_config(), &initial);
+            assert_eq!(watcher.current_config(), initial);
         }
 
         #[tokio::test]
