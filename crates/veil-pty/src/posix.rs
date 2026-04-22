@@ -1,7 +1,14 @@
 //! POSIX PTY implementation using libc FFI.
 //!
 //! This module contains all unsafe code in the crate. Each `unsafe` block
-//! has a `// SAFETY:` comment documenting the invariant.
+//! has a `// SAFETY:` comment documenting the invariant that makes the call
+//! sound.
+//!
+//! # Safety boundary
+//!
+//! All unsafe code is confined to this module. The public-facing API of
+//! `veil-pty` (the [`Pty`] trait and [`create_pty`](crate::create_pty)
+//! factory) is entirely safe Rust.
 
 use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -66,47 +73,62 @@ fn write_all_fd(fd: libc::c_int, mut buf: &[u8]) -> Result<(), std::io::Error> {
 /// Sets environment variables, changes working directory, and calls `execvp`.
 /// This function never returns on success (it replaces the process image).
 /// On failure, it calls `_exit(127)`.
+///
+/// # Async-signal-safety
+///
+/// Strictly speaking, only async-signal-safe functions should be called
+/// between `fork` and `exec`. Functions like `std::env::set_var` and Rust
+/// allocator calls are not async-signal-safe. In practice this works
+/// reliably on macOS and Linux because `forkpty` produces a single-threaded
+/// child (no other threads to hold locks), but it is a known pragmatic
+/// trade-off. A future improvement could use `posix_spawn` or pre-build
+/// the `CString` argv before forking.
 fn exec_child(config: &PtyConfig) -> ! {
     // Set environment variables
     for (key, value) in &config.env {
+        // SAFETY (pragmatic): set_var is not async-signal-safe, but we are
+        // the only thread in this forked child. See module-level note.
         std::env::set_var(key, value);
     }
 
-    // Change working directory
+    // Change working directory (best-effort: if it fails, the child starts
+    // in the parent's cwd, which is a reasonable fallback).
     if let Some(ref dir) = config.working_directory {
-        let c_dir = CString::new(dir.to_string_lossy().as_bytes())
-            .unwrap_or_else(|_| CString::new("/").unwrap());
-        // SAFETY: c_dir is a valid null-terminated C string pointing to
-        // a directory path.
-        unsafe {
-            libc::chdir(c_dir.as_ptr());
+        if let Ok(c_dir) = CString::new(dir.to_string_lossy().as_bytes()) {
+            // SAFETY: c_dir is a valid null-terminated C string pointing to
+            // a directory path. chdir returns -1 on failure, which we ignore
+            // (falling back to the inherited cwd).
+            unsafe {
+                libc::chdir(c_dir.as_ptr());
+            }
         }
     }
 
-    // Resolve command and args
+    // Resolve command and build argv
     let cmd = resolve_command(config.command.as_deref());
     let Ok(c_cmd) = CString::new(cmd.as_bytes()) else {
         // SAFETY: _exit terminates the child immediately without running
-        // destructors. This is required after fork.
+        // destructors. This is required after fork to avoid double-flushing
+        // stdio buffers or running atexit handlers from the parent's state.
         unsafe { libc::_exit(127) }
     };
 
-    let mut arg_strings: Vec<CString> = Vec::with_capacity(1 + config.args.len());
-    arg_strings.push(c_cmd.clone());
+    let mut argv: Vec<CString> = Vec::with_capacity(1 + config.args.len());
+    argv.push(c_cmd.clone());
     for arg in &config.args {
         let Ok(c_arg) = CString::new(arg.as_bytes()) else {
             // SAFETY: _exit terminates the child immediately.
             unsafe { libc::_exit(127) }
         };
-        arg_strings.push(c_arg);
+        argv.push(c_arg);
     }
 
     let argv_ptrs: Vec<*const libc::c_char> =
-        arg_strings.iter().map(|s| s.as_ptr()).chain(std::iter::once(std::ptr::null())).collect();
+        argv.iter().map(|s| s.as_ptr()).chain(std::iter::once(std::ptr::null())).collect();
 
     // SAFETY: c_cmd is a valid null-terminated path, argv_ptrs is a
     // null-terminated array of valid C string pointers. execvp replaces
-    // the process image. If it returns, it failed.
+    // the process image on success.
     unsafe {
         libc::execvp(c_cmd.as_ptr(), argv_ptrs.as_ptr());
     }
@@ -168,21 +190,24 @@ fn read_loop(
     let mut buf = [0u8; 4096];
     loop {
         // SAFETY: master_fd is a valid open PTY master fd (or has been closed,
-        // in which case read returns -1). buf is a valid buffer of 4096 bytes.
+        // in which case read returns -1 with EIO/EBADF). buf is a valid,
+        // stack-allocated buffer of 4096 bytes.
         let n =
             unsafe { libc::read(master_fd, buf.as_mut_ptr().cast::<libc::c_void>(), buf.len()) };
 
         if n <= 0 {
-            // EOF or error — child exited or fd was closed.
+            // EOF or error -- child exited or fd was closed.
             let exit_code = reap_child(child_pid);
             closed.store(true, Ordering::Release);
+            tracing::debug!(child_pid, ?exit_code, "read loop finished, child reaped");
             let _ = event_tx.send(PtyEvent::ChildExited { exit_code });
             break;
         }
 
         let data = buf[..n.cast_unsigned()].to_vec();
         if event_tx.send(PtyEvent::Output(data)).is_err() {
-            // Receiver dropped, stop reading
+            // Receiver dropped -- stop reading.
+            tracing::debug!(child_pid, "event receiver dropped, read loop exiting");
             break;
         }
     }
@@ -202,7 +227,8 @@ fn write_loop(
         // promptly when shutdown is requested.
         match write_rx.recv_timeout(std::time::Duration::from_millis(50)) {
             Ok(data) => {
-                if write_all_fd(master_fd, &data).is_err() {
+                if let Err(e) = write_all_fd(master_fd, &data) {
+                    tracing::debug!("write loop exiting on I/O error: {e}");
                     break;
                 }
             }
@@ -272,6 +298,8 @@ impl PosixPty {
             })
             .map_err(|e| PtyError::Create(format!("failed to spawn write thread: {e}")))?;
 
+        tracing::debug!(child_pid = pid, master_fd, "POSIX PTY created");
+
         Ok(Self {
             master_fd,
             child_pid: pid,
@@ -325,18 +353,22 @@ impl Pty for PosixPty {
 
     fn shutdown(&mut self) -> Result<(), PtyError> {
         if self.closed.swap(true, Ordering::AcqRel) {
-            // Already closed — idempotent
+            // Already closed -- idempotent.
             return Ok(());
         }
 
+        tracing::debug!(child_pid = self.child_pid, "shutting down POSIX PTY");
+
         // SAFETY: child_pid is a valid process ID obtained from forkpty.
-        // SIGHUP tells the child its controlling terminal has hung up.
+        // Sending SIGHUP tells the child its controlling terminal has hung up,
+        // which is the standard signal for PTY disconnect.
         unsafe {
             libc::kill(self.child_pid, libc::SIGHUP);
         }
 
         // SAFETY: master_fd is a valid open file descriptor for the PTY master.
-        // Closing it causes the read thread to see EOF, which triggers cleanup.
+        // Closing it causes the read thread to see EOF, which triggers child
+        // reaping and the ChildExited event.
         unsafe {
             libc::close(self.master_fd);
         }

@@ -10,18 +10,16 @@ use veil_core::message::{AppCommand, StateUpdate};
 use veil_core::workspace::SurfaceId;
 
 use crate::error::PtyError;
-use crate::types::{PtyConfig, PtySize};
+use crate::types::{PtyConfig, PtyEvent, PtySize};
 use crate::Pty;
 
 /// Factory function type for creating PTY instances.
 type PtyFactory = Box<dyn Fn(PtyConfig) -> Result<Box<dyn Pty>, PtyError> + Send>;
 
-/// A PTY instance with its associated metadata.
+/// A PTY instance with its bridge thread handle.
 struct ManagedPty {
     /// The PTY trait object.
     pty: Box<dyn Pty>,
-    /// The surface this PTY belongs to.
-    surface_id: SurfaceId,
     /// Thread handle for the event bridge task.
     bridge_handle: Option<std::thread::JoinHandle<()>>,
 }
@@ -37,7 +35,7 @@ pub struct PtyManager {
     /// For sending state updates back to the event loop.
     state_tx: tokio::sync::mpsc::Sender<StateUpdate>,
     /// For observing application shutdown.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Will be used when the manager runs as an async actor
     shutdown: ShutdownHandle,
     /// Factory function for creating PTY instances (allows injection for testing).
     pty_factory: PtyFactory,
@@ -59,8 +57,10 @@ impl PtyManager {
         Self { ptys: HashMap::new(), state_tx, shutdown, pty_factory: factory }
     }
 
-    /// Start a bridge thread for a PTY that forwards [`PtyEvent`](crate::types::PtyEvent)s
-    /// to [`StateUpdate`] messages on the state channel.
+    /// Start a bridge thread that forwards [`PtyEvent`]s from a PTY's event
+    /// channel to [`StateUpdate`] messages on the state channel.
+    ///
+    /// Returns `None` if the PTY's event receiver has already been taken.
     fn start_bridge(
         pty: &mut Box<dyn Pty>,
         surface_id: SurfaceId,
@@ -68,60 +68,48 @@ impl PtyManager {
     ) -> Option<std::thread::JoinHandle<()>> {
         let rx = pty.take_event_rx()?;
         let state_tx = state_tx.clone();
-        Some(std::thread::spawn(move || {
-            while let Ok(event) = rx.recv() {
-                match event {
-                    crate::types::PtyEvent::ChildExited { exit_code } => {
-                        let update = StateUpdate::SurfaceExited { surface_id, exit_code };
-                        if let Err(e) = state_tx.blocking_send(update) {
-                            tracing::warn!(?surface_id, "failed to forward SurfaceExited: {e}");
-                        }
-                        break;
-                    }
-                    crate::types::PtyEvent::Output(_) => {
-                        // Output routing is handled elsewhere; drop here.
-                    }
-                }
-            }
-        }))
+        Some(
+            std::thread::Builder::new()
+                .name(format!("pty-bridge-{surface_id:?}"))
+                .spawn(move || Self::bridge_loop(&rx, surface_id, &state_tx))
+                .expect("failed to spawn bridge thread"),
+        )
     }
 
-    /// Ensure all existing PTYs have bridge threads running.
-    ///
-    /// PTYs that were manually inserted (e.g. in tests) may lack a bridge.
-    /// This starts bridges for any that are missing one.
-    fn ensure_bridges(&mut self) {
-        for managed in self.ptys.values_mut() {
-            if managed.bridge_handle.is_none() {
-                managed.bridge_handle =
-                    Self::start_bridge(&mut managed.pty, managed.surface_id, &self.state_tx);
+    /// Event bridge loop: reads from the PTY event channel and forwards
+    /// `ChildExited` events as `StateUpdate::SurfaceExited`.
+    fn bridge_loop(
+        rx: &std::sync::mpsc::Receiver<PtyEvent>,
+        surface_id: SurfaceId,
+        state_tx: &tokio::sync::mpsc::Sender<StateUpdate>,
+    ) {
+        while let Ok(event) = rx.recv() {
+            match event {
+                PtyEvent::ChildExited { exit_code } => {
+                    tracing::debug!(?surface_id, ?exit_code, "child exited, forwarding");
+                    let update = StateUpdate::SurfaceExited { surface_id, exit_code };
+                    if let Err(e) = state_tx.blocking_send(update) {
+                        tracing::warn!(?surface_id, "failed to forward SurfaceExited: {e}");
+                    }
+                    break;
+                }
+                PtyEvent::Output(_) => {
+                    // Output routing is handled elsewhere (e.g. libghosty integration).
+                }
             }
         }
     }
 
     /// Spawn a new PTY for the given surface.
     pub fn spawn(&mut self, surface_id: SurfaceId, config: PtyConfig) -> Result<(), PtyError> {
-        // Start bridges for any existing PTYs that were inserted without one.
-        self.ensure_bridges();
-
         if self.ptys.contains_key(&surface_id) {
             return Err(PtyError::Create("surface already exists".to_string()));
         }
 
-        let factory_result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (self.pty_factory)(config)));
-
-        match factory_result {
-            Ok(Ok(mut pty)) => {
-                let bridge_handle = Self::start_bridge(&mut pty, surface_id, &self.state_tx);
-                self.ptys.insert(surface_id, ManagedPty { pty, surface_id, bridge_handle });
-            }
-            Ok(Err(e)) => return Err(e),
-            Err(_panic) => {
-                tracing::warn!(?surface_id, "PTY factory panicked during spawn");
-            }
-        }
-
+        let mut pty = (self.pty_factory)(config)?;
+        let bridge_handle = Self::start_bridge(&mut pty, surface_id, &self.state_tx);
+        self.ptys.insert(surface_id, ManagedPty { pty, bridge_handle });
+        tracing::debug!(?surface_id, count = self.ptys.len(), "spawned PTY");
         Ok(())
     }
 
@@ -148,13 +136,18 @@ impl PtyManager {
         if let Some(handle) = managed.bridge_handle.take() {
             let _ = handle.join();
         }
+        tracing::debug!(?surface_id, count = self.ptys.len(), "closed PTY");
         Ok(())
     }
 
     /// Shut down all active PTYs (called on application exit).
     pub fn shutdown_all(&mut self) {
-        let entries: Vec<(SurfaceId, ManagedPty)> = self.ptys.drain().collect();
-        for (sid, mut managed) in entries {
+        let count = self.ptys.len();
+        if count == 0 {
+            return;
+        }
+        tracing::debug!(count, "shutting down all PTYs");
+        for (sid, mut managed) in self.ptys.drain() {
             if let Err(e) = managed.pty.shutdown() {
                 tracing::warn!(?sid, "failed to shutdown PTY: {e}");
             }
@@ -195,12 +188,7 @@ impl PtyManager {
                     tracing::warn!(?surface_id, "failed to close surface: {e}");
                 }
             }
-            AppCommand::Shutdown => {
-                tracing::debug!("PtyManager ignoring Shutdown command (handled at app level)");
-            }
-            AppCommand::RefreshConversations => {
-                tracing::debug!("PtyManager ignoring RefreshConversations command");
-            }
+            AppCommand::Shutdown | AppCommand::RefreshConversations => {}
         }
     }
 
@@ -222,7 +210,7 @@ mod tests {
 
     /// A mock PTY for testing the manager's dispatch logic.
     struct MockPty {
-        event_rx: Option<std::sync::mpsc::Receiver<crate::types::PtyEvent>>,
+        event_rx: Option<std::sync::mpsc::Receiver<PtyEvent>>,
         write_tx: std::sync::mpsc::Sender<Vec<u8>>,
         closed: Arc<AtomicBool>,
         shutdown_called: Arc<AtomicBool>,
@@ -262,18 +250,22 @@ mod tests {
     }
 
     /// Test-side handles for observing and controlling a `MockPty`.
-    #[allow(dead_code)]
     struct MockPtyHandles {
-        event_tx: std::sync::mpsc::Sender<crate::types::PtyEvent>,
+        event_tx: std::sync::mpsc::Sender<PtyEvent>,
+        #[allow(dead_code)] // Available for future write-verification tests
         write_rx: std::sync::mpsc::Receiver<Vec<u8>>,
+        #[allow(dead_code)]
         closed: Arc<AtomicBool>,
+        #[allow(dead_code)]
         shutdown_called: Arc<AtomicBool>,
+        #[allow(dead_code)]
         resize_called: Arc<AtomicBool>,
+        #[allow(dead_code)]
         last_resize: Arc<std::sync::Mutex<Option<PtySize>>>,
     }
 
     impl Pty for MockPty {
-        fn take_event_rx(&mut self) -> Option<std::sync::mpsc::Receiver<crate::types::PtyEvent>> {
+        fn take_event_rx(&mut self) -> Option<std::sync::mpsc::Receiver<PtyEvent>> {
             self.event_rx.take()
         }
 
@@ -517,12 +509,12 @@ mod tests {
 
     #[test]
     fn handle_command_ignores_shutdown_command() {
-        // The Shutdown command is handled at the app level, not by PtyManager
         let (mut manager, _rx, _signal) = make_test_manager();
         manager.spawn(SurfaceId::new(1), default_pty_config()).expect("spawn");
-        // handle_command for Shutdown should not panic
+        // The Shutdown command is handled at the app level, not by PtyManager.
         manager.handle_command(AppCommand::Shutdown);
-        // PTY manager doesn't handle Shutdown directly (the app calls shutdown_all)
+        // PTYs remain active -- the app calls shutdown_all separately.
+        assert_eq!(manager.active_count(), 1);
     }
 
     // --- Event bridging ---
@@ -533,61 +525,30 @@ mod tests {
         let (state_tx, mut state_rx) = tokio::sync::mpsc::channel(64);
         let surface_id = SurfaceId::new(42);
 
-        // Create a mock PTY whose event channel we control
+        // Create a mock PTY whose event channel we control from the test side.
         let (mock, handles) = MockPty::new();
 
+        // Use a factory that returns this specific mock.
+        let mock_cell = std::sync::Mutex::new(Some(mock));
         let mut manager = PtyManager::with_factory(
             state_tx,
             signal.handle(),
-            Box::new(|_config| {
-                // This factory won't be called -- we insert the mock directly
-                unreachable!("factory should not be called in this test")
+            Box::new(move |_config| {
+                let pty = mock_cell.lock().unwrap().take().expect("factory called more than once");
+                Ok(Box::new(pty) as Box<dyn Pty>)
             }),
         );
 
-        // Manually insert the mock PTY
-        manager.ptys.insert(
-            surface_id,
-            ManagedPty { pty: Box::new(mock), surface_id, bridge_handle: None },
-        );
+        // Spawn sets up the bridge thread that reads from the mock's event channel.
+        manager.spawn(surface_id, default_pty_config()).expect("spawn should succeed");
 
-        // After spawn() is implemented, it starts a bridge thread.
-        // For now, we're testing the intent: when a ChildExited event
-        // comes from a PTY, the manager should forward it as StateUpdate::SurfaceExited.
-        //
-        // This test calls spawn() which will start the bridge. Since spawn()
-        // is unimplemented (todo!), this test will fail, which is correct RED state.
-        //
-        // Instead, we simulate what spawn's bridge would do: send ChildExited
-        // on the event channel and verify the state_tx receives SurfaceExited.
-
-        // Send a ChildExited event from the "PTY"
+        // Simulate the child exiting by sending an event through the test handle.
         handles
             .event_tx
-            .send(crate::types::PtyEvent::ChildExited { exit_code: Some(0) })
+            .send(PtyEvent::ChildExited { exit_code: Some(0) })
             .expect("send should succeed");
 
-        // In the real implementation, a bridge thread reads from event_rx
-        // and forwards to state_tx. Since that bridge is part of spawn() (which
-        // is todo!()), we test that the manager has the right state_tx and
-        // can forward by calling spawn which will fail.
-
-        // To make this test actually test the bridge, we call spawn which
-        // should set up the bridge thread. This will fail (todo!) -- RED state.
-        let result = manager.spawn(
-            SurfaceId::new(100),
-            PtyConfig {
-                command: Some("/bin/true".to_string()),
-                args: vec![],
-                working_directory: Some(PathBuf::from("/tmp")),
-                env: vec![],
-                size: PtySize::default(),
-            },
-        );
-        // spawn is todo!(), so this will panic. We expect this test to fail.
-        assert!(result.is_ok(), "spawn should succeed to set up bridge");
-
-        // Wait for the bridge to forward the event
+        // The bridge thread should forward this as a StateUpdate.
         let update = tokio::time::timeout(std::time::Duration::from_secs(2), state_rx.recv())
             .await
             .expect("should receive state update within timeout")
