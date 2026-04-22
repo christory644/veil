@@ -4,8 +4,6 @@
 //! Each text vertex carries position, UV coordinates (into the glyph atlas),
 //! and a foreground RGBA color.
 
-use bytemuck::Zeroable;
-
 use crate::font::atlas::AtlasRegion;
 
 /// Byte offset of the `uv` field within `TextVertex`.
@@ -73,28 +71,48 @@ impl TextVertex {
 /// `region`: atlas region with UV coords and glyph dimensions/bearings.
 /// `ascent`: font ascent in pixels (baseline offset from top of cell).
 /// `color`: foreground RGBA color.
+#[allow(clippy::cast_precision_loss)] // Glyph bearings and dimensions fit comfortably in f32.
 pub fn text_quad_vertices(
-    _cell_x: f32,
-    _cell_y: f32,
-    _region: &AtlasRegion,
-    _ascent: f32,
-    _color: [f32; 4],
+    cell_x: f32,
+    cell_y: f32,
+    region: &AtlasRegion,
+    ascent: f32,
+    color: [f32; 4],
 ) -> [TextVertex; 4] {
-    [TextVertex::zeroed(); 4]
+    let quad_x = cell_x + region.bearing_x as f32;
+    let quad_y = cell_y + ascent - region.bearing_y as f32;
+    let quad_w = region.width as f32;
+    let quad_h = region.height as f32;
+
+    [
+        // [0] top-left
+        TextVertex { position: [quad_x, quad_y], uv: [region.u_min, region.v_min], color },
+        // [1] top-right
+        TextVertex { position: [quad_x + quad_w, quad_y], uv: [region.u_max, region.v_min], color },
+        // [2] bottom-left
+        TextVertex { position: [quad_x, quad_y + quad_h], uv: [region.u_min, region.v_max], color },
+        // [3] bottom-right
+        TextVertex {
+            position: [quad_x + quad_w, quad_y + quad_h],
+            uv: [region.u_max, region.v_max],
+            color,
+        },
+    ]
 }
 
 /// Generate 6 indices for a textured quad (two triangles).
 ///
 /// Triangles: (base+0, base+2, base+1), (base+1, base+2, base+3)
-pub fn text_quad_indices(_base: u16) -> [u16; 6] {
-    [0; 6]
+pub fn text_quad_indices(base: u16) -> [u16; 6] {
+    [base, base + 2, base + 1, base + 1, base + 2, base + 3]
 }
 
 #[cfg(test)]
-#[allow(clippy::float_cmp)]
+#[allow(clippy::float_cmp, clippy::cast_precision_loss)]
 mod tests {
     use super::*;
     use crate::font::atlas::AtlasRegion;
+    use bytemuck::Zeroable;
 
     /// Helper to create a test atlas region.
     fn test_region() -> AtlasRegion {
