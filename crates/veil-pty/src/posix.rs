@@ -3,7 +3,8 @@
 //! This module contains all unsafe code in the crate. Each `unsafe` block
 //! has a `// SAFETY:` comment documenting the invariant.
 
-use std::sync::atomic::AtomicBool;
+use std::ffi::CString;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::error::PtyError;
@@ -16,10 +17,8 @@ use crate::Pty;
 /// Background threads handle reading output and writing input.
 pub(crate) struct PosixPty {
     /// Master file descriptor for the PTY.
-    #[allow(dead_code)]
     master_fd: libc::c_int,
     /// Child process ID.
-    #[allow(dead_code)]
     child_pid: libc::pid_t,
     /// Sender for writing bytes to the PTY. Cloneable.
     write_tx: std::sync::mpsc::Sender<Vec<u8>>,
@@ -28,11 +27,193 @@ pub(crate) struct PosixPty {
     /// Whether the PTY has been shut down.
     closed: Arc<AtomicBool>,
     /// Handle to the read thread (for join on shutdown).
-    #[allow(dead_code)]
     read_handle: Option<std::thread::JoinHandle<()>>,
     /// Handle to the write thread (for join on shutdown).
-    #[allow(dead_code)]
     write_handle: Option<std::thread::JoinHandle<()>>,
+}
+
+/// Resolve the shell command to execute.
+///
+/// If `command` is `Some`, uses that. Otherwise checks `$SHELL`, falling back
+/// to `/bin/sh`.
+fn resolve_command(command: Option<&str>) -> String {
+    if let Some(cmd) = command {
+        return cmd.to_string();
+    }
+    std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+}
+
+/// Write all bytes to a file descriptor, retrying on partial writes and `EINTR`.
+fn write_all_fd(fd: libc::c_int, mut buf: &[u8]) -> Result<(), std::io::Error> {
+    while !buf.is_empty() {
+        // SAFETY: fd is a valid open file descriptor, buf points to valid memory
+        // with len bytes available.
+        let n = unsafe { libc::write(fd, buf.as_ptr().cast::<libc::c_void>(), buf.len()) };
+        if n < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
+        }
+        buf = &buf[n.cast_unsigned()..];
+    }
+    Ok(())
+}
+
+/// Execute the child process setup after `forkpty`.
+///
+/// Sets environment variables, changes working directory, and calls `execvp`.
+/// This function never returns on success (it replaces the process image).
+/// On failure, it calls `_exit(127)`.
+fn exec_child(config: &PtyConfig) -> ! {
+    // Set environment variables
+    for (key, value) in &config.env {
+        std::env::set_var(key, value);
+    }
+
+    // Change working directory
+    if let Some(ref dir) = config.working_directory {
+        let c_dir = CString::new(dir.to_string_lossy().as_bytes())
+            .unwrap_or_else(|_| CString::new("/").unwrap());
+        // SAFETY: c_dir is a valid null-terminated C string pointing to
+        // a directory path.
+        unsafe {
+            libc::chdir(c_dir.as_ptr());
+        }
+    }
+
+    // Resolve command and args
+    let cmd = resolve_command(config.command.as_deref());
+    let Ok(c_cmd) = CString::new(cmd.as_bytes()) else {
+        // SAFETY: _exit terminates the child immediately without running
+        // destructors. This is required after fork.
+        unsafe { libc::_exit(127) }
+    };
+
+    let mut arg_strings: Vec<CString> = Vec::with_capacity(1 + config.args.len());
+    arg_strings.push(c_cmd.clone());
+    for arg in &config.args {
+        let Ok(c_arg) = CString::new(arg.as_bytes()) else {
+            // SAFETY: _exit terminates the child immediately.
+            unsafe { libc::_exit(127) }
+        };
+        arg_strings.push(c_arg);
+    }
+
+    let argv_ptrs: Vec<*const libc::c_char> =
+        arg_strings.iter().map(|s| s.as_ptr()).chain(std::iter::once(std::ptr::null())).collect();
+
+    // SAFETY: c_cmd is a valid null-terminated path, argv_ptrs is a
+    // null-terminated array of valid C string pointers. execvp replaces
+    // the process image. If it returns, it failed.
+    unsafe {
+        libc::execvp(c_cmd.as_ptr(), argv_ptrs.as_ptr());
+    }
+
+    // execvp only returns on error.
+    // SAFETY: We are in the child after a failed execvp. _exit is the
+    // only safe way to terminate without running destructors or atexit
+    // handlers that belong to the parent's state.
+    unsafe {
+        libc::_exit(127);
+    }
+}
+
+/// Wait for a child process to exit, escalating signals if needed.
+///
+/// Uses `WNOHANG` in a polling loop. After a few attempts, sends `SIGTERM`,
+/// then `SIGKILL` to force termination.
+fn reap_child(child_pid: libc::pid_t) -> Option<i32> {
+    let mut status: libc::c_int = 0;
+    let mut attempts = 0;
+
+    loop {
+        // SAFETY: child_pid is a valid PID from fork. status is a valid pointer.
+        // WNOHANG returns immediately if the child hasn't exited.
+        let wait_ret = unsafe { libc::waitpid(child_pid, &raw mut status, libc::WNOHANG) };
+
+        if wait_ret > 0 {
+            // SAFETY: WIFEXITED and WEXITSTATUS are standard POSIX macros that
+            // extract exit info from the status integer set by waitpid.
+            return if libc::WIFEXITED(status) { Some(libc::WEXITSTATUS(status)) } else { None };
+        } else if wait_ret == -1 {
+            // ECHILD or other error — child already reaped or doesn't exist.
+            return None;
+        }
+
+        // Child still running. Escalate signals.
+        attempts += 1;
+        if attempts == 5 {
+            // SAFETY: child_pid is a valid PID. SIGTERM requests graceful exit.
+            unsafe { libc::kill(child_pid, libc::SIGTERM) };
+        } else if attempts >= 10 {
+            // SAFETY: child_pid is a valid PID. SIGKILL forces termination.
+            unsafe { libc::kill(child_pid, libc::SIGKILL) };
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// Read loop for the PTY background thread.
+///
+/// Reads output from the master fd in 4096-byte chunks and sends `PtyEvent`s.
+/// When EOF is reached, reaps the child and sends `ChildExited`.
+fn read_loop(
+    master_fd: libc::c_int,
+    child_pid: libc::pid_t,
+    closed: &AtomicBool,
+    event_tx: &std::sync::mpsc::Sender<PtyEvent>,
+) {
+    let mut buf = [0u8; 4096];
+    loop {
+        // SAFETY: master_fd is a valid open PTY master fd (or has been closed,
+        // in which case read returns -1). buf is a valid buffer of 4096 bytes.
+        let n =
+            unsafe { libc::read(master_fd, buf.as_mut_ptr().cast::<libc::c_void>(), buf.len()) };
+
+        if n <= 0 {
+            // EOF or error — child exited or fd was closed.
+            let exit_code = reap_child(child_pid);
+            closed.store(true, Ordering::Release);
+            let _ = event_tx.send(PtyEvent::ChildExited { exit_code });
+            break;
+        }
+
+        let data = buf[..n.cast_unsigned()].to_vec();
+        if event_tx.send(PtyEvent::Output(data)).is_err() {
+            // Receiver dropped, stop reading
+            break;
+        }
+    }
+}
+
+/// Write loop for the PTY background thread.
+///
+/// Receives byte buffers from the channel and writes them to the master fd.
+/// Exits when the channel is disconnected or the closed flag is set.
+fn write_loop(
+    master_fd: libc::c_int,
+    closed: &AtomicBool,
+    write_rx: &std::sync::mpsc::Receiver<Vec<u8>>,
+) {
+    loop {
+        // Use a short timeout so we can check the closed flag and exit
+        // promptly when shutdown is requested.
+        match write_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            Ok(data) => {
+                if write_all_fd(master_fd, &data).is_err() {
+                    break;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if closed.load(Ordering::Acquire) {
+                    break;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
 }
 
 impl PosixPty {
@@ -40,8 +221,66 @@ impl PosixPty {
     ///
     /// Allocates the PTY pair, spawns the child process, and starts
     /// background read/write threads.
-    pub(crate) fn new(_config: PtyConfig) -> Result<Self, PtyError> {
-        todo!("PosixPty::new — implement PTY allocation, fork, and thread spawning")
+    #[allow(clippy::needless_pass_by_value)] // config is consumed by forkpty child process
+    pub(crate) fn new(config: PtyConfig) -> Result<Self, PtyError> {
+        let mut master_fd: libc::c_int = -1;
+        let mut ws = libc::winsize {
+            ws_col: config.size.cols,
+            ws_row: config.size.rows,
+            ws_xpixel: config.size.pixel_width,
+            ws_ypixel: config.size.pixel_height,
+        };
+
+        // SAFETY: forkpty is a POSIX function that allocates a PTY pair and forks.
+        // master_fd is a valid pointer to receive the master fd. We pass a winsize
+        // struct for initial terminal dimensions. termp is null (use default termios).
+        let pid = unsafe {
+            libc::forkpty(
+                &raw mut master_fd,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &raw mut ws,
+            )
+        };
+
+        if pid < 0 {
+            return Err(PtyError::Create(std::io::Error::last_os_error().to_string()));
+        }
+
+        if pid == 0 {
+            exec_child(&config);
+        }
+
+        // --- Parent process ---
+        let closed = Arc::new(AtomicBool::new(false));
+        let (event_tx, event_rx) = std::sync::mpsc::channel::<PtyEvent>();
+        let (write_tx, write_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+
+        let read_handle = std::thread::Builder::new()
+            .name("pty-read".into())
+            .spawn({
+                let closed = Arc::clone(&closed);
+                move || read_loop(master_fd, pid, &closed, &event_tx)
+            })
+            .map_err(|e| PtyError::Create(format!("failed to spawn read thread: {e}")))?;
+
+        let write_handle = std::thread::Builder::new()
+            .name("pty-write".into())
+            .spawn({
+                let closed = Arc::clone(&closed);
+                move || write_loop(master_fd, &closed, &write_rx)
+            })
+            .map_err(|e| PtyError::Create(format!("failed to spawn write thread: {e}")))?;
+
+        Ok(Self {
+            master_fd,
+            child_pid: pid,
+            write_tx,
+            event_rx: Some(event_rx),
+            closed,
+            read_handle: Some(read_handle),
+            write_handle: Some(write_handle),
+        })
     }
 }
 
@@ -54,20 +293,84 @@ impl Pty for PosixPty {
         self.write_tx.clone()
     }
 
-    fn resize(&self, _size: PtySize) -> Result<(), PtyError> {
-        todo!("PosixPty::resize — implement ioctl TIOCSWINSZ")
+    fn resize(&self, size: PtySize) -> Result<(), PtyError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(PtyError::Closed);
+        }
+
+        let ws = libc::winsize {
+            ws_col: size.cols,
+            ws_row: size.rows,
+            ws_xpixel: size.pixel_width,
+            ws_ypixel: size.pixel_height,
+        };
+
+        // SAFETY: master_fd is a valid open PTY master fd (we checked the closed
+        // flag above). ws is a properly initialized winsize struct. TIOCSWINSZ
+        // sets the terminal window size.
+        let ret = unsafe { libc::ioctl(self.master_fd, libc::TIOCSWINSZ, &ws) };
+        if ret == -1 {
+            return Err(PtyError::Resize(std::io::Error::last_os_error().to_string()));
+        }
+        Ok(())
     }
 
     fn child_pid(&self) -> Option<u32> {
-        todo!("PosixPty::child_pid — return stored pid")
+        if self.child_pid > 0 {
+            Some(self.child_pid.cast_unsigned())
+        } else {
+            None
+        }
     }
 
     fn shutdown(&mut self) -> Result<(), PtyError> {
-        todo!("PosixPty::shutdown — send SIGHUP, close master fd, join threads")
+        if self.closed.swap(true, Ordering::AcqRel) {
+            // Already closed — idempotent
+            return Ok(());
+        }
+
+        // SAFETY: child_pid is a valid process ID obtained from forkpty.
+        // SIGHUP tells the child its controlling terminal has hung up.
+        unsafe {
+            libc::kill(self.child_pid, libc::SIGHUP);
+        }
+
+        // SAFETY: master_fd is a valid open file descriptor for the PTY master.
+        // Closing it causes the read thread to see EOF, which triggers cleanup.
+        unsafe {
+            libc::close(self.master_fd);
+        }
+
+        if let Some(handle) = self.read_handle.take() {
+            let _ = handle.join();
+        }
+
+        if let Some(handle) = self.write_handle.take() {
+            let _ = handle.join();
+        }
+
+        Ok(())
     }
 
     fn is_closed(&self) -> bool {
-        self.closed.load(std::sync::atomic::Ordering::Acquire)
+        self.closed.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for PosixPty {
+    fn drop(&mut self) {
+        if !self.closed.load(Ordering::Acquire) {
+            let _ = self.shutdown();
+        }
+
+        // Reap any zombie child with WNOHANG to avoid leaving zombies.
+        // SAFETY: child_pid is a valid process ID. WNOHANG makes waitpid
+        // return immediately if the child hasn't exited yet. The read thread
+        // may have already reaped it, in which case this is a harmless no-op.
+        unsafe {
+            let mut status: libc::c_int = 0;
+            libc::waitpid(self.child_pid, &raw mut status, libc::WNOHANG);
+        }
     }
 }
 
