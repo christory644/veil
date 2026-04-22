@@ -13,13 +13,26 @@ use veil_ui::sidebar::SidebarResponse;
 /// Handles tab switching, workspace switching, and focus updates.
 /// Returns `Ok(())` on success, or a descriptive error string if
 /// the workspace switch failed (e.g., stale workspace ID).
-#[allow(clippy::unnecessary_wraps)]
 pub fn apply_sidebar_response(
-    _response: &SidebarResponse,
-    _app_state: &mut AppState,
-    _focus: &mut FocusManager,
+    response: &SidebarResponse,
+    app_state: &mut AppState,
+    focus: &mut FocusManager,
 ) -> Result<(), String> {
-    // Stub: does nothing so tests fail.
+    if let Some(tab) = response.switch_tab {
+        app_state.set_sidebar_tab(tab);
+    }
+
+    if let Some(ws_id) = response.switch_to_workspace {
+        app_state
+            .set_active_workspace(ws_id)
+            .map_err(|e| format!("failed to switch workspace: {e}"))?;
+
+        if let Some(ws) = app_state.workspace(ws_id) {
+            let surface_id = ws.layout.surface_ids()[0];
+            focus.focus_surface(surface_id);
+        }
+    }
+
     Ok(())
 }
 
