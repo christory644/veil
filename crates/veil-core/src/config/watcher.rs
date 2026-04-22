@@ -76,7 +76,12 @@ impl ConfigWatcher {
         })?;
 
         // Watch the parent directory (not the file itself) to catch delete+recreate.
-        let watch_dir = self.config_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+        let watch_dir = self
+            .config_path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
         watcher.watch(&watch_dir, RecursiveMode::NonRecursive).map_err(|e| {
             ConfigError::ReadError {
                 path: self.config_path.clone(),
