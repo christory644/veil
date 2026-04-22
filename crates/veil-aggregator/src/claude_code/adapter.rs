@@ -3,9 +3,9 @@
 //! Wires together discovery, parsing, and title generation to provide
 //! session data from `~/.claude/projects/`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use veil_core::session::{AgentKind, SessionEntry, SessionId, SessionPreview, SessionStatus};
 
 use crate::adapter::{AdapterError, AgentAdapter};
@@ -35,6 +35,14 @@ impl ClaudeCodeAdapter {
     pub fn with_projects_dir(dir: PathBuf) -> Self {
         Self { projects_dir: dir }
     }
+}
+
+/// Read a file's modification time as a `DateTime<Utc>` fallback.
+/// Returns `Utc::now()` only if the filesystem metadata is unavailable.
+fn file_mtime_or_now(path: &Path) -> DateTime<Utc> {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .map_or_else(|_| Utc::now(), DateTime::<Utc>::from)
 }
 
 impl AgentAdapter for ClaudeCodeAdapter {
@@ -69,7 +77,9 @@ impl AgentAdapter for ClaudeCodeAdapter {
                     pr_url: None,
                     plan_content: None,
                     status: SessionStatus::default(),
-                    started_at: parsed.started_at.unwrap_or_else(Utc::now),
+                    started_at: parsed
+                        .started_at
+                        .unwrap_or_else(|| file_mtime_or_now(&ds.jsonl_path)),
                     ended_at: parsed.ended_at,
                     indexed_at: Utc::now(),
                 })
