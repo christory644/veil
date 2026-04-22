@@ -66,22 +66,23 @@ If any check fails, fix the issue before committing. Never create a separate com
 - **FFI safety**: All libghosty FFI calls wrapped in `catch_unwind`. Raw pointers never escape the `veil-ghostty` crate.
 - **No placeholders**: Every function must have a real implementation, not stubs/TODOs.
 - **Commit style**: Conventional commits (test:, feat:, refactor:, fix:). See "TDD Commit Cadence" below.
-- **File size**: No source file should exceed ~300 lines. Split proactively into modules.
+- **Single responsibility per file**: Each file should express one cohesive unit. The signal to split is mixed responsibilities, not line count. Most files will naturally land around ~300 lines, but a module that genuinely needs more to express a single unit cleanly is fine.
 - **Documentation**: Keep docs close to the code. Use inline comments for implementation details. Only create markdown docs for large architectural concepts.
 
 ## TDD Commit Cadence
 
 Every unit of work produces 2-3 commits that tell the TDD story. **Include the Linear issue number in the parenthetical** so commits are traceable to tasks:
 
-1. `test(VEI-14): <describe the behavior>` — The failing test (RED). Commit this so the log shows what you intended.
-2. `feat(VEI-14): <what it does>` or `fix(VEI-14): <what was broken>` — The minimal implementation to pass (GREEN). Include any doc changes that belong with this code change.
-3. `refactor(VEI-14): <what was improved>` — Clean up, split large files, reduce complexity (REFACTOR). This step is NOT optional — every task should include refactoring.
+1. `plan(VEI-14): design spec for <feature>` — The implementation spec committed as an auditable artifact at `docs/specs/`.
+2. `test(VEI-14): RED for <describe the behavior>` — The failing tests (RED). Commit this so the log shows what you intended.
+3. `feat(VEI-14): implement <unit name>` or `fix(VEI-14): <what was broken>` — The minimal implementation to pass (GREEN). Include any doc changes that belong with this code change.
+4. `refactor(VEI-14): <what was improved>` — Clean up, split files with mixed concerns, reduce complexity (REFACTOR). This step is NOT optional — every task should include refactoring.
 
 This cadence produces an auditable commit log. Never create standalone `docs:`, `style:`, or `chore:` commits.
 
 ## Code Review Gate
 
-Before pushing completed work, run CodeRabbit for automated code review:
+Before pushing, the main agent spawns review subagents to run CodeRabbit:
 
 ```bash
 coderabbit review --plain --type committed --base-commit <commit-before-task-started>
@@ -95,8 +96,12 @@ The task backlog lives in Linear (team: Veil-term, prefix: VEI-).
 - Query tasks: use `mcp__linear-server__list_issues` with team "Veil-term"
 - Check blocking: issues have `blockedBy` relationships
 - Update status: move to "In Progress" when starting, "Done" when complete
-- **Leave a comment** on every status change explaining what was done, what was deferred, and any follow-up issues created
-- Create issues: if you discover missing work, create a new issue in Linear
+- **Leave a comment** on every status change explaining what was done, what was deferred, and any follow-up work identified
+- Do NOT create new Linear issues. The backlog is curated by the human operator.
+
+## Specs
+
+Per-task implementation specs are committed to `docs/specs/` as auditable artifacts. Each spec contains context, implementation units, test strategy, acceptance criteria, and dependencies. These are produced by the planning subagent during Phase 2 of the ralph loop.
 
 ## Design Docs
 
