@@ -33,10 +33,14 @@ pub enum GhosttyError {
 /// `GHOSTTY_SUCCESS` (0) maps to `Ok(())`, all other codes map to the
 /// corresponding error variant.
 pub(crate) fn check_result(code: i32) -> Result<(), GhosttyError> {
-    // Not yet implemented -- this is a stub for TDD RED phase.
-    // The implementation will match on the raw i32 result code.
-    let _ = code;
-    todo!("check_result: map GhosttyResult codes to GhosttyError")
+    match code {
+        0 => Ok(()),
+        -1 => Err(GhosttyError::OutOfMemory),
+        -2 => Err(GhosttyError::InvalidValue),
+        -3 => Err(GhosttyError::OutOfSpace),
+        -4 => Err(GhosttyError::NoValue),
+        other => Err(GhosttyError::Unknown(other)),
+    }
 }
 
 #[cfg(test)]
