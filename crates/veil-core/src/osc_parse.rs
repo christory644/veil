@@ -44,7 +44,74 @@ pub enum OscParseError {
 /// OSC 9/99/777 notification sequence. This is the expected "no match" case,
 /// not a true error.
 pub fn parse_osc_notification(payload: &str) -> Result<OscNotification, OscParseError> {
-    todo!()
+    if let Some(body) = payload.strip_prefix("9;") {
+        if body.is_empty() {
+            return Err(OscParseError::EmptyBody);
+        }
+        return Ok(OscNotification {
+            sequence_type: OscSequenceType::Osc9,
+            title: None,
+            body: body.to_string(),
+        });
+    }
+
+    if let Some(rest) = payload.strip_prefix("99;") {
+        // Split on the first ';' to separate params from payload data.
+        let (params, data) = match rest.find(';') {
+            Some(pos) => (&rest[..pos], &rest[pos + 1..]),
+            None => {
+                return Err(OscParseError::Malformed {
+                    reason: "missing payload separator in OSC 99".to_string(),
+                })
+            }
+        };
+
+        if data.is_empty() {
+            return Err(OscParseError::EmptyBody);
+        }
+
+        // Parse key-value params separated by ':'.
+        let is_title = params.split(':').any(|kv| kv == "p=title");
+
+        if is_title {
+            return Ok(OscNotification {
+                sequence_type: OscSequenceType::Osc99,
+                title: Some(data.to_string()),
+                body: String::new(),
+            });
+        }
+
+        return Ok(OscNotification {
+            sequence_type: OscSequenceType::Osc99,
+            title: None,
+            body: data.to_string(),
+        });
+    }
+
+    if let Some(rest) = payload.strip_prefix("777;") {
+        // Format: notify;<title>;<body>
+        let mut parts = rest.splitn(3, ';');
+        let keyword = parts.next().unwrap_or("");
+        if keyword != "notify" {
+            return Err(OscParseError::NotNotification);
+        }
+        let title_str = parts.next().unwrap_or("");
+        let body_str = parts.next().unwrap_or("");
+
+        if body_str.is_empty() {
+            return Err(OscParseError::EmptyBody);
+        }
+
+        let title = if title_str.is_empty() { None } else { Some(title_str.to_string()) };
+
+        return Ok(OscNotification {
+            sequence_type: OscSequenceType::Osc777,
+            title,
+            body: body_str.to_string(),
+        });
+    }
+
+    Err(OscParseError::NotNotification)
 }
 
 #[cfg(test)]

@@ -30,7 +30,15 @@ pub enum NotificationSource {
 
 impl fmt::Display for NotificationSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+        match self {
+            NotificationSource::Osc { sequence_type } => match sequence_type {
+                OscSequenceType::Osc9 => write!(f, "osc(9)"),
+                OscSequenceType::Osc99 => write!(f, "osc(99)"),
+                OscSequenceType::Osc777 => write!(f, "osc(777)"),
+            },
+            NotificationSource::SocketApi => write!(f, "socket_api"),
+            NotificationSource::Internal => write!(f, "internal"),
+        }
     }
 }
 
@@ -91,71 +99,93 @@ pub struct NotificationStore {
 impl NotificationStore {
     /// Create a new empty `NotificationStore`.
     pub fn new() -> Self {
-        todo!()
+        Self { notifications: Vec::new() }
     }
 
     /// Add a notification to the store. If the store exceeds
     /// `MAX_NOTIFICATIONS`, the oldest notification is evicted.
     /// Returns the ID of the new notification.
     pub fn add(&mut self, notification: Notification) -> NotificationId {
-        todo!()
+        let id = notification.id;
+        self.notifications.push(notification);
+        if self.notifications.len() > MAX_NOTIFICATIONS {
+            self.notifications.remove(0);
+        }
+        id
     }
 
     /// Mark a notification as read. Returns `true` if the notification
     /// was found, `false` otherwise.
     pub fn mark_read(&mut self, id: NotificationId) -> bool {
-        todo!()
+        if let Some(notif) = self.notifications.iter_mut().find(|n| n.id == id) {
+            notif.read = true;
+            true
+        } else {
+            false
+        }
     }
 
     /// Mark all notifications for a workspace as read.
     pub fn mark_all_read(&mut self, workspace_id: WorkspaceId) {
-        todo!()
+        for notif in &mut self.notifications {
+            if notif.workspace_id == workspace_id {
+                notif.read = true;
+            }
+        }
     }
 
     /// Remove a single notification (dismiss). Returns `true` if the
     /// notification was found and removed, `false` otherwise.
     pub fn dismiss(&mut self, id: NotificationId) -> bool {
-        todo!()
+        let len_before = self.notifications.len();
+        self.notifications.retain(|n| n.id != id);
+        self.notifications.len() != len_before
     }
 
     /// Remove all notifications for a workspace.
     pub fn clear_workspace(&mut self, workspace_id: WorkspaceId) {
-        todo!()
+        self.notifications.retain(|n| n.workspace_id != workspace_id);
     }
 
     /// Remove all notifications.
     pub fn clear_all(&mut self) {
-        todo!()
+        self.notifications.clear();
     }
 
     /// Count unread notifications for a workspace.
     pub fn unread_count(&self, workspace_id: WorkspaceId) -> usize {
-        todo!()
+        self.notifications.iter().filter(|n| n.workspace_id == workspace_id && !n.read).count()
     }
 
     /// Get the most recent notification for a workspace (for subtitle display).
     pub fn latest_for_workspace(&self, workspace_id: WorkspaceId) -> Option<&Notification> {
-        todo!()
+        self.notifications
+            .iter()
+            .filter(|n| n.workspace_id == workspace_id)
+            .max_by_key(|n| n.created_at)
     }
 
     /// Get all notifications for a workspace, most recent first.
     pub fn for_workspace(&self, workspace_id: WorkspaceId) -> Vec<&Notification> {
-        todo!()
+        let mut results: Vec<&Notification> =
+            self.notifications.iter().filter(|n| n.workspace_id == workspace_id).collect();
+        results.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        results
     }
 
     /// Get all notifications, most recent first.
     pub fn all(&self) -> &[Notification] {
-        todo!()
+        &self.notifications
     }
 
     /// Total count of notifications in the store.
     pub fn len(&self) -> usize {
-        todo!()
+        self.notifications.len()
     }
 
     /// Whether the store is empty.
     pub fn is_empty(&self) -> bool {
-        todo!()
+        self.notifications.is_empty()
     }
 }
 
