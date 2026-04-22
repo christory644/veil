@@ -24,6 +24,8 @@ pub struct WorkspaceEntryData<'a> {
     pub is_active: bool,
     /// Number of unacknowledged notifications for this workspace.
     pub notification_count: usize,
+    /// Latest notification message for subtitle display.
+    pub latest_notification: Option<&'a str>,
 }
 
 /// Render the workspace list inside a `ScrollArea`.
@@ -84,11 +86,9 @@ pub fn extract_workspace_entries(state: &AppState) -> Vec<WorkspaceEntryData<'_>
         .workspaces
         .iter()
         .map(|ws| {
-            let notification_count = state
-                .notifications
-                .iter()
-                .filter(|n| n.workspace_id == ws.id && !n.acknowledged)
-                .count();
+            let notification_count = state.notifications.unread_count(ws.id);
+            let latest_notification =
+                state.notifications.latest_for_workspace(ws.id).map(|n| n.message.as_str());
 
             WorkspaceEntryData {
                 id: ws.id,
@@ -97,6 +97,7 @@ pub fn extract_workspace_entries(state: &AppState) -> Vec<WorkspaceEntryData<'_>
                 branch: ws.branch.as_deref(),
                 is_active: active_id == Some(ws.id),
                 notification_count,
+                latest_notification,
             }
         })
         .collect()
@@ -139,6 +140,7 @@ mod tests {
         branch: Option<String>,
         is_active: bool,
         notification_count: usize,
+        latest_notification: Option<String>,
     }
 
     impl OwnedEntry {
@@ -157,6 +159,7 @@ mod tests {
                 branch: branch.map(String::from),
                 is_active,
                 notification_count,
+                latest_notification: None,
             }
         }
 
@@ -168,6 +171,7 @@ mod tests {
                 branch: self.branch.as_deref(),
                 is_active: self.is_active,
                 notification_count: self.notification_count,
+                latest_notification: self.latest_notification.as_deref(),
             }
         }
     }
@@ -375,6 +379,7 @@ mod tests {
             branch: None,
             is_active: true,
             notification_count: 0,
+            latest_notification: None,
         };
         let entries = vec![data.as_entry_data()];
         // Should not panic
@@ -436,7 +441,7 @@ mod tests {
         state.add_notification(ws1, "notif 1".to_string());
         state.add_notification(ws1, "notif 2".to_string());
         // Acknowledge one
-        let first_notif_id = state.notifications[0].id;
+        let first_notif_id = state.notifications.all()[0].id.as_u64();
         state.acknowledge_notification(first_notif_id);
 
         let entries = extract_workspace_entries(&state);

@@ -543,6 +543,7 @@ mod tests {
         // Add MAX_NOTIFICATIONS + 5 notifications
         let total = MAX_NOTIFICATIONS + 5;
         for i in 0..total {
+            #[allow(clippy::cast_possible_wrap)]
             let t = Utc::now() + chrono::Duration::seconds(i as i64);
             store.add(make_notification_with_timestamp(i as u64, 1, &format!("notif {i}"), t));
         }
@@ -569,7 +570,7 @@ mod tests {
 
     #[derive(Debug, Clone)]
     enum StoreOp {
-        Add(u64, u64),
+        Add(#[allow(dead_code)] u64, u64),
         Dismiss(u64),
         ClearWorkspace(u64),
         ClearAll,

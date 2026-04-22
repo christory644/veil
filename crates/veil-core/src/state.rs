@@ -6,6 +6,7 @@
 use chrono::{DateTime, Utc};
 use std::path::PathBuf;
 
+use crate::notification::{Notification, NotificationId, NotificationSource, NotificationStore};
 use crate::session::SessionEntry;
 use crate::workspace::{PaneId, SplitDirection, SurfaceId, Workspace, WorkspaceError, WorkspaceId};
 
@@ -31,6 +32,7 @@ pub struct SidebarState {
 }
 
 /// A notification displayed in the UI.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct NotificationEntry {
     /// Unique notification identifier.
@@ -79,7 +81,7 @@ pub struct AppState {
     /// Conversation index for the sidebar.
     pub conversations: ConversationIndex,
     /// Notification list.
-    pub notifications: Vec<NotificationEntry>,
+    pub notifications: NotificationStore,
     /// Sidebar display state.
     pub sidebar: SidebarState,
     next_id: u64,
@@ -92,7 +94,7 @@ impl AppState {
             workspaces: Vec::new(),
             active_workspace_id: None,
             conversations: ConversationIndex::default(),
-            notifications: Vec::new(),
+            notifications: NotificationStore::new(),
             sidebar: SidebarState {
                 visible: true,
                 active_tab: SidebarTab::Workspaces,
@@ -222,20 +224,22 @@ impl AppState {
     /// Push a notification.
     pub fn add_notification(&mut self, workspace_id: WorkspaceId, message: String) {
         let id = self.next_id();
-        self.notifications.push(NotificationEntry {
-            id,
-            workspace_id,
+        let notif = Notification {
+            id: NotificationId::new(id),
+            source: NotificationSource::Internal,
             message,
-            timestamp: Utc::now(),
-            acknowledged: false,
-        });
+            title: None,
+            workspace_id,
+            surface_id: None,
+            created_at: Utc::now(),
+            read: false,
+        };
+        self.notifications.add(notif);
     }
 
     /// Mark a notification as acknowledged.
     pub fn acknowledge_notification(&mut self, id: u64) {
-        if let Some(notif) = self.notifications.iter_mut().find(|n| n.id == id) {
-            notif.acknowledged = true;
-        }
+        self.notifications.mark_read(NotificationId::new(id));
     }
 
     /// Replace the conversation index.
@@ -300,37 +304,45 @@ impl AppState {
         surface_id: Option<SurfaceId>,
         message: String,
         title: Option<String>,
-        source: crate::notification::NotificationSource,
-    ) -> crate::notification::NotificationId {
-        todo!()
+        source: NotificationSource,
+    ) -> NotificationId {
+        let id = self.next_id();
+        let notif = Notification {
+            id: NotificationId::new(id),
+            source,
+            message,
+            title,
+            workspace_id,
+            surface_id,
+            created_at: Utc::now(),
+            read: false,
+        };
+        self.notifications.add(notif)
     }
 
     /// Dismiss (remove) a notification by its `NotificationId`.
-    pub fn dismiss_notification(&mut self, id: crate::notification::NotificationId) -> bool {
-        todo!()
+    pub fn dismiss_notification(&mut self, id: NotificationId) -> bool {
+        self.notifications.dismiss(id)
     }
 
     /// Clear all notifications for a workspace.
     pub fn clear_workspace_notifications(&mut self, workspace_id: WorkspaceId) {
-        todo!()
+        self.notifications.clear_workspace(workspace_id);
     }
 
     /// Clear all notifications.
     pub fn clear_all_notifications(&mut self) {
-        todo!()
+        self.notifications.clear_all();
     }
 
     /// Get unread notification count for a workspace.
     pub fn unread_notification_count(&self, workspace_id: WorkspaceId) -> usize {
-        todo!()
+        self.notifications.unread_count(workspace_id)
     }
 
     /// Get the latest notification for a workspace.
-    pub fn latest_notification(
-        &self,
-        workspace_id: WorkspaceId,
-    ) -> Option<&crate::notification::Notification> {
-        todo!()
+    pub fn latest_notification(&self, workspace_id: WorkspaceId) -> Option<&Notification> {
+        self.notifications.latest_for_workspace(workspace_id)
     }
 }
 
@@ -557,8 +569,8 @@ mod tests {
         let ws_id = state.create_workspace("ws".to_string(), PathBuf::from("/tmp"));
         state.add_notification(ws_id, "hello".to_string());
         assert_eq!(state.notifications.len(), 1);
-        assert_eq!(state.notifications[0].message, "hello");
-        assert!(!state.notifications[0].acknowledged);
+        assert_eq!(state.notifications.all()[0].message, "hello");
+        assert!(!state.notifications.all()[0].read);
     }
 
     #[test]
@@ -566,9 +578,9 @@ mod tests {
         let mut state = AppState::new();
         let ws_id = state.create_workspace("ws".to_string(), PathBuf::from("/tmp"));
         state.add_notification(ws_id, "hello".to_string());
-        let notif_id = state.notifications[0].id;
+        let notif_id = state.notifications.all()[0].id.as_u64();
         state.acknowledge_notification(notif_id);
-        assert!(state.notifications[0].acknowledged);
+        assert!(state.notifications.all()[0].read);
     }
 
     // --- conversations ---

@@ -280,7 +280,7 @@ mod tests {
 mod notification_channel_tests {
     use super::*;
     use crate::notification::{NotificationSource, OscSequenceType};
-    use crate::workspace::{SurfaceId, WorkspaceId};
+    use crate::workspace::WorkspaceId;
 
     #[tokio::test]
     async fn state_update_notification_with_osc_source_applied_to_state() {
