@@ -241,6 +241,44 @@ impl AppState {
     pub fn update_conversations(&mut self, sessions: Vec<SessionEntry>) {
         self.conversations.sessions = sessions;
     }
+
+    /// Toggle zoom on a pane in a workspace.
+    pub fn toggle_zoom(
+        &mut self,
+        workspace_id: WorkspaceId,
+        pane_id: PaneId,
+    ) -> Result<Option<PaneId>, StateError> {
+        Ok(self.workspace_mut(workspace_id)?.toggle_zoom(pane_id)?)
+    }
+
+    /// Rename a workspace.
+    pub fn rename_workspace(
+        &mut self,
+        _id: WorkspaceId,
+        _new_name: String,
+    ) -> Result<(), StateError> {
+        // STUB: returns error — tests will fail until implemented.
+        Err(StateError::NoActiveWorkspace)
+    }
+
+    /// Move a workspace to a new position in the list.
+    ///
+    /// `new_index` is clamped to `0..=workspaces.len()-1`. The workspace is
+    /// removed from its current position and inserted at `new_index`.
+    pub fn reorder_workspace(
+        &mut self,
+        _id: WorkspaceId,
+        _new_index: usize,
+    ) -> Result<(), StateError> {
+        // STUB: returns error — tests will fail until implemented.
+        Err(StateError::NoActiveWorkspace)
+    }
+
+    /// Swap two workspaces by their IDs.
+    pub fn swap_workspaces(&mut self, _a: WorkspaceId, _b: WorkspaceId) -> Result<(), StateError> {
+        // STUB: returns error — tests will fail until implemented.
+        Err(StateError::NoActiveWorkspace)
+    }
 }
 
 impl Default for AppState {
@@ -502,5 +540,224 @@ mod tests {
         let c = state.next_id();
         assert!(b > a);
         assert!(c > b);
+    }
+
+    // ============================================================
+    // VEI-11: toggle_zoom via AppState
+    // ============================================================
+
+    #[test]
+    fn toggle_zoom_delegates_to_workspace() {
+        let mut state = AppState::new();
+        let ws_id = state.create_workspace("ws".to_string(), PathBuf::from("/tmp"));
+        let pane_id = state.workspace(ws_id).unwrap().pane_ids()[0];
+        let result = state.toggle_zoom(ws_id, pane_id).expect("toggle_zoom should succeed");
+        assert_eq!(result, Some(pane_id));
+    }
+
+    // ============================================================
+    // VEI-11: rename_workspace
+    // ============================================================
+
+    #[test]
+    fn rename_workspace_changes_name() {
+        let mut state = AppState::new();
+        let ws_id = state.create_workspace("original".to_string(), PathBuf::from("/tmp"));
+        state.rename_workspace(ws_id, "renamed".to_string()).expect("rename should succeed");
+        assert_eq!(state.workspace(ws_id).unwrap().name, "renamed");
+    }
+
+    #[test]
+    fn rename_workspace_preserves_other_state() {
+        let mut state = AppState::new();
+        let ws_id = state.create_workspace("ws".to_string(), PathBuf::from("/tmp/mydir"));
+        let pane_id = state.workspace(ws_id).unwrap().pane_ids()[0];
+        // Split to make the layout non-trivial
+        state.split_pane(ws_id, pane_id, SplitDirection::Horizontal).expect("split should succeed");
+        let pane_count_before = state.workspace(ws_id).unwrap().layout.pane_count();
+        let wd_before = state.workspace(ws_id).unwrap().working_directory.clone();
+
+        state.rename_workspace(ws_id, "new name".to_string()).expect("rename should succeed");
+
+        let ws = state.workspace(ws_id).unwrap();
+        assert_eq!(ws.layout.pane_count(), pane_count_before);
+        assert_eq!(ws.working_directory, wd_before);
+    }
+
+    #[test]
+    fn rename_active_workspace_does_not_change_active_id() {
+        let mut state = AppState::new();
+        let ws_id = state.create_workspace("ws".to_string(), PathBuf::from("/tmp"));
+        assert_eq!(state.active_workspace_id, Some(ws_id));
+        state.rename_workspace(ws_id, "new name".to_string()).expect("rename should succeed");
+        assert_eq!(state.active_workspace_id, Some(ws_id));
+    }
+
+    #[test]
+    fn rename_nonexistent_workspace_returns_error() {
+        let mut state = AppState::new();
+        let result = state.rename_workspace(WorkspaceId::new(999), "foo".to_string());
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), StateError::WorkspaceNotFound(_)));
+    }
+
+    #[test]
+    fn rename_to_empty_string_succeeds() {
+        let mut state = AppState::new();
+        let ws_id = state.create_workspace("ws".to_string(), PathBuf::from("/tmp"));
+        state.rename_workspace(ws_id, String::new()).expect("rename to empty should succeed");
+        assert_eq!(state.workspace(ws_id).unwrap().name, "");
+    }
+
+    #[test]
+    fn rename_to_same_name_succeeds() {
+        let mut state = AppState::new();
+        let ws_id = state.create_workspace("ws".to_string(), PathBuf::from("/tmp"));
+        state.rename_workspace(ws_id, "ws".to_string()).expect("rename to same should succeed");
+        assert_eq!(state.workspace(ws_id).unwrap().name, "ws");
+    }
+
+    // ============================================================
+    // VEI-11: reorder_workspace
+    // ============================================================
+
+    fn create_n_workspaces(state: &mut AppState, n: usize) -> Vec<WorkspaceId> {
+        (0..n)
+            .map(|i| state.create_workspace(format!("ws{i}"), PathBuf::from(format!("/tmp/{i}"))))
+            .collect()
+    }
+
+    #[test]
+    fn reorder_workspace_from_first_to_last() {
+        let mut state = AppState::new();
+        let ids = create_n_workspaces(&mut state, 3);
+        state.reorder_workspace(ids[0], 2).expect("reorder should succeed");
+        assert_eq!(state.workspaces[0].id, ids[1]);
+        assert_eq!(state.workspaces[1].id, ids[2]);
+        assert_eq!(state.workspaces[2].id, ids[0]);
+    }
+
+    #[test]
+    fn reorder_workspace_from_last_to_first() {
+        let mut state = AppState::new();
+        let ids = create_n_workspaces(&mut state, 3);
+        state.reorder_workspace(ids[2], 0).expect("reorder should succeed");
+        assert_eq!(state.workspaces[0].id, ids[2]);
+        assert_eq!(state.workspaces[1].id, ids[0]);
+        assert_eq!(state.workspaces[2].id, ids[1]);
+    }
+
+    #[test]
+    fn reorder_active_workspace_preserves_active_id() {
+        let mut state = AppState::new();
+        let ids = create_n_workspaces(&mut state, 3);
+        // First workspace is active by default
+        assert_eq!(state.active_workspace_id, Some(ids[0]));
+        state.reorder_workspace(ids[0], 2).expect("reorder should succeed");
+        assert_eq!(
+            state.active_workspace_id,
+            Some(ids[0]),
+            "active workspace ID should not change after reorder"
+        );
+    }
+
+    #[test]
+    fn reorder_nonexistent_workspace_returns_error() {
+        let mut state = AppState::new();
+        create_n_workspaces(&mut state, 2);
+        let result = state.reorder_workspace(WorkspaceId::new(999), 0);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), StateError::WorkspaceNotFound(_)));
+    }
+
+    #[test]
+    fn reorder_to_same_position_is_noop() {
+        let mut state = AppState::new();
+        let ids = create_n_workspaces(&mut state, 3);
+        state.reorder_workspace(ids[1], 1).expect("reorder to same position should succeed");
+        assert_eq!(state.workspaces[0].id, ids[0]);
+        assert_eq!(state.workspaces[1].id, ids[1]);
+        assert_eq!(state.workspaces[2].id, ids[2]);
+    }
+
+    #[test]
+    fn reorder_clamps_to_last_position() {
+        let mut state = AppState::new();
+        let ids = create_n_workspaces(&mut state, 3);
+        state.reorder_workspace(ids[0], 100).expect("reorder beyond length should be clamped");
+        assert_eq!(
+            state.workspaces[2].id, ids[0],
+            "workspace should be at the clamped last position"
+        );
+    }
+
+    #[test]
+    fn reorder_single_workspace_is_noop() {
+        let mut state = AppState::new();
+        let ids = create_n_workspaces(&mut state, 1);
+        state
+            .reorder_workspace(ids[0], 0)
+            .expect("reorder in single-workspace list should succeed");
+        assert_eq!(state.workspaces[0].id, ids[0]);
+    }
+
+    #[test]
+    fn reorder_preserves_workspace_internal_state() {
+        let mut state = AppState::new();
+        let ids = create_n_workspaces(&mut state, 3);
+        // Modify the workspace we're about to reorder
+        let pane_id = state.workspace(ids[0]).unwrap().pane_ids()[0];
+        state
+            .split_pane(ids[0], pane_id, SplitDirection::Horizontal)
+            .expect("split should succeed");
+        let pane_count_before = state.workspace(ids[0]).unwrap().layout.pane_count();
+
+        state.reorder_workspace(ids[0], 2).expect("reorder should succeed");
+
+        let ws = state.workspace(ids[0]).unwrap();
+        assert_eq!(ws.layout.pane_count(), pane_count_before);
+        assert_eq!(ws.name, "ws0");
+    }
+
+    // ============================================================
+    // VEI-11: swap_workspaces
+    // ============================================================
+
+    #[test]
+    fn swap_workspaces_exchanges_positions() {
+        let mut state = AppState::new();
+        let ids = create_n_workspaces(&mut state, 3);
+        state.swap_workspaces(ids[0], ids[2]).expect("swap should succeed");
+        assert_eq!(state.workspaces[0].id, ids[2]);
+        assert_eq!(state.workspaces[1].id, ids[1]);
+        assert_eq!(state.workspaces[2].id, ids[0]);
+    }
+
+    #[test]
+    fn swap_nonexistent_first_workspace_returns_error() {
+        let mut state = AppState::new();
+        let ids = create_n_workspaces(&mut state, 2);
+        let result = state.swap_workspaces(WorkspaceId::new(999), ids[0]);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), StateError::WorkspaceNotFound(_)));
+    }
+
+    #[test]
+    fn swap_nonexistent_second_workspace_returns_error() {
+        let mut state = AppState::new();
+        let ids = create_n_workspaces(&mut state, 2);
+        let result = state.swap_workspaces(ids[0], WorkspaceId::new(999));
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), StateError::WorkspaceNotFound(_)));
+    }
+
+    #[test]
+    fn swap_workspace_with_itself_is_noop() {
+        let mut state = AppState::new();
+        let ids = create_n_workspaces(&mut state, 3);
+        state.swap_workspaces(ids[1], ids[1]).expect("swap with self should succeed");
+        assert_eq!(state.workspaces[0].id, ids[0]);
+        assert_eq!(state.workspaces[1].id, ids[1]);
+        assert_eq!(state.workspaces[2].id, ids[2]);
     }
 }

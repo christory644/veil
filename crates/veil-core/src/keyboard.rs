@@ -62,6 +62,16 @@ pub enum KeyAction {
     SwitchToWorkspacesTab,
     /// Switch to Conversations tab.
     SwitchToConversationsTab,
+    /// Focus the pane to the left.
+    FocusPaneLeft,
+    /// Focus the pane to the right.
+    FocusPaneRight,
+    /// Focus the pane above.
+    FocusPaneUp,
+    /// Focus the pane below.
+    FocusPaneDown,
+    /// Rename the active workspace.
+    RenameWorkspace,
     /// Focus the sidebar.
     FocusSidebar,
     /// Focus the terminal.
@@ -89,6 +99,7 @@ impl KeybindingRegistry {
     }
 
     /// Create a registry populated with default keybindings.
+    #[allow(clippy::too_many_lines)]
     pub fn with_defaults() -> Self {
         let mut registry = Self::new();
 
@@ -193,6 +204,42 @@ impl KeybindingRegistry {
             KeyAction::SwitchToConversationsTab,
         );
 
+        // Ctrl+H -> FocusPaneLeft
+        registry.bind(
+            KeyInput {
+                key: Key::Character('h'),
+                modifiers: Modifiers { ctrl: true, ..Default::default() },
+            },
+            KeyAction::FocusPaneLeft,
+        );
+
+        // Ctrl+L -> FocusPaneRight
+        registry.bind(
+            KeyInput {
+                key: Key::Character('l'),
+                modifiers: Modifiers { ctrl: true, ..Default::default() },
+            },
+            KeyAction::FocusPaneRight,
+        );
+
+        // Ctrl+K -> FocusPaneUp
+        registry.bind(
+            KeyInput {
+                key: Key::Character('k'),
+                modifiers: Modifiers { ctrl: true, ..Default::default() },
+            },
+            KeyAction::FocusPaneUp,
+        );
+
+        // Ctrl+J -> FocusPaneDown
+        registry.bind(
+            KeyInput {
+                key: Key::Character('j'),
+                modifiers: Modifiers { ctrl: true, ..Default::default() },
+            },
+            KeyAction::FocusPaneDown,
+        );
+
         registry
     }
 
@@ -248,6 +295,13 @@ mod tests {
         KeyInput {
             key: Key::Character(c),
             modifiers: Modifiers { logo: true, shift: true, ..Default::default() },
+        }
+    }
+
+    fn ctrl_key(c: char) -> KeyInput {
+        KeyInput {
+            key: Key::Character(c),
+            modifiers: Modifiers { ctrl: true, ..Default::default() },
         }
     }
 
@@ -475,5 +529,54 @@ mod tests {
         };
         registry.bind(input.clone(), KeyAction::FocusSidebar);
         assert_eq!(registry.lookup(&input), Some(&KeyAction::FocusSidebar));
+    }
+
+    // --- VEI-11: Directional focus default bindings ---
+
+    #[test]
+    fn defaults_include_focus_pane_left() {
+        let registry = KeybindingRegistry::with_defaults();
+        let input = ctrl_key('h');
+        assert_eq!(registry.lookup(&input), Some(&KeyAction::FocusPaneLeft));
+    }
+
+    #[test]
+    fn defaults_include_focus_pane_right() {
+        let registry = KeybindingRegistry::with_defaults();
+        let input = ctrl_key('l');
+        assert_eq!(registry.lookup(&input), Some(&KeyAction::FocusPaneRight));
+    }
+
+    #[test]
+    fn defaults_include_focus_pane_up() {
+        let registry = KeybindingRegistry::with_defaults();
+        let input = ctrl_key('k');
+        assert_eq!(registry.lookup(&input), Some(&KeyAction::FocusPaneUp));
+    }
+
+    #[test]
+    fn defaults_include_focus_pane_down() {
+        let registry = KeybindingRegistry::with_defaults();
+        let input = ctrl_key('j');
+        assert_eq!(registry.lookup(&input), Some(&KeyAction::FocusPaneDown));
+    }
+
+    // --- VEI-11: RenameWorkspace variant exists ---
+
+    #[test]
+    fn rename_workspace_variant_can_be_bound() {
+        let mut registry = KeybindingRegistry::new();
+        let input = logo_key('r');
+        registry.bind(input.clone(), KeyAction::RenameWorkspace);
+        assert_eq!(registry.lookup(&input), Some(&KeyAction::RenameWorkspace));
+    }
+
+    #[test]
+    fn rename_workspace_has_no_default_binding() {
+        let registry = KeybindingRegistry::with_defaults();
+        // RenameWorkspace should not appear in any default binding
+        let has_rename =
+            registry.all_bindings().iter().any(|b| b.action == KeyAction::RenameWorkspace);
+        assert!(!has_rename, "RenameWorkspace should have no default binding");
     }
 }

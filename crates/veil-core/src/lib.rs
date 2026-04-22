@@ -5,8 +5,10 @@
 
 pub mod focus;
 pub mod keyboard;
+pub mod layout;
 pub mod lifecycle;
 pub mod message;
+pub mod navigation;
 pub mod session;
 pub mod state;
 pub mod workspace;

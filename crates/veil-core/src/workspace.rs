@@ -153,6 +153,8 @@ pub struct Workspace {
     pub layout: PaneNode,
     /// Git branch if applicable (detected, not managed by Veil).
     pub branch: Option<String>,
+    /// If set, this pane is zoomed (shown fullscreen, layout suppressed).
+    pub zoomed_pane: Option<PaneId>,
 }
 
 impl Workspace {
@@ -170,6 +172,7 @@ impl Workspace {
             working_directory,
             layout: PaneNode::Leaf { pane_id: initial_pane_id, surface_id: initial_surface_id },
             branch: None,
+            zoomed_pane: None,
         }
     }
 
@@ -277,6 +280,19 @@ impl Workspace {
     /// Get all pane IDs in this workspace.
     pub fn pane_ids(&self) -> Vec<PaneId> {
         self.layout.pane_ids()
+    }
+
+    /// Toggle zoom on a pane. If the pane is already zoomed, unzoom it.
+    /// If a different pane is zoomed, switch zoom to the new pane.
+    /// Returns the new zoom state.
+    pub fn toggle_zoom(&mut self, _pane_id: PaneId) -> Result<Option<PaneId>, WorkspaceError> {
+        // STUB: always returns None (unzoomed) — tests will fail until implemented.
+        Ok(None)
+    }
+
+    /// Clear zoom state (e.g., when the zoomed pane is closed).
+    pub fn clear_zoom(&mut self) {
+        self.zoomed_pane = None;
     }
 }
 
@@ -470,6 +486,100 @@ mod tests {
             }
             PaneNode::Leaf { .. } => panic!("expected split node"),
         }
+    }
+
+    // --- VEI-11: Zoom/unzoom state ---
+
+    #[test]
+    fn new_workspace_has_no_zoom() {
+        let ws = make_workspace();
+        assert_eq!(ws.zoomed_pane, None);
+    }
+
+    #[test]
+    fn toggle_zoom_on_pane_sets_zoomed() {
+        let mut ws = make_workspace();
+        let result = ws.toggle_zoom(PaneId::new(1)).expect("toggle_zoom should succeed");
+        assert_eq!(result, Some(PaneId::new(1)));
+        assert_eq!(ws.zoomed_pane, Some(PaneId::new(1)));
+    }
+
+    #[test]
+    fn toggle_zoom_again_on_same_pane_unzooms() {
+        let mut ws = make_workspace();
+        ws.toggle_zoom(PaneId::new(1)).expect("toggle_zoom should succeed");
+        let result = ws.toggle_zoom(PaneId::new(1)).expect("toggle_zoom should succeed");
+        assert_eq!(result, None);
+        assert_eq!(ws.zoomed_pane, None);
+    }
+
+    #[test]
+    fn toggle_zoom_on_different_pane_switches_zoom() {
+        let mut ws = make_workspace();
+        ws.split_pane(
+            PaneId::new(1),
+            SplitDirection::Horizontal,
+            PaneId::new(2),
+            SurfaceId::new(2),
+        )
+        .expect("split should succeed");
+        ws.toggle_zoom(PaneId::new(1)).expect("toggle_zoom should succeed");
+        let result = ws.toggle_zoom(PaneId::new(2)).expect("toggle_zoom should succeed");
+        assert_eq!(result, Some(PaneId::new(2)));
+        assert_eq!(ws.zoomed_pane, Some(PaneId::new(2)));
+    }
+
+    #[test]
+    fn toggle_zoom_on_nonexistent_pane_returns_error() {
+        let mut ws = make_workspace();
+        let result = ws.toggle_zoom(PaneId::new(999));
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), WorkspaceError::PaneNotFound(_)));
+    }
+
+    #[test]
+    fn close_zoomed_pane_clears_zoom() {
+        let mut ws = make_workspace();
+        ws.split_pane(
+            PaneId::new(1),
+            SplitDirection::Horizontal,
+            PaneId::new(2),
+            SurfaceId::new(2),
+        )
+        .expect("split should succeed");
+        ws.toggle_zoom(PaneId::new(2)).expect("toggle_zoom should succeed");
+        assert_eq!(ws.zoomed_pane, Some(PaneId::new(2)));
+        ws.close_pane(PaneId::new(2)).expect("close should succeed");
+        assert_eq!(ws.zoomed_pane, None, "zoom should be cleared when zoomed pane is closed");
+    }
+
+    #[test]
+    fn zoom_preserved_across_split_of_different_pane() {
+        let mut ws = make_workspace();
+        ws.split_pane(
+            PaneId::new(1),
+            SplitDirection::Horizontal,
+            PaneId::new(2),
+            SurfaceId::new(2),
+        )
+        .expect("split should succeed");
+        ws.toggle_zoom(PaneId::new(1)).expect("toggle_zoom should succeed");
+        // Split the non-zoomed pane
+        ws.split_pane(PaneId::new(2), SplitDirection::Vertical, PaneId::new(3), SurfaceId::new(3))
+            .expect("split should succeed");
+        assert_eq!(
+            ws.zoomed_pane,
+            Some(PaneId::new(1)),
+            "zoom should be preserved when splitting a different pane"
+        );
+    }
+
+    #[test]
+    fn clear_zoom_resets_state() {
+        let mut ws = make_workspace();
+        ws.toggle_zoom(PaneId::new(1)).expect("toggle_zoom should succeed");
+        ws.clear_zoom();
+        assert_eq!(ws.zoomed_pane, None);
     }
 
     // --- Deep nesting ---

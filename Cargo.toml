@@ -32,6 +32,7 @@ dirs = "6"
 tempfile = "3"
 winit = "0.30"
 libc = "0.2"
+proptest = "1"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
