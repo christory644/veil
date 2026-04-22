@@ -23,22 +23,23 @@ pub struct ShutdownHandle {
 impl ShutdownSignal {
     /// Create a new signal (initially not triggered).
     pub fn new() -> Self {
-        todo!()
+        let (sender, receiver) = tokio::sync::watch::channel(false);
+        Self { sender, receiver }
     }
 
     /// Signal shutdown.
     pub fn trigger(&self) {
-        todo!()
+        self.sender.send(true).ok();
     }
 
     /// Create a handle for an actor to observe shutdown.
     pub fn handle(&self) -> ShutdownHandle {
-        todo!()
+        ShutdownHandle { receiver: self.receiver.clone() }
     }
 
     /// Check if shutdown has been triggered.
     pub fn is_triggered(&self) -> bool {
-        todo!()
+        *self.receiver.borrow()
     }
 }
 
@@ -51,12 +52,16 @@ impl Default for ShutdownSignal {
 impl ShutdownHandle {
     /// Check if shutdown has been signaled.
     pub fn is_triggered(&self) -> bool {
-        todo!()
+        *self.receiver.borrow()
     }
 
     /// Async wait until shutdown is triggered.
     pub async fn wait(&mut self) {
-        todo!()
+        while !*self.receiver.borrow_and_update() {
+            if self.receiver.changed().await.is_err() {
+                return;
+            }
+        }
     }
 }
 
