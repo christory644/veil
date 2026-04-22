@@ -29,26 +29,67 @@ pub struct WorkspaceEntryData<'a> {
 ///
 /// Returns the ID of a workspace the user clicked to switch to, if any.
 pub fn render_workspaces_tab(
-    _ui: &mut egui::Ui,
-    _entries: &[WorkspaceEntryData],
+    ui: &mut egui::Ui,
+    entries: &[WorkspaceEntryData],
 ) -> Option<WorkspaceId> {
-    // Stub: returns None so tests fail.
-    None
+    let mut clicked_id = None;
+    for entry in entries {
+        if render_workspace_entry(ui, entry) {
+            clicked_id = Some(entry.id);
+        }
+    }
+    clicked_id
 }
 
 /// Render a single workspace entry row.
 ///
 /// Returns `true` if the user clicked this entry.
-pub fn render_workspace_entry(_ui: &mut egui::Ui, _entry: &WorkspaceEntryData) -> bool {
-    // Stub: returns false so tests fail.
-    false
+pub fn render_workspace_entry(ui: &mut egui::Ui, entry: &WorkspaceEntryData) -> bool {
+    let response = ui.vertical(|ui| {
+        // First line: active indicator + name (+ optional notification badge)
+        ui.horizontal(|ui| {
+            let indicator = if entry.is_active { "● " } else { "○ " };
+            ui.label(indicator);
+
+            let name_text = egui::RichText::new(entry.name);
+            let name_text = if entry.is_active { name_text.strong() } else { name_text };
+            ui.label(name_text);
+
+            if entry.notification_count > 0 {
+                ui.label(format!("({})", entry.notification_count));
+            }
+        });
+
+        // Branch line (only if present)
+        if let Some(branch) = entry.branch {
+            ui.label(egui::RichText::new(format!("  {branch}")).weak());
+        }
+
+        // Working directory line
+        let abbreviated = abbreviate_path(entry.working_directory);
+        ui.label(egui::RichText::new(format!("  {abbreviated}")).weak());
+    });
+
+    response.response.interact(egui::Sense::click()).clicked()
 }
 
 /// Abbreviate a path by replacing the home directory prefix with "~".
 pub fn abbreviate_path(path: &Path) -> String {
-    // Stub: returns empty string so tests fail.
-    let _ = path;
-    String::new()
+    let path_str = path.as_os_str();
+    if path_str.is_empty() {
+        return String::new();
+    }
+
+    if let Some(home) = dirs::home_dir() {
+        if path == home {
+            return "~".to_string();
+        }
+        if let Ok(suffix) = path.strip_prefix(&home) {
+            return format!("~/{}", suffix.display());
+        }
+    }
+
+    path.display().to_string()
 }
 
 #[cfg(test)]

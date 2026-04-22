@@ -23,18 +23,73 @@ pub struct SidebarResponse {
 /// Returns a `SidebarResponse` describing any user interactions.
 /// The caller (the `veil` binary) interprets the response and
 /// mutates `AppState` accordingly.
-pub fn render_sidebar(_ctx: &egui::Context, _state: &AppState) -> SidebarResponse {
-    // Stub: returns default (no interactions) so tests fail.
-    SidebarResponse::default()
+pub fn render_sidebar(ctx: &egui::Context, state: &AppState) -> SidebarResponse {
+    let mut response = SidebarResponse::default();
+
+    #[allow(clippy::cast_precision_loss)]
+    let width = state.sidebar.width_px as f32;
+
+    #[expect(deprecated)]
+    egui::SidePanel::left("veil_sidebar").exact_width(width).show(ctx, |ui| {
+        // Tab header bar
+        ui.horizontal(|ui| {
+            if ui.button("Workspaces").clicked()
+                && state.sidebar.active_tab != SidebarTab::Workspaces
+            {
+                response.switch_tab = Some(SidebarTab::Workspaces);
+            }
+            if ui.button("Conversations").clicked()
+                && state.sidebar.active_tab != SidebarTab::Conversations
+            {
+                response.switch_tab = Some(SidebarTab::Conversations);
+            }
+        });
+
+        ui.separator();
+
+        // Tab content
+        egui::ScrollArea::vertical().show(ui, |ui| match state.sidebar.active_tab {
+            SidebarTab::Workspaces => {
+                let entries = extract_workspace_entries(state);
+                if let Some(ws_id) = crate::workspace_list::render_workspaces_tab(ui, &entries) {
+                    response.switch_to_workspace = Some(ws_id);
+                }
+            }
+            SidebarTab::Conversations => {
+                ui.label("Coming soon");
+            }
+        });
+    });
+
+    response
 }
 
 /// Extract workspace entry view data from `AppState`.
 ///
 /// Counts unacknowledged notifications per workspace from `state.notifications`.
 pub fn extract_workspace_entries(state: &AppState) -> Vec<WorkspaceEntryData<'_>> {
-    // Stub: returns empty vec so tests fail.
-    let _ = state;
-    Vec::new()
+    let active_id = state.active_workspace_id.unwrap_or(WorkspaceId::new(0));
+
+    state
+        .workspaces
+        .iter()
+        .map(|ws| {
+            let notification_count = state
+                .notifications
+                .iter()
+                .filter(|n| n.workspace_id == ws.id && !n.acknowledged)
+                .count();
+
+            WorkspaceEntryData {
+                id: ws.id,
+                name: &ws.name,
+                working_directory: &ws.working_directory,
+                branch: ws.branch.as_deref(),
+                is_active: ws.id == active_id,
+                notification_count,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -78,10 +133,13 @@ mod tests {
             // After render_sidebar, check if a left side panel was actually registered.
             // A properly implemented render_sidebar creates an egui::SidePanel::left
             // which consumes horizontal space. We verify by checking that the
-            // content_rect (remaining space after panels) is narrower than full window.
-            let content = ctx.content_rect();
-            // If sidebar rendered correctly, content width < 1280 (panel consumed space).
-            panel_allocated = content.width() < 1279.0;
+            // available_rect (remaining space after panels) is narrower than full window.
+            // Note: egui 0.34 renamed the panel-aware rect from content_rect to
+            // available_rect; content_rect now means viewport minus safe area insets.
+            #[expect(deprecated)]
+            let remaining = ctx.available_rect();
+            // If sidebar rendered correctly, remaining width < 1280 (panel consumed space).
+            panel_allocated = remaining.width() < 1279.0;
         });
         assert!(
             panel_allocated,
