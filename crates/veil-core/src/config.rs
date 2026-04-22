@@ -9,8 +9,11 @@
 //! - File watcher for hot-reload via the `notify` crate
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
+use notify::{RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
+use tracing::{debug, warn};
 
 use crate::lifecycle::ShutdownHandle;
 
@@ -521,9 +524,17 @@ pub enum ConfigEvent {
 /// Watches the config file for changes and emits `ConfigEvent`s.
 pub struct ConfigWatcher {
     config_path: PathBuf,
+    /// The current valid config, owned by the main thread for `&self` access.
     current_config: AppConfig,
-    #[allow(dead_code)]
     event_tx: tokio::sync::mpsc::Sender<ConfigEvent>,
+    /// The background thread's copy of the current config, used for diffing.
+    bg_config: Arc<Mutex<AppConfig>>,
+    /// Holds the notify watcher so it stays alive while watching.
+    #[allow(dead_code)]
+    notify_watcher: Option<notify::RecommendedWatcher>,
+    /// Handle to the background watcher thread.
+    #[allow(dead_code)]
+    watcher_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl ConfigWatcher {
@@ -535,14 +546,122 @@ impl ConfigWatcher {
         initial_config: AppConfig,
         event_tx: tokio::sync::mpsc::Sender<ConfigEvent>,
     ) -> Result<Self, ConfigError> {
-        Ok(Self { config_path, current_config: initial_config, event_tx })
+        let bg_config = Arc::new(Mutex::new(initial_config.clone()));
+        Ok(Self {
+            config_path,
+            current_config: initial_config,
+            event_tx,
+            bg_config,
+            notify_watcher: None,
+            watcher_thread: None,
+        })
     }
 
     /// Start watching for file changes.
     /// This spawns an internal task that runs until the watcher is dropped
     /// or a shutdown signal is received.
-    pub fn start(&mut self, _shutdown: ShutdownHandle) -> Result<(), ConfigError> {
-        // STUB: does nothing
+    pub fn start(&mut self, shutdown: ShutdownHandle) -> Result<(), ConfigError> {
+        let config_path = self.config_path.clone();
+        let bg_config = Arc::clone(&self.bg_config);
+        let event_tx = self.event_tx.clone();
+
+        // Channel for notify events to the background thread.
+        let (notify_tx, notify_rx) = std::sync::mpsc::channel::<notify::Result<notify::Event>>();
+
+        // Create the notify watcher, sending events through the std channel.
+        let config_path_for_err = config_path.clone();
+        let mut watcher = notify::recommended_watcher(move |res| {
+            let _ = notify_tx.send(res);
+        })
+        .map_err(|e| ConfigError::ReadError {
+            path: config_path_for_err,
+            source: std::io::Error::other(format!("failed to create file watcher: {e}")),
+        })?;
+
+        // Watch the parent directory (not the file itself) to catch delete+recreate.
+        let watch_dir = self.config_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+        watcher.watch(&watch_dir, RecursiveMode::NonRecursive).map_err(|e| {
+            ConfigError::ReadError {
+                path: self.config_path.clone(),
+                source: std::io::Error::other(format!("failed to watch directory: {e}")),
+            }
+        })?;
+
+        self.notify_watcher = Some(watcher);
+
+        // Spawn background thread that processes notify events.
+        let thread = std::thread::spawn(move || {
+            let debounce = std::time::Duration::from_millis(50);
+
+            loop {
+                // Check shutdown.
+                if shutdown.is_triggered() {
+                    debug!("config watcher shutting down");
+                    break;
+                }
+
+                // Try to receive a notify event with a short timeout so we can
+                // check shutdown periodically.
+                let event = notify_rx.recv_timeout(std::time::Duration::from_millis(100));
+
+                if shutdown.is_triggered() {
+                    debug!("config watcher shutting down after recv");
+                    break;
+                }
+
+                match event {
+                    Ok(Ok(notify_event)) => {
+                        if !is_relevant_event(&notify_event, &config_path) {
+                            continue;
+                        }
+
+                        // Debounce: drain any additional events that arrive
+                        // within the debounce window. This ensures we process
+                        // the file only after a quiet period, which handles
+                        // both multi-event writes (Create+Modify) and rapid
+                        // successive writes.
+                        loop {
+                            match notify_rx.recv_timeout(debounce) {
+                                // Drain any events arriving within the debounce
+                                // window; loop back to wait for quiet again.
+                                Ok(Ok(_) | Err(_)) => {}
+                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                                    // Quiet period elapsed, proceed with reload.
+                                    break;
+                                }
+                                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                            }
+                        }
+
+                        if shutdown.is_triggered() {
+                            break;
+                        }
+
+                        // Perform reload.
+                        let config_event = reload_from_disk(&config_path, &bg_config);
+                        if event_tx.blocking_send(config_event).is_err() {
+                            debug!("config event receiver dropped, stopping watcher");
+                            break;
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        warn!("file watcher error: {e}");
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        // Normal timeout, loop back and check shutdown.
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        debug!("notify watcher disconnected, stopping");
+                        break;
+                    }
+                }
+            }
+
+            // Drop event_tx to signal channel closure.
+            drop(event_tx);
+        });
+
+        self.watcher_thread = Some(thread);
         Ok(())
     }
 
@@ -553,12 +672,78 @@ impl ConfigWatcher {
 
     /// Manually trigger a reload (useful for testing or user-initiated reload).
     pub fn reload(&mut self) -> Result<ConfigEvent, ConfigError> {
-        // STUB: always returns error
-        Err(ConfigError::ReadError {
-            path: self.config_path.clone(),
-            source: std::io::Error::other("stub: not implemented"),
-        })
+        // Read the file.
+        let contents = std::fs::read_to_string(&self.config_path)
+            .map_err(|e| ConfigError::ReadError { path: self.config_path.clone(), source: e })?;
+
+        // Parse.
+        match parse_config(&contents, &self.config_path) {
+            Ok(parsed) => {
+                let (validated, warnings) = validate_config(parsed);
+                let delta = ConfigDelta::diff(&self.current_config, &validated);
+                self.current_config = validated.clone();
+                // Keep bg_config in sync for the background thread.
+                if let Ok(mut bg) = self.bg_config.lock() {
+                    *bg = validated.clone();
+                }
+                Ok(ConfigEvent::Reloaded { config: Box::new(validated), delta, warnings })
+            }
+            Err(e) => {
+                // Keep current config unchanged; return the error as an event.
+                Ok(ConfigEvent::Error(e))
+            }
+        }
     }
+}
+
+/// Check whether a notify event is relevant (affects our config file and is
+/// a Modify or Create event).
+fn is_relevant_event(event: &notify::Event, config_path: &Path) -> bool {
+    // Check event kind first (cheapest check).
+    match event.kind {
+        notify::EventKind::Modify(_) | notify::EventKind::Create(_) => {}
+        _ => return false,
+    }
+    // Check if any path in the event matches our config file.
+    event.paths.iter().any(|p| {
+        if let (Ok(ep), Ok(tp)) = (std::fs::canonicalize(p), std::fs::canonicalize(config_path)) {
+            return ep == tp;
+        }
+        p.file_name() == config_path.file_name() && p.parent() == config_path.parent()
+    })
+}
+
+/// Internal helper used by the background watcher thread: reload the config
+/// from disk, diff against the shared current config, and update it if valid.
+fn reload_from_disk(config_path: &Path, bg_config: &Arc<Mutex<AppConfig>>) -> ConfigEvent {
+    // Read the file.
+    let contents = match std::fs::read_to_string(config_path) {
+        Ok(s) => s,
+        Err(e) => {
+            return ConfigEvent::Error(ConfigError::ReadError {
+                path: config_path.to_path_buf(),
+                source: e,
+            });
+        }
+    };
+
+    // Parse.
+    let parsed = match parse_config(&contents, config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            return ConfigEvent::Error(e);
+        }
+    };
+
+    // Validate.
+    let (validated, warnings) = validate_config(parsed);
+
+    // Diff against current and update.
+    let mut current = bg_config.lock().unwrap();
+    let delta = ConfigDelta::diff(&current, &validated);
+    *current = validated.clone();
+
+    ConfigEvent::Reloaded { config: Box::new(validated), delta, warnings }
 }
 
 // ============================================================
