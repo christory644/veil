@@ -4,6 +4,7 @@
 //! Session aggregator and agent adapters for Veil.
 
 pub mod adapter;
+pub mod claude_code;
 pub mod registry;
 pub mod store;
 pub mod title;

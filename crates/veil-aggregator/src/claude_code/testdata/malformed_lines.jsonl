@@ -1,0 +1,5 @@
+{"parentUuid":null,"isSidechain":false,"type":"user","message":{"role":"user","content":"Fix the broken tests"},"uuid":"d1b2c3d4-0001-0001-0001-000000000001","timestamp":"2026-04-20T12:00:00.000Z","cwd":"/Users/testuser/repos/testproject","sessionId":"44444444-4444-4444-4444-444444444444","version":"2.1.87","gitBranch":"main"}
+{this is not valid json at all
+{"type":"unknown_future_type","data":"something new"}
+{"parentUuid":"d1b2c3d4-0001-0001-0001-000000000001","isSidechain":false,"message":{"model":"claude-opus-4-6","role":"assistant","content":[{"type":"text","text":"I'll fix the broken tests."}],"stop_reason":"end_turn"},"type":"assistant","uuid":"d1b2c3d4-0001-0001-0001-000000000002","timestamp":"2026-04-20T12:00:30.000Z","cwd":"/Users/testuser/repos/testproject","sessionId":"44444444-4444-4444-4444-444444444444","version":"2.1.87","gitBranch":"main"}
+just a plain string with no json structure
