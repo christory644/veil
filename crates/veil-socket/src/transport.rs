@@ -119,6 +119,7 @@ pub enum SocketError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use tempfile::TempDir;
     use tokio::net::UnixStream;
 
@@ -182,6 +183,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn default_for_platform_unix_fallback() {
         // Ensure XDG_RUNTIME_DIR is not set for this test.
         std::env::remove_var("XDG_RUNTIME_DIR");
@@ -191,6 +193,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn default_for_platform_uses_xdg_runtime_dir() {
         let dir = TempDir::new().expect("tempdir");
         std::env::set_var("XDG_RUNTIME_DIR", dir.path());

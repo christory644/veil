@@ -35,14 +35,36 @@ pub(crate) async fn create(
     params: serde_json::Value,
     id: serde_json::Value,
 ) -> RpcOutcome {
-    let Some(name) = params.get("name").and_then(serde_json::Value::as_str) else {
-        return RpcOutcome::Err(ErrorResponse::invalid_params(id, "missing field: name"));
+    let name = match params.get("name") {
+        None => {
+            return RpcOutcome::Err(ErrorResponse::invalid_params(id, "missing field: name"));
+        }
+        Some(v) => match v.as_str() {
+            Some(s) => s,
+            None => {
+                return RpcOutcome::Err(ErrorResponse::invalid_params(
+                    id,
+                    "invalid field: name: expected string",
+                ));
+            }
+        },
     };
-    let Some(wd) = params.get("working_directory").and_then(serde_json::Value::as_str) else {
-        return RpcOutcome::Err(ErrorResponse::invalid_params(
-            id,
-            "missing field: working_directory",
-        ));
+    let wd = match params.get("working_directory") {
+        None => {
+            return RpcOutcome::Err(ErrorResponse::invalid_params(
+                id,
+                "missing field: working_directory",
+            ));
+        }
+        Some(v) => match v.as_str() {
+            Some(s) => s,
+            None => {
+                return RpcOutcome::Err(ErrorResponse::invalid_params(
+                    id,
+                    "invalid field: working_directory: expected string",
+                ));
+            }
+        },
     };
     let (name, wd) = (name.to_string(), wd.to_string());
 
@@ -95,8 +117,19 @@ pub(crate) async fn select(
     params: serde_json::Value,
     id: serde_json::Value,
 ) -> RpcOutcome {
-    let Some(ws_id_raw) = params.get("id").and_then(serde_json::Value::as_u64) else {
-        return RpcOutcome::Err(ErrorResponse::invalid_params(id, "missing field: id"));
+    let ws_id_raw = match params.get("id") {
+        None => {
+            return RpcOutcome::Err(ErrorResponse::invalid_params(id, "missing field: id"));
+        }
+        Some(v) => match v.as_u64() {
+            Some(n) => n,
+            None => {
+                return RpcOutcome::Err(ErrorResponse::invalid_params(
+                    id,
+                    "invalid field: id: expected unsigned integer",
+                ));
+            }
+        },
     };
 
     let mut guard = state.lock().await;
@@ -117,8 +150,19 @@ pub(crate) async fn close(
     params: serde_json::Value,
     id: serde_json::Value,
 ) -> RpcOutcome {
-    let Some(ws_id_raw) = params.get("id").and_then(serde_json::Value::as_u64) else {
-        return RpcOutcome::Err(ErrorResponse::invalid_params(id, "missing field: id"));
+    let ws_id_raw = match params.get("id") {
+        None => {
+            return RpcOutcome::Err(ErrorResponse::invalid_params(id, "missing field: id"));
+        }
+        Some(v) => match v.as_u64() {
+            Some(n) => n,
+            None => {
+                return RpcOutcome::Err(ErrorResponse::invalid_params(
+                    id,
+                    "invalid field: id: expected unsigned integer",
+                ));
+            }
+        },
     };
 
     let mut guard = state.lock().await;
@@ -139,11 +183,33 @@ pub(crate) async fn rename(
     params: serde_json::Value,
     id: serde_json::Value,
 ) -> RpcOutcome {
-    let Some(ws_id_raw) = params.get("id").and_then(serde_json::Value::as_u64) else {
-        return RpcOutcome::Err(ErrorResponse::invalid_params(id, "missing field: id"));
+    let ws_id_raw = match params.get("id") {
+        None => {
+            return RpcOutcome::Err(ErrorResponse::invalid_params(id, "missing field: id"));
+        }
+        Some(v) => match v.as_u64() {
+            Some(n) => n,
+            None => {
+                return RpcOutcome::Err(ErrorResponse::invalid_params(
+                    id,
+                    "invalid field: id: expected unsigned integer",
+                ));
+            }
+        },
     };
-    let Some(new_name) = params.get("name").and_then(serde_json::Value::as_str) else {
-        return RpcOutcome::Err(ErrorResponse::invalid_params(id, "missing field: name"));
+    let new_name = match params.get("name") {
+        None => {
+            return RpcOutcome::Err(ErrorResponse::invalid_params(id, "missing field: name"));
+        }
+        Some(v) => match v.as_str() {
+            Some(s) => s,
+            None => {
+                return RpcOutcome::Err(ErrorResponse::invalid_params(
+                    id,
+                    "invalid field: name: expected string",
+                ));
+            }
+        },
     };
     let new_name = new_name.to_string();
 
@@ -483,6 +549,117 @@ mod tests {
         let result = rename(&state, json!({"id": ws_id}), json!(1)).await;
         match result {
             RpcOutcome::Err(e) => assert_eq!(e.error.code, INVALID_PARAMS),
+            RpcOutcome::Ok(_) => panic!("expected invalid params error"),
+        }
+    }
+
+    // ── wrong-type error distinction ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn create_wrong_type_name_returns_invalid_params() {
+        let state = make_state();
+        let result =
+            create(&state, json!({"name": 42, "working_directory": "/tmp"}), json!(1)).await;
+        match result {
+            RpcOutcome::Err(e) => {
+                assert_eq!(e.error.code, INVALID_PARAMS);
+                assert!(
+                    e.error.message.contains("expected string"),
+                    "message should mention expected type, got: {}",
+                    e.error.message
+                );
+            }
+            RpcOutcome::Ok(_) => panic!("expected invalid params error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn create_wrong_type_working_directory_returns_invalid_params() {
+        let state = make_state();
+        let result =
+            create(&state, json!({"name": "myws", "working_directory": 99}), json!(1)).await;
+        match result {
+            RpcOutcome::Err(e) => {
+                assert_eq!(e.error.code, INVALID_PARAMS);
+                assert!(
+                    e.error.message.contains("expected string"),
+                    "message should mention expected type, got: {}",
+                    e.error.message
+                );
+            }
+            RpcOutcome::Ok(_) => panic!("expected invalid params error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn select_wrong_type_id_returns_invalid_params() {
+        let state = make_state();
+        let result = select(&state, json!({"id": "not-a-number"}), json!(1)).await;
+        match result {
+            RpcOutcome::Err(e) => {
+                assert_eq!(e.error.code, INVALID_PARAMS);
+                assert!(
+                    e.error.message.contains("expected unsigned integer"),
+                    "message should mention expected type, got: {}",
+                    e.error.message
+                );
+            }
+            RpcOutcome::Ok(_) => panic!("expected invalid params error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn close_wrong_type_id_returns_invalid_params() {
+        let state = make_state();
+        let result = close(&state, json!({"id": "bad"}), json!(1)).await;
+        match result {
+            RpcOutcome::Err(e) => {
+                assert_eq!(e.error.code, INVALID_PARAMS);
+                assert!(
+                    e.error.message.contains("expected unsigned integer"),
+                    "message should mention expected type, got: {}",
+                    e.error.message
+                );
+            }
+            RpcOutcome::Ok(_) => panic!("expected invalid params error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn rename_wrong_type_id_returns_invalid_params() {
+        let state = make_state();
+        let result = rename(&state, json!({"id": "bad", "name": "newname"}), json!(1)).await;
+        match result {
+            RpcOutcome::Err(e) => {
+                assert_eq!(e.error.code, INVALID_PARAMS);
+                assert!(
+                    e.error.message.contains("expected unsigned integer"),
+                    "message should mention expected type, got: {}",
+                    e.error.message
+                );
+            }
+            RpcOutcome::Ok(_) => panic!("expected invalid params error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn rename_wrong_type_name_returns_invalid_params() {
+        let state = make_state();
+        create_ws(&state, "ws", "/tmp").await;
+        let ws_id = {
+            let guard = state.lock().await;
+            guard.workspaces[0].id.as_u64()
+        };
+        let result = rename(&state, json!({"id": ws_id, "name": 123}), json!(1)).await;
+        match result {
+            RpcOutcome::Err(e) => {
+                assert_eq!(e.error.code, INVALID_PARAMS);
+                assert!(
+                    e.error.message.contains("expected string"),
+                    "message should mention expected type, got: {}",
+                    e.error.message
+                );
+            }
             RpcOutcome::Ok(_) => panic!("expected invalid params error"),
         }
     }
