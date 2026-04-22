@@ -241,7 +241,7 @@ pub fn build_frame_geometry(
 
 **Sidebar offset logic:**
 
-```
+```rust
 if app_state.sidebar.visible {
     terminal_x = app_state.sidebar.width_px as f32;
     terminal_width = window_width as f32 - terminal_x;

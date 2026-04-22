@@ -212,39 +212,38 @@ pub fn build_focus_border(
     border_thickness: f32,
     color: [f32; 4],
 ) -> (Vec<Vertex>, Vec<u16>) {
+    // Clamp effective thickness to avoid negative dimensions when the
+    // border is thicker than half the rect in either axis.
+    let t = border_thickness.min(rect.width / 2.0).min(rect.height / 2.0).max(0.0);
+
     let mut vertices = Vec::with_capacity(16);
     let mut indices = Vec::with_capacity(24);
 
     // Top border
-    vertices.extend_from_slice(&quad_vertices(rect.x, rect.y, rect.width, border_thickness, color));
+    vertices.extend_from_slice(&quad_vertices(rect.x, rect.y, rect.width, t, color));
     indices.extend_from_slice(&quad_indices(vertex_base(0)));
 
     // Bottom border
     vertices.extend_from_slice(&quad_vertices(
         rect.x,
-        rect.y + rect.height - border_thickness,
+        rect.y + rect.height - t,
         rect.width,
-        border_thickness,
+        t,
         color,
     ));
     indices.extend_from_slice(&quad_indices(vertex_base(1)));
 
     // Left border (between top and bottom)
-    vertices.extend_from_slice(&quad_vertices(
-        rect.x,
-        rect.y + border_thickness,
-        border_thickness,
-        rect.height - 2.0 * border_thickness,
-        color,
-    ));
+    let side_height = (rect.height - 2.0 * t).max(0.0);
+    vertices.extend_from_slice(&quad_vertices(rect.x, rect.y + t, t, side_height, color));
     indices.extend_from_slice(&quad_indices(vertex_base(2)));
 
     // Right border (between top and bottom)
     vertices.extend_from_slice(&quad_vertices(
-        rect.x + rect.width - border_thickness,
-        rect.y + border_thickness,
-        border_thickness,
-        rect.height - 2.0 * border_thickness,
+        rect.x + rect.width - t,
+        rect.y + t,
+        t,
+        side_height,
         color,
     ));
     indices.extend_from_slice(&quad_indices(vertex_base(3)));
@@ -508,5 +507,21 @@ mod tests {
         let (vertices, indices) = build_focus_border(&r, 2.0, [1.0; 4]);
         assert_eq!(vertices.len(), 16);
         assert_eq!(indices.len(), 24);
+    }
+
+    #[test]
+    fn focus_border_thickness_exceeding_rect_clamps() {
+        // border_thickness=50 on a 40x30 rect would produce negative side
+        // heights without clamping. Verify all vertex positions stay valid.
+        let r = rect(10.0, 20.0, 40.0, 30.0);
+        let (vertices, _) = build_focus_border(&r, 50.0, [1.0; 4]);
+        assert_eq!(vertices.len(), 16, "still 4 quads");
+        for v in &vertices {
+            let [x, y] = v.position;
+            // All vertices must be within or on the rect boundary (no
+            // inverted / negative-dimension quads).
+            assert!(x >= 10.0 - 0.01 && x <= 50.0 + 0.01, "x={x} should be in [10, 50]");
+            assert!(y >= 20.0 - 0.01 && y <= 50.0 + 0.01, "y={y} should be in [20, 50]");
+        }
     }
 }
