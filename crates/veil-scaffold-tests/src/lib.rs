@@ -48,9 +48,7 @@ mod tests {
             let member_path = format!("crates/{krate}");
             assert!(
                 content.contains(&member_path),
-                "workspace Cargo.toml must list member '{}', but it was not found in:\n{}",
-                member_path,
-                content
+                "workspace Cargo.toml must list member '{member_path}', but it was not found in:\n{content}",
             );
         }
     }
@@ -69,8 +67,7 @@ mod tests {
         for dep in &expected_deps {
             assert!(
                 content.contains(dep),
-                "workspace Cargo.toml must declare '{}' in [workspace.dependencies]",
-                dep
+                "workspace Cargo.toml must declare '{dep}' in [workspace.dependencies]",
             );
         }
     }
@@ -136,8 +133,7 @@ mod tests {
             let content = fs::read_to_string(&lib_rs).unwrap_or_default();
             assert!(
                 content.contains("#![deny(unsafe_code)]"),
-                "{}/src/lib.rs must contain #![deny(unsafe_code)]",
-                krate
+                "{krate}/src/lib.rs must contain #![deny(unsafe_code)]",
             );
         }
     }
@@ -150,8 +146,7 @@ mod tests {
             let content = fs::read_to_string(&lib_rs).unwrap_or_default();
             assert!(
                 content.contains("#![warn(missing_docs)]"),
-                "{}/src/lib.rs must contain #![warn(missing_docs)]",
-                krate
+                "{krate}/src/lib.rs must contain #![warn(missing_docs)]",
             );
         }
     }
@@ -191,8 +186,7 @@ mod tests {
             let content = fs::read_to_string(&cargo_toml).unwrap_or_default();
             assert!(
                 content.contains("[lints]") && content.contains("workspace = true"),
-                "{}/Cargo.toml must contain [lints] workspace = true",
-                krate
+                "{krate}/Cargo.toml must contain [lints] workspace = true",
             );
         }
     }
@@ -207,7 +201,7 @@ mod tests {
         for krate in &dependent_crates {
             let cargo_toml = root.join("crates").join(krate).join("Cargo.toml");
             let content = fs::read_to_string(&cargo_toml).unwrap_or_default();
-            assert!(content.contains("veil-core"), "{}/Cargo.toml must depend on veil-core", krate);
+            assert!(content.contains("veil-core"), "{krate}/Cargo.toml must depend on veil-core");
         }
     }
 
@@ -218,7 +212,7 @@ mod tests {
         let content = fs::read_to_string(&cargo_toml).unwrap_or_default();
 
         for krate in LIBRARY_CRATES {
-            assert!(content.contains(krate), "veil/Cargo.toml must depend on '{}'", krate);
+            assert!(content.contains(krate), "veil/Cargo.toml must depend on '{krate}'");
         }
     }
 
@@ -430,8 +424,7 @@ mod tests {
         for section in &required_sections {
             assert!(
                 content.contains(section),
-                "CONTRIBUTING.md must contain a '{}' section",
-                section
+                "CONTRIBUTING.md must contain a '{section}' section",
             );
         }
     }

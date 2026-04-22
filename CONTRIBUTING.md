@@ -7,7 +7,7 @@ Thank you for your interest in contributing to Veil! This guide covers everythin
 1. **Clone the repository:**
 
    ```bash
-   git clone https://github.com/your-org/veil.git
+   git clone https://github.com/veil-term/veil.git
    cd veil
    ```
 

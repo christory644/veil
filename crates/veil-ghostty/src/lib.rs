@@ -7,8 +7,3 @@
 mod ffi {
     // libghosty FFI bindings will go here.
 }
-
-#[cfg(no_libghosty)]
-mod _no_libghosty {
-    // Empty module: libghosty is not available.
-}
