@@ -17,14 +17,14 @@ pub struct ShapedGlyph {
     pub x_offset: i32,
     /// Vertical offset from the baseline in pixels.
     pub y_offset: i32,
-    /// Horizontal advance in pixels (should equal cell_width for monospace).
+    /// Horizontal advance in pixels (should equal `cell_width` for monospace).
     pub x_advance: i32,
 }
 
 /// Shapes text into positioned glyphs using rustybuzz.
 pub struct Shaper {
-    /// Owned copy of the font data for rustybuzz's Face.
-    /// rustybuzz::Face borrows from this.
+    /// Owned copy of the font data for `rustybuzz::Face`.
+    /// `rustybuzz::Face` borrows from this.
     face_data: Vec<u8>,
     /// Font index within the file.
     face_index: u32,
@@ -34,8 +34,15 @@ pub struct Shaper {
 
 impl Shaper {
     /// Create a new shaper from font data.
-    pub fn new(_font_data: &FontData) -> anyhow::Result<Self> {
-        Err(anyhow::anyhow!("not yet implemented"))
+    pub fn new(font_data: &FontData) -> anyhow::Result<Self> {
+        let face_data = font_data.data().to_vec();
+        let face_index = font_data.index();
+
+        // Validate that the data can produce a valid rustybuzz Face.
+        rustybuzz::Face::from_slice(&face_data, face_index)
+            .ok_or_else(|| anyhow::anyhow!("failed to parse font data for shaping"))?;
+
+        Ok(Self { face_data, face_index, size_px: font_data.size_px() })
     }
 
     /// Shape a text string, returning positioned glyphs.
@@ -43,8 +50,40 @@ impl Shaper {
     /// For this initial implementation, shapes the full string as a single
     /// run with default script/language detection. Each character maps to
     /// one glyph (ligatures are VEI-44).
-    pub fn shape(&self, _text: &str) -> Vec<ShapedGlyph> {
-        unimplemented!()
+    pub fn shape(&self, text: &str) -> Vec<ShapedGlyph> {
+        if text.is_empty() {
+            return Vec::new();
+        }
+
+        let face = rustybuzz::Face::from_slice(&self.face_data, self.face_index)
+            .expect("Face was validated in Shaper::new");
+
+        let mut buffer = rustybuzz::UnicodeBuffer::new();
+        buffer.push_str(text);
+        buffer.set_direction(rustybuzz::Direction::LeftToRight);
+
+        let glyph_buffer = rustybuzz::shape(&face, &[], buffer);
+
+        #[allow(clippy::cast_precision_loss)]
+        let scale = self.size_px / face.units_per_em() as f32;
+        let infos = glyph_buffer.glyph_infos();
+        let positions = glyph_buffer.glyph_positions();
+
+        infos
+            .iter()
+            .zip(positions.iter())
+            .map(|(info, pos)| {
+                #[allow(clippy::cast_possible_truncation)]
+                let glyph_id = info.glyph_id as u16;
+                #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+                let x_offset = (f64::from(pos.x_offset) * f64::from(scale)).round() as i32;
+                #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+                let y_offset = (f64::from(pos.y_offset) * f64::from(scale)).round() as i32;
+                #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+                let x_advance = (f64::from(pos.x_advance) * f64::from(scale)).round() as i32;
+                ShapedGlyph { glyph_id, cluster: info.cluster, x_offset, y_offset, x_advance }
+            })
+            .collect()
     }
 }
 
