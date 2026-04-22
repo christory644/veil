@@ -4,10 +4,14 @@
 //! renderable data and renders it using egui. Follows the same pattern
 //! as `workspace_list.rs`.
 
+use std::collections::BTreeMap;
+
 use chrono::{DateTime, Utc};
 
-use veil_core::session::{AgentKind, SessionEntry, SessionId};
+use veil_core::session::{AgentKind, SessionEntry, SessionId, SessionStatus};
 use veil_core::state::AppState;
+
+use crate::time_fmt::format_relative;
 
 /// Data for rendering a single conversation entry.
 /// View-model extracted from `SessionEntry` to keep rendering decoupled.
@@ -45,26 +49,57 @@ pub struct ConversationGroup {
 /// Groups themselves are sorted by the most recent session in each group.
 ///
 /// `now` is passed explicitly for deterministic testing.
-pub fn extract_conversation_groups(
-    _state: &AppState,
-    _now: DateTime<Utc>,
-) -> Vec<ConversationGroup> {
-    // Stub: returns empty vec so tests compile but fail.
-    Vec::new()
+pub fn extract_conversation_groups(state: &AppState, now: DateTime<Utc>) -> Vec<ConversationGroup> {
+    // AgentKind does not implement Hash, so we group by its Display string.
+    // BTreeMap gives deterministic iteration before we re-sort by recency.
+    let mut groups_by_name: BTreeMap<String, (AgentKind, Vec<&SessionEntry>)> = BTreeMap::new();
+
+    for session in &state.conversations.sessions {
+        let key = session.agent.to_string();
+        groups_by_name
+            .entry(key)
+            .or_insert_with(|| (session.agent.clone(), Vec::new()))
+            .1
+            .push(session);
+    }
+
+    // Build intermediate vec with max started_at for inter-group sorting.
+    let mut intermediate: Vec<(DateTime<Utc>, AgentKind, Vec<&SessionEntry>)> = groups_by_name
+        .into_values()
+        .map(|(agent_kind, mut sessions)| {
+            // Sort within group by started_at descending (most recent first).
+            sessions.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+            let max_started_at =
+                sessions.first().map(|s| s.started_at).unwrap_or(DateTime::<Utc>::MIN_UTC);
+            (max_started_at, agent_kind, sessions)
+        })
+        .collect();
+
+    // Sort groups by most recent session descending (newer groups first).
+    intermediate.sort_by(|a, b| b.0.cmp(&a.0));
+
+    intermediate
+        .into_iter()
+        .map(|(_max_ts, agent_kind, sessions)| {
+            let agent_name = agent_kind.to_string();
+            let session_count = sessions.len();
+            let entries = sessions.iter().map(|s| session_to_entry_data(s, now)).collect();
+            ConversationGroup { agent_name, agent_kind, session_count, entries }
+        })
+        .collect()
 }
 
 /// Convert a single `SessionEntry` into a `ConversationEntryData`.
 ///
 /// `now` is used for relative timestamp formatting.
-fn session_to_entry_data(_session: &SessionEntry, _now: DateTime<Utc>) -> ConversationEntryData {
-    // Stub: returns placeholder data so tests compile but fail.
+fn session_to_entry_data(session: &SessionEntry, now: DateTime<Utc>) -> ConversationEntryData {
     ConversationEntryData {
-        id: SessionId::new("stub"),
-        title: String::new(),
-        is_active: false,
-        branch: None,
-        relative_time: String::new(),
-        has_plan: false,
+        id: session.id.clone(),
+        title: session.title.clone(),
+        is_active: session.status == SessionStatus::Active,
+        branch: session.branch.clone(),
+        relative_time: format_relative(session.started_at, now),
+        has_plan: session.plan_content.is_some(),
     }
 }
 
