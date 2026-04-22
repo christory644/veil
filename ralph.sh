@@ -5,11 +5,15 @@ set -euo pipefail
 # Usage: ./ralph.sh [max_iterations]
 # Example: ./ralph.sh 20    # Run 20 iterations then stop
 # Example: ./ralph.sh        # Run indefinitely (Ctrl+C to stop)
+#
+# Environment:
+#   RALPH_TIMEOUT  — per-iteration timeout in minutes (default: 90)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROMPT_FILE="${SCRIPT_DIR}/PROMPT.md"
 LOG_DIR="${SCRIPT_DIR}/ralph-logs"
 MAX_ITERATIONS="${1:-0}"  # 0 = infinite
+ITER_TIMEOUT="${RALPH_TIMEOUT:-90}m"  # kill hung iterations
 
 # Claude personal config — claude-personal is a shell alias, so we
 # invoke claude directly with the config dir env var.
@@ -62,6 +66,7 @@ echo -e "${CYAN}╠════════════════════�
 echo -e "${CYAN}║${NC} Working dir: ${BLUE}${SCRIPT_DIR}${NC}"
 echo -e "${CYAN}║${NC} Prompt:      ${BLUE}${PROMPT_FILE}${NC}"
 echo -e "${CYAN}║${NC} Logs:        ${BLUE}${LOG_DIR}${NC}"
+echo -e "${CYAN}║${NC} Timeout:     ${YELLOW}${ITER_TIMEOUT} per iteration${NC}"
 if [[ "${MAX_ITERATIONS}" -gt 0 ]]; then
     echo -e "${CYAN}║${NC} Max iters:   ${YELLOW}${MAX_ITERATIONS}${NC}"
 else
@@ -101,11 +106,12 @@ while true; do
     # --print: non-interactive mode (reads from stdin, prints output)
     # --model opus: use Opus for best quality
     # --verbose: show tool calls for observability
+    # timeout: kill hung iterations (exit 124 on timeout)
     # Pipe both stdout and stderr to tee for live output + logging
     set +e
     (
         cd "${SCRIPT_DIR}"
-        cat "${PROMPT_FILE}" | "${CLAUDE_BIN}" \
+        cat "${PROMPT_FILE}" | timeout "${ITER_TIMEOUT}" "${CLAUDE_BIN}" \
             --print \
             --dangerously-skip-permissions \
             --model opus \
@@ -121,7 +127,9 @@ while true; do
     iter_seconds=$((iter_elapsed % 60))
 
     echo ""
-    if [[ "${exit_code}" -eq 0 ]]; then
+    if [[ "${exit_code}" -eq 124 ]]; then
+        echo -e "${RED}Iteration ${iteration} TIMED OUT after ${ITER_TIMEOUT} (${iter_minutes}m${iter_seconds}s)${NC}"
+    elif [[ "${exit_code}" -eq 0 ]]; then
         echo -e "${GREEN}Iteration ${iteration} completed in ${iter_minutes}m${iter_seconds}s (exit: ${exit_code})${NC}"
     else
         echo -e "${YELLOW}Iteration ${iteration} ended in ${iter_minutes}m${iter_seconds}s (exit: ${exit_code})${NC}"
