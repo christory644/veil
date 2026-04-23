@@ -43,12 +43,12 @@ pub struct FrameGeometry {
     /// All indices for this frame (solid-color quads).
     pub indices: Vec<u16>,
     /// Text vertices for textured glyph quads.
-    #[allow(dead_code)]
-    // Populated by build_frame_geometry; consumed by GPU text pass (next issue).
+    /// Populated by `build_frame_geometry`; consumed by GPU text pass (next issue).
+    #[allow(dead_code)] // consumed once GPU text render pass is wired
     pub text_vertices: Vec<TextVertex>,
     /// Text indices for textured glyph quads.
-    #[allow(dead_code)]
-    // Populated by build_frame_geometry; consumed by GPU text pass (next issue).
+    /// Populated by `build_frame_geometry`; consumed by GPU text pass (next issue).
+    #[allow(dead_code)] // consumed once GPU text render pass is wired
     pub text_indices: Vec<u16>,
     /// The clear color (window background).
     pub clear_color: wgpu::Color,

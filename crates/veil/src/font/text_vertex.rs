@@ -10,11 +10,13 @@ use crate::vertex::quad_indices;
 /// Byte offset of the `uv` field within `TextVertex`.
 ///
 /// `position` is `[f32; 2]` = 8 bytes, so `uv` starts at offset 8.
+#[allow(dead_code)] // used once GPU text pass is wired
 const UV_OFFSET: u64 = std::mem::size_of::<[f32; 2]>() as u64;
 
 /// Byte offset of the `color` field within `TextVertex`.
 ///
 /// `position` is 8 bytes + `uv` is 8 bytes = 16 bytes.
+#[allow(dead_code)] // used once GPU text pass is wired
 const COLOR_OFFSET: u64 =
     (std::mem::size_of::<[f32; 2]>() + std::mem::size_of::<[f32; 2]>()) as u64;
 
@@ -38,6 +40,7 @@ impl TextVertex {
     /// - position: `Float32x2` at offset 0
     /// - uv: `Float32x2` at offset 8
     /// - color: `Float32x4` at offset 16
+    #[allow(dead_code)] // used once GPU text pass is wired
     pub fn buffer_layout() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<TextVertex>() as wgpu::BufferAddress,

@@ -32,6 +32,7 @@ pub struct FontData {
     /// Ascent in pixels (distance from baseline to top of cell).
     ascent: f32,
     /// Descent in pixels (distance from baseline to bottom, positive downward).
+    #[allow(dead_code)] // used once GPU text pass is wired
     descent: f32,
 }
 
@@ -107,6 +108,7 @@ impl FontData {
     }
 
     /// Descent in pixels (positive downward).
+    #[allow(dead_code)] // used once GPU text pass is wired
     pub fn descent(&self) -> f32 {
         self.descent
     }

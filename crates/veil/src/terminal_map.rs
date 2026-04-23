@@ -18,7 +18,6 @@ use veil_core::workspace::SurfaceId;
 /// not yet called from the binary target but are exercised by tests and will be
 /// wired in by upcoming tasks (resize propagation, cell rendering). The
 /// `#[allow(dead_code)]` annotations on those call-sites are intentional.
-#[allow(dead_code)] // trait is only used via cfg-gated impls + test mocks
 pub trait TerminalWriter {
     /// Feed VT-encoded bytes to the terminal's parser.
     fn write_vt(&mut self, data: &[u8]);
@@ -33,9 +32,11 @@ pub trait TerminalWriter {
     ) -> Result<(), String>;
 
     /// Query the terminal's current column count.
+    #[allow(dead_code)] // used once resize propagation is wired
     fn cols(&self) -> u16;
 
     /// Query the terminal's current row count.
+    #[allow(dead_code)] // used once resize propagation is wired
     fn rows(&self) -> u16;
 
     /// Extract a snapshot of cell data for rendering.
@@ -167,7 +168,6 @@ impl TerminalMap {
     }
 
     /// Get a mutable reference to a terminal writer.
-    #[allow(dead_code)]
     pub fn get_mut(&mut self, surface_id: SurfaceId) -> Option<&mut Box<dyn TerminalWriter>> {
         self.terminals.get_mut(&surface_id)
     }

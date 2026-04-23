@@ -75,11 +75,13 @@ impl FontPipeline {
     }
 
     /// Get a reference to the glyph atlas (for GPU upload).
+    #[allow(dead_code)] // used once GPU text pass is wired
     pub fn atlas(&self) -> &GlyphAtlas {
         &self.atlas
     }
 
     /// Get a mutable reference to the glyph atlas (for marking clean).
+    #[allow(dead_code)] // used once GPU text pass is wired
     pub fn atlas_mut(&mut self) -> &mut GlyphAtlas {
         &mut self.atlas
     }

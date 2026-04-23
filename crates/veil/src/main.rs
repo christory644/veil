@@ -12,9 +12,7 @@ mod aggregator_actor;
 mod bootstrap;
 mod config_reload;
 mod egui_integration;
-#[allow(dead_code)]
 mod font;
-#[allow(dead_code)]
 mod font_pipeline;
 mod frame;
 mod key_translation;
