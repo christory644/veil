@@ -93,8 +93,11 @@ impl PtyManager {
                     }
                     break;
                 }
-                PtyEvent::Output(_) => {
-                    // Output routing is handled elsewhere (e.g. libghosty integration).
+                PtyEvent::Output(data) => {
+                    let update = StateUpdate::PtyOutput { surface_id, data };
+                    if let Err(e) = state_tx.blocking_send(update) {
+                        tracing::warn!(?surface_id, "failed to forward PtyOutput: {e}");
+                    }
                 }
             }
         }

@@ -17,6 +17,7 @@ mod quad_builder;
 mod renderer;
 #[allow(dead_code)]
 mod sidebar_wiring;
+#[allow(dead_code)]
 mod terminal_map;
 mod vertex;
 

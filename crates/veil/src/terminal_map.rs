@@ -37,7 +37,7 @@ pub struct TerminalMap {
 impl TerminalMap {
     /// Create a new empty `TerminalMap`.
     pub fn new() -> Self {
-        todo!()
+        Self { terminals: HashMap::new() }
     }
 
     /// Insert a terminal for a surface. Returns the old terminal if one existed.
@@ -46,17 +46,22 @@ impl TerminalMap {
         surface_id: SurfaceId,
         terminal: Box<dyn TerminalWriter>,
     ) -> Option<Box<dyn TerminalWriter>> {
-        todo!()
+        self.terminals.insert(surface_id, terminal)
     }
 
     /// Remove a terminal for a surface.
     pub fn remove(&mut self, surface_id: SurfaceId) -> Option<Box<dyn TerminalWriter>> {
-        todo!()
+        self.terminals.remove(&surface_id)
     }
 
     /// Feed VT data to the terminal for a surface. Returns false if surface not found.
     pub fn write_vt(&mut self, surface_id: SurfaceId, data: &[u8]) -> bool {
-        todo!()
+        if let Some(terminal) = self.terminals.get_mut(&surface_id) {
+            terminal.write_vt(data);
+            true
+        } else {
+            false
+        }
     }
 
     /// Resize the terminal for a surface. Returns `Err` if surface not found.
@@ -68,27 +73,30 @@ impl TerminalMap {
         cell_width_px: u32,
         cell_height_px: u32,
     ) -> Result<(), String> {
-        todo!()
+        match self.terminals.get_mut(&surface_id) {
+            Some(terminal) => terminal.resize(cols, rows, cell_width_px, cell_height_px),
+            None => Err(format!("surface {surface_id:?} not found in terminal map")),
+        }
     }
 
     /// Get a reference to a terminal.
     pub fn get(&self, surface_id: SurfaceId) -> Option<&dyn TerminalWriter> {
-        todo!()
+        self.terminals.get(&surface_id).map(AsRef::as_ref)
     }
 
     /// Get a mutable reference to a terminal.
     pub fn get_mut(&mut self, surface_id: SurfaceId) -> Option<&mut Box<dyn TerminalWriter>> {
-        todo!()
+        self.terminals.get_mut(&surface_id)
     }
 
     /// Number of active terminals.
     pub fn len(&self) -> usize {
-        todo!()
+        self.terminals.len()
     }
 
     /// Whether the map is empty.
     pub fn is_empty(&self) -> bool {
-        todo!()
+        self.terminals.is_empty()
     }
 }
 
@@ -96,10 +104,10 @@ impl TerminalMap {
 ///
 /// Returns `(cols, rows)` clamped to at least `(1, 1)`.
 pub fn compute_pane_cells(
-    pane_width_px: f32,
-    pane_height_px: f32,
-    cell_width_px: u32,
-    cell_height_px: u32,
+    _pane_width_px: f32,
+    _pane_height_px: f32,
+    _cell_width_px: u32,
+    _cell_height_px: u32,
 ) -> (u16, u16) {
     todo!()
 }
@@ -110,8 +118,8 @@ pub fn compute_pane_cells(
 /// For `SurfaceExited`, removes the terminal from the map.
 /// Returns `true` if the update was handled (recognized variant).
 pub fn process_state_update(
-    update: &veil_core::message::StateUpdate,
-    terminal_map: &mut TerminalMap,
+    _update: &veil_core::message::StateUpdate,
+    _terminal_map: &mut TerminalMap,
 ) -> bool {
     todo!()
 }
@@ -120,9 +128,9 @@ pub fn process_state_update(
 /// than one, otherwise leave it.  Returns the `SurfaceId` that should receive
 /// focus after the close, if any.
 pub fn handle_surface_exit(
-    surface_id: SurfaceId,
-    app_state: &mut veil_core::state::AppState,
-    focus: &mut veil_core::focus::FocusManager,
+    _surface_id: SurfaceId,
+    _app_state: &mut veil_core::state::AppState,
+    _focus: &mut veil_core::focus::FocusManager,
 ) -> Option<SurfaceId> {
     todo!()
 }
