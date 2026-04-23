@@ -3,12 +3,16 @@
 //! Owns all wgpu state: device, queue, surface, pipeline, buffers.
 //! Created once at startup, resized on window resize, renders each frame.
 //!
-//! Tests for this module are `#[ignore]` because they require a GPU.
+//! GPU-dependent tests are `#[ignore]`. `EguiIntegration` headless tests
+//! run without a GPU.
 
 use std::sync::Arc;
 
 use wgpu::util::DeviceExt;
 use winit::window::Window;
+
+use veil_core::state::AppState;
+use veil_ui::sidebar::SidebarResponse;
 
 use crate::frame::FrameGeometry;
 use crate::vertex::Vertex;
@@ -19,6 +23,54 @@ use crate::vertex::Vertex;
 struct WindowUniform {
     width: f32,
     height: f32,
+}
+
+/// Bundles egui context, winit event translator, and wgpu renderer.
+///
+/// Created alongside `Renderer` at startup. Owns the `egui::Context` used
+/// for headless frame execution (via [`run_frame`]) and the platform/GPU
+/// integration needed for event translation and rendering.
+#[allow(dead_code)]
+pub struct EguiIntegration {
+    /// The egui context. Public so the event loop can call `ctx.run()`.
+    pub ctx: egui::Context,
+}
+
+#[allow(dead_code)]
+impl EguiIntegration {
+    /// Create a headless `EguiIntegration` (no GPU, no window).
+    ///
+    /// Useful for tests. The real constructor ([`EguiIntegration::new`]) will
+    /// also initialize `egui_winit::State` and `egui_wgpu::Renderer`.
+    pub fn new_headless() -> Self {
+        Self { ctx: egui::Context::default() }
+    }
+
+    /// Run a single egui frame with the sidebar UI.
+    ///
+    /// Executes `render_sidebar` inside the egui context and returns the
+    /// sidebar interaction response together with the full egui output
+    /// (shapes, textures, platform output) needed for GPU rendering.
+    pub fn run_frame(&self, app_state: &AppState) -> (SidebarResponse, egui::FullOutput) {
+        let raw_input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::Vec2::new(1280.0, 800.0),
+            )),
+            ..Default::default()
+        };
+
+        let mut sidebar_response = SidebarResponse::default();
+        let full_output = self.ctx.run_ui(raw_input, |_ui| {
+            // TODO(VEI-78): call render_sidebar(ui, app_state) here.
+            // For now this is a stub -- returns default SidebarResponse and
+            // an empty egui frame (no shapes).
+            let _ = &app_state;
+            let _ = &mut sidebar_response;
+        });
+
+        (sidebar_response, full_output)
+    }
 }
 
 /// GPU renderer for Veil's terminal UI.
@@ -324,5 +376,178 @@ mod tests {
     #[test]
     fn vertex_buffer_stride_matches_vertex_size() {
         assert_eq!(std::mem::size_of::<Vertex>(), 24);
+    }
+
+    // ================================================================
+    // EguiIntegration — headless construction
+    // ================================================================
+
+    #[test]
+    fn egui_integration_creates_default_context() {
+        let integration = EguiIntegration::new_headless();
+        // A default egui context has a positive pixels_per_point.
+        assert!(
+            integration.ctx.pixels_per_point() > 0.0,
+            "default context should have positive pixels_per_point"
+        );
+    }
+
+    // ================================================================
+    // EguiIntegration::run_frame — sidebar produces egui shapes
+    // ================================================================
+
+    #[test]
+    fn run_frame_produces_shapes_when_sidebar_visible() {
+        // When the sidebar is visible and contains UI widgets (tab buttons,
+        // workspace list), the egui frame should produce shapes to paint.
+        // The stub returns an empty frame, so this is RED.
+        let integration = EguiIntegration::new_headless();
+        let state = AppState::new(); // sidebar visible by default, width_px = 250
+        let (_response, full_output) = integration.run_frame(&state);
+
+        assert!(
+            !full_output.shapes.is_empty(),
+            "run_frame with visible sidebar should produce egui shapes"
+        );
+    }
+
+    #[test]
+    fn run_frame_produces_texture_updates() {
+        // egui needs at least one font texture upload on the first frame.
+        // The stub never calls egui UI functions, so no textures are generated.
+        // This is RED until run_frame actually calls render_sidebar.
+        let integration = EguiIntegration::new_headless();
+        let state = AppState::new();
+        let (_response, full_output) = integration.run_frame(&state);
+
+        assert!(
+            !full_output.textures_delta.set.is_empty(),
+            "first egui frame should request at least one texture upload (font atlas)"
+        );
+    }
+
+    // ================================================================
+    // EguiIntegration::run_frame — sidebar response reflects state
+    // ================================================================
+
+    #[test]
+    fn run_frame_without_interaction_returns_default_response() {
+        // Without simulated clicks, the sidebar should return a default
+        // (no-op) response. This verifies the basic contract.
+        let integration = EguiIntegration::new_headless();
+        let state = AppState::new();
+        let (response, _output) = integration.run_frame(&state);
+
+        assert!(
+            response.switch_to_workspace.is_none(),
+            "no interaction should leave switch_to_workspace as None"
+        );
+        assert!(response.switch_tab.is_none(), "no interaction should leave switch_tab as None");
+        assert!(
+            response.selected_conversation.is_none(),
+            "no interaction should leave selected_conversation as None"
+        );
+    }
+
+    // ================================================================
+    // EguiIntegration::run_frame — workspace entries rendered
+    // ================================================================
+
+    #[test]
+    fn run_frame_with_workspaces_produces_shapes() {
+        use std::path::PathBuf;
+
+        // Create state with actual workspaces so the sidebar has content.
+        let integration = EguiIntegration::new_headless();
+        let mut state = AppState::new();
+        state.create_workspace("project-alpha".to_string(), PathBuf::from("/tmp/alpha"));
+        state.create_workspace("project-beta".to_string(), PathBuf::from("/tmp/beta"));
+
+        let (_response, full_output) = integration.run_frame(&state);
+
+        // The workspace list should render entries, producing shapes.
+        assert!(
+            !full_output.shapes.is_empty(),
+            "run_frame with workspaces should produce shapes for workspace list entries"
+        );
+    }
+
+    // ================================================================
+    // EguiIntegration::run_frame — conversations tab
+    // ================================================================
+
+    #[test]
+    fn run_frame_conversations_tab_produces_shapes() {
+        use veil_core::session::{AgentKind, SessionEntry, SessionId, SessionStatus};
+
+        let integration = EguiIntegration::new_headless();
+        let mut state = AppState::new();
+        state.set_sidebar_tab(veil_core::state::SidebarTab::Conversations);
+        state.update_conversations(vec![SessionEntry {
+            id: SessionId::new("session-1"),
+            agent: AgentKind::ClaudeCode,
+            title: "Fix authentication bug".to_string(),
+            working_dir: std::path::PathBuf::from("/tmp/project"),
+            branch: Some("main".to_string()),
+            pr_number: None,
+            pr_url: None,
+            plan_content: None,
+            status: SessionStatus::Active,
+            started_at: chrono::Utc::now(),
+            ended_at: None,
+            indexed_at: chrono::Utc::now(),
+        }]);
+
+        let (_response, full_output) = integration.run_frame(&state);
+
+        assert!(
+            !full_output.shapes.is_empty(),
+            "run_frame with conversations should produce shapes for conversation entries"
+        );
+    }
+
+    // ================================================================
+    // EguiIntegration::run_frame — hidden sidebar
+    // ================================================================
+
+    #[test]
+    fn run_frame_hidden_sidebar_still_returns_output() {
+        // Even when sidebar is hidden, run_frame should still produce a
+        // valid FullOutput (the caller decides whether to call run_frame
+        // based on sidebar visibility, but the method itself should work).
+        let integration = EguiIntegration::new_headless();
+        let mut state = AppState::new();
+        state.toggle_sidebar(); // hide
+
+        let (response, full_output) = integration.run_frame(&state);
+
+        // Response should be default (no interactions possible on hidden sidebar).
+        assert!(response.switch_to_workspace.is_none());
+        assert!(response.switch_tab.is_none());
+        // FullOutput should still be valid (not crash).
+        let _ = full_output.platform_output;
+    }
+
+    // ================================================================
+    // EguiIntegration::run_frame — consecutive frames share context
+    // ================================================================
+
+    #[test]
+    fn run_frame_consecutive_frames_share_context() {
+        // Running multiple frames on the same EguiIntegration should work.
+        // The egui context accumulates state across frames. After the first
+        // frame, subsequent frames should also produce shapes (the sidebar
+        // is persistent, not a one-shot).
+        let integration = EguiIntegration::new_headless();
+        let state = AppState::new();
+
+        // First frame
+        let (_, output1) = integration.run_frame(&state);
+        // Second frame
+        let (_, output2) = integration.run_frame(&state);
+
+        // Both frames should produce shapes when the sidebar is visible.
+        assert!(!output1.shapes.is_empty(), "first frame should produce shapes");
+        assert!(!output2.shapes.is_empty(), "second frame should also produce shapes");
     }
 }
