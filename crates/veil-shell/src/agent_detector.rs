@@ -35,7 +35,6 @@ pub struct ProcessEntry {
 /// Each entry is a (`executable_name_pattern`, `AgentKind`) pair. The pattern
 /// is matched against the process name (case-sensitive exact match on the
 /// basename).
-#[allow(dead_code)]
 const KNOWN_AGENTS: &[(&str, AgentKind)] = &[
     ("claude", AgentKind::ClaudeCode),
     ("codex", AgentKind::Codex),
@@ -53,23 +52,52 @@ const KNOWN_AGENTS: &[(&str, AgentKind)] = &[
 /// The `processes` slice should contain the full system process list (or at
 /// least all descendants of the root). The function filters to only
 /// descendants of `root_pid`.
-pub fn detect_agents(_root_pid: u32, _processes: &[ProcessEntry]) -> Vec<DetectedAgent> {
-    todo!()
+pub fn detect_agents(root_pid: u32, processes: &[ProcessEntry]) -> Vec<DetectedAgent> {
+    let descendants = descendant_pids(root_pid, processes);
+    processes
+        .iter()
+        .filter(|p| descendants.contains(&p.pid))
+        .filter_map(|p| {
+            identify_agent(&p.name).map(|kind| DetectedAgent {
+                kind,
+                pid: p.pid,
+                exe_name: p.name.clone(),
+            })
+        })
+        .collect()
 }
 
 /// Check if a single process name matches a known agent.
 ///
 /// Returns the `AgentKind` if the name matches any known agent pattern.
-pub fn identify_agent(_process_name: &str) -> Option<AgentKind> {
-    todo!()
+pub fn identify_agent(process_name: &str) -> Option<AgentKind> {
+    KNOWN_AGENTS.iter().find(|(name, _)| *name == process_name).map(|(_, kind)| kind.clone())
 }
 
 /// Build the set of all PIDs that are descendants of `root_pid`.
 ///
 /// Performs a BFS/DFS from `root_pid` through parent-child relationships.
-#[allow(dead_code)]
-fn descendant_pids(_root_pid: u32, _processes: &[ProcessEntry]) -> Vec<u32> {
-    todo!()
+fn descendant_pids(root_pid: u32, processes: &[ProcessEntry]) -> Vec<u32> {
+    let mut visited = Vec::new();
+
+    // Include root_pid itself if it exists in the process list.
+    if processes.iter().any(|p| p.pid == root_pid) {
+        visited.push(root_pid);
+    }
+
+    // BFS: iteratively find children of visited PIDs.
+    let mut i = 0;
+    while i < visited.len() {
+        let parent = visited[i];
+        for p in processes {
+            if p.ppid == parent && !visited.contains(&p.pid) {
+                visited.push(p.pid);
+            }
+        }
+        i += 1;
+    }
+
+    visited
 }
 
 #[cfg(test)]
