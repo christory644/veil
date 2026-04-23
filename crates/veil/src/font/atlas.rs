@@ -248,25 +248,21 @@ impl GlyphAtlas {
 
     /// Returns `true` if the atlas has been modified since the last
     /// call to `mark_clean`.
-    #[allow(dead_code)] // used once GPU text pass is wired
     pub fn is_dirty(&self) -> bool {
         self.dirty
     }
 
     /// Mark the atlas as clean (call after uploading to GPU).
-    #[allow(dead_code)] // used once GPU text pass is wired
     pub fn mark_clean(&mut self) {
         self.dirty = false;
     }
 
     /// Get the raw bitmap data for GPU upload.
-    #[allow(dead_code)] // used once GPU text pass is wired
     pub fn bitmap(&self) -> &[u8] {
         &self.bitmap
     }
 
     /// Get the atlas dimensions.
-    #[allow(dead_code)] // used once GPU text pass is wired
     pub fn dimensions(&self) -> (u32, u32) {
         (self.width, self.height)
     }
@@ -277,7 +273,8 @@ impl GlyphAtlas {
     clippy::float_cmp,
     clippy::cast_precision_loss,
     clippy::cast_sign_loss,
-    clippy::cast_possible_truncation
+    clippy::cast_possible_truncation,
+    clippy::doc_markdown
 )]
 mod tests {
     use super::*;
