@@ -65,29 +65,21 @@ impl SemVer {
     /// Pre-release versions are considered older than the same version
     /// without a pre-release label (1.0.0-rc.1 < 1.0.0).
     pub fn is_newer_than(&self, other: &SemVer) -> bool {
-        // Compare major.minor.patch first
-        match self.major.cmp(&other.major) {
-            std::cmp::Ordering::Greater => return true,
-            std::cmp::Ordering::Less => return false,
-            std::cmp::Ordering::Equal => {}
-        }
-        match self.minor.cmp(&other.minor) {
-            std::cmp::Ordering::Greater => return true,
-            std::cmp::Ordering::Less => return false,
-            std::cmp::Ordering::Equal => {}
-        }
-        match self.patch.cmp(&other.patch) {
-            std::cmp::Ordering::Greater => return true,
-            std::cmp::Ordering::Less => return false,
-            std::cmp::Ordering::Equal => {}
-        }
+        let self_triple = (self.major, self.minor, self.patch);
+        let other_triple = (other.major, other.minor, other.patch);
 
-        // Same major.minor.patch — compare pre-release labels.
-        // No pre-release (release) is newer than any pre-release.
-        match (&self.pre, &other.pre) {
-            (None, Some(_)) => true,         // release > pre-release
-            (Some(_) | None, None) => false, // pre-release < release, or equal
-            (Some(a), Some(b)) => a > b,     // lexicographic comparison
+        match self_triple.cmp(&other_triple) {
+            std::cmp::Ordering::Greater => true,
+            std::cmp::Ordering::Less => false,
+            std::cmp::Ordering::Equal => {
+                // Same major.minor.patch — compare pre-release labels.
+                // No pre-release (release) is newer than any pre-release.
+                match (&self.pre, &other.pre) {
+                    (None, Some(_)) => true,         // release > pre-release
+                    (Some(_) | None, None) => false, // pre-release < release, or equal
+                    (Some(a), Some(b)) => a > b,     // lexicographic comparison
+                }
+            }
         }
     }
 }
@@ -281,7 +273,6 @@ pub fn check_for_update(
 }
 
 /// Production implementation that calls the GitHub Releases API.
-#[allow(dead_code)]
 pub struct GitHubVersionFetcher {
     /// GitHub repo in "owner/repo" format.
     repo: String,
@@ -311,17 +302,17 @@ impl VersionFetcher for GitHubVersionFetcher {
             .header("User-Agent", &self.user_agent)
             .header("Accept", "application/vnd.github.v3+json")
             .call()
-            .map_err(|e: ureq::Error| UpdateError::FetchFailed(e.to_string()))?;
+            .map_err(|e| UpdateError::FetchFailed(e.to_string()))?;
 
         let body_str = response
             .body_mut()
             .read_to_string()
-            .map_err(|e: ureq::Error| UpdateError::ParseFailed(e.to_string()))?;
+            .map_err(|e| UpdateError::ParseFailed(e.to_string()))?;
 
         let body: serde_json::Value =
             serde_json::from_str(&body_str).map_err(|e| UpdateError::ParseFailed(e.to_string()))?;
 
-        body["tag_name"].as_str().map(|s: &str| s.to_string()).ok_or_else(|| {
+        body["tag_name"].as_str().map(str::to_string).ok_or_else(|| {
             UpdateError::ParseFailed("missing tag_name field in response".to_string())
         })
     }
@@ -331,20 +322,22 @@ impl VersionFetcher for GitHubVersionFetcher {
 // Unit 5: Last-check timestamp persistence
 // ---------------------------------------------------------------------------
 
+/// Returns the current Unix timestamp in seconds.
+fn unix_timestamp_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .cast_signed()
+}
+
 /// Persistent state for the update checker (stored as a small JSON file).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UpdateState {
     /// When the last update check was performed (Unix timestamp).
     pub last_check_epoch: i64,
     /// The latest version found at last check (if any).
     pub latest_version: Option<String>,
-}
-
-#[allow(clippy::derivable_impls)]
-impl Default for UpdateState {
-    fn default() -> Self {
-        Self { last_check_epoch: 0, latest_version: None }
-    }
 }
 
 impl UpdateState {
@@ -386,13 +379,8 @@ impl UpdateState {
 
     /// Check if enough time has elapsed since the last check.
     pub fn should_check(&self, interval_hours: u32) -> bool {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-            .cast_signed();
         let interval_secs = i64::from(interval_hours) * 3600;
-        now - self.last_check_epoch >= interval_secs
+        unix_timestamp_now() - self.last_check_epoch >= interval_secs
     }
 
     /// Default path: `~/.local/share/veil/update-state.json`
@@ -471,12 +459,10 @@ pub fn run_update_check(
     let latest = SemVer::parse(&tag)?;
 
     // Step 6: Update and save UpdateState.
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-        .cast_signed();
-    let new_state = UpdateState { last_check_epoch: now, latest_version: Some(latest.to_string()) };
+    let new_state = UpdateState {
+        last_check_epoch: unix_timestamp_now(),
+        latest_version: Some(latest.to_string()),
+    };
     // Best effort save — don't fail the check if save fails.
     let _ = new_state.save_to(state_path);
 
@@ -502,7 +488,6 @@ pub fn run_update_check(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use tempfile::TempDir;
 
     // ---------------------------------------------------------------
@@ -1085,23 +1070,14 @@ mod tests {
 
         #[test]
         fn should_check_returns_false_when_checked_recently() {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                .cast_signed();
+            let now = unix_timestamp_now();
             let state = UpdateState { last_check_epoch: now, latest_version: None };
             assert!(!state.should_check(24));
         }
 
         #[test]
         fn should_check_returns_true_when_interval_exceeded() {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                .cast_signed();
-            let twenty_five_hours_ago = now - (25 * 3600);
+            let twenty_five_hours_ago = unix_timestamp_now() - (25 * 3600);
             let state =
                 UpdateState { last_check_epoch: twenty_five_hours_ago, latest_version: None };
             assert!(state.should_check(24));
@@ -1115,12 +1091,7 @@ mod tests {
 
         #[test]
         fn should_check_returns_false_when_within_interval() {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                .cast_signed();
-            let twenty_three_hours_ago = now - (23 * 3600);
+            let twenty_three_hours_ago = unix_timestamp_now() - (23 * 3600);
             let state =
                 UpdateState { last_check_epoch: twenty_three_hours_ago, latest_version: None };
             assert!(!state.should_check(24));
@@ -1286,13 +1257,8 @@ mod tests {
             let state_path = dir.path().join("state.json");
 
             // Write a recent state
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                .cast_signed();
             let recent_state = UpdateState {
-                last_check_epoch: now - 3600, // 1 hour ago
+                last_check_epoch: unix_timestamp_now() - 3600, // 1 hour ago
                 latest_version: None,
             };
             recent_state.save_to(&state_path).unwrap();
@@ -1314,13 +1280,8 @@ mod tests {
             let state_path = dir.path().join("state.json");
 
             // Write an old state
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                .cast_signed();
             let old_state = UpdateState {
-                last_check_epoch: now - (25 * 3600), // 25 hours ago
+                last_check_epoch: unix_timestamp_now() - (25 * 3600), // 25 hours ago
                 latest_version: None,
             };
             old_state.save_to(&state_path).unwrap();
