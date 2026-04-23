@@ -8,7 +8,6 @@
 //! platform glue.
 
 mod action_dispatch;
-#[allow(dead_code)]
 mod aggregator_actor;
 mod bootstrap;
 mod config_reload;
@@ -22,7 +21,6 @@ mod key_translation;
 mod quad_builder;
 mod renderer;
 mod sidebar_wiring;
-#[allow(dead_code)]
 mod socket_actor;
 #[allow(dead_code)]
 mod terminal_map;
@@ -76,6 +74,10 @@ struct VeilApp {
     config_path: Option<std::path::PathBuf>,
     /// Config file watcher for hot-reload. Started after window creation.
     config_watcher: Option<ConfigWatcher>,
+    /// Aggregator background actor handle.
+    aggregator_handle: Option<aggregator_actor::AggregatorHandle>,
+    /// Socket server background actor handle.
+    socket_handle: Option<socket_actor::SocketHandle>,
 }
 
 impl VeilApp {
@@ -111,6 +113,8 @@ impl VeilApp {
             app_config: config,
             config_path,
             config_watcher: None,
+            aggregator_handle: None,
+            socket_handle: None,
         }
     }
 }
@@ -146,6 +150,22 @@ impl ApplicationHandler for VeilApp {
         self.pty_manager = Some(pty_manager);
 
         self.start_config_watcher();
+
+        // Start aggregator actor (session discovery + file watching).
+        self.aggregator_handle = Some(aggregator_actor::start_aggregator(
+            self.channels.state_tx.clone(),
+            self.channels.command_subscriber(),
+            self.shutdown.handle(),
+        ));
+
+        // Start socket server actor with its own AppState snapshot.
+        let socket_state = Arc::new(tokio::sync::Mutex::new(AppState::new()));
+        {
+            let mut ss = socket_state.blocking_lock();
+            ss.apply_config(&self.app_config);
+        }
+        self.socket_handle =
+            Some(socket_actor::start_socket_server(socket_state, self.shutdown.handle()));
     }
 
     fn window_event(
@@ -272,37 +292,50 @@ impl VeilApp {
     /// Drain pending state updates from the channel and apply them.
     fn drain_state_updates(&mut self) {
         while let Ok(update) = self.channels.state_rx.try_recv() {
-            if let StateUpdate::ConfigReloaded { config, delta, warnings } = update {
-                for w in &warnings {
-                    tracing::warn!("config validation: {}: {}", w.field, w.message);
-                }
+            match update {
+                StateUpdate::ConfigReloaded { config, delta, warnings } => {
+                    for w in &warnings {
+                        tracing::warn!("config validation: {}: {}", w.field, w.message);
+                    }
 
-                let needs_redraw = config_reload::apply_config_reload(
-                    &config,
-                    &delta,
-                    &mut self.app_state,
-                    &mut self.keybindings,
-                );
-
-                if delta.font_changed {
-                    tracing::info!(
-                        "font config changed (family={:?}, size={}) -- \
-                         font re-init will apply when font pipeline is wired",
-                        config.terminal.font_family,
-                        config.terminal.font_size,
+                    let needs_redraw = config_reload::apply_config_reload(
+                        &config,
+                        &delta,
+                        &mut self.app_state,
+                        &mut self.keybindings,
                     );
+
+                    if delta.font_changed {
+                        tracing::info!(
+                            "font config changed (family={:?}, size={}) -- \
+                             font re-init will apply when font pipeline is wired",
+                            config.terminal.font_family,
+                            config.terminal.font_size,
+                        );
+                    }
+
+                    if delta.theme_changed {
+                        tracing::info!("theme changed to {:?}", config.general.theme);
+                    }
+
+                    self.app_config = *config;
+
+                    if needs_redraw {
+                        if let Some(ref window) = self.window {
+                            window.request_redraw();
+                        }
+                    }
                 }
-
-                if delta.theme_changed {
-                    tracing::info!("theme changed to {:?}", config.general.theme);
-                }
-
-                self.app_config = *config;
-
-                if needs_redraw {
+                StateUpdate::ConversationsUpdated(sessions) => {
+                    tracing::info!(count = sessions.len(), "conversations updated");
+                    self.app_state.update_conversations(sessions);
                     if let Some(ref window) = self.window {
                         window.request_redraw();
                     }
+                }
+                _ => {
+                    // Other StateUpdate variants (PtyOutput, SurfaceExited, etc.)
+                    // will be handled in future wiring tasks.
                 }
             }
         }

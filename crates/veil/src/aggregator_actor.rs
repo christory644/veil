@@ -20,6 +20,7 @@ use veil_core::message::{AppCommand, StateUpdate};
 /// Dropping this handle does *not* stop the thread; the thread exits when the
 /// `ShutdownHandle` is triggered.
 pub struct AggregatorHandle {
+    #[allow(dead_code)]
     thread: std::thread::JoinHandle<()>,
 }
 
@@ -27,6 +28,7 @@ impl AggregatorHandle {
     /// Block until the aggregator thread exits.
     ///
     /// Returns `Ok(())` if the thread exited normally, or `Err(())` if it panicked.
+    #[cfg(test)]
     pub fn join(self) -> Result<(), ()> {
         self.thread.join().map_err(|_| ())
     }

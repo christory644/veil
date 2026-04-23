@@ -15,6 +15,7 @@ use veil_core::state::AppState;
 /// Dropping this handle does *not* stop the thread; the thread exits when the
 /// `ShutdownHandle` is triggered and `SocketServer::run()` returns.
 pub struct SocketHandle {
+    #[allow(dead_code)]
     thread: std::thread::JoinHandle<()>,
 }
 
@@ -22,6 +23,7 @@ impl SocketHandle {
     /// Block until the socket server thread exits.
     ///
     /// Returns `Ok(())` if the thread exited normally, or `Err(())` if it panicked.
+    #[cfg(test)]
     pub fn join(self) -> Result<(), ()> {
         self.thread.join().map_err(|_| ())
     }
