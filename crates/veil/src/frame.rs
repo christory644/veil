@@ -1,15 +1,18 @@
 //! Frame geometry composition — combines all quad builders with `AppState`
 //! to produce the full frame's geometry. Pure logic (no GPU).
 
+use std::collections::HashMap;
+
 use veil_core::focus::FocusManager;
 use veil_core::layout::{compute_layout, Rect};
 use veil_core::state::AppState;
+use veil_core::workspace::SurfaceId;
 
-use crate::font::text_vertex::TextVertex;
+use crate::font::text_vertex::{text_quad_indices, text_quad_vertices, TextVertex};
 use crate::font_pipeline::FontPipeline;
 use crate::quad_builder::{
     build_cell_background_quads, build_cursor_quad, build_divider_quads, build_focus_border,
-    CellGridParams,
+    color_to_f32, CellGridParams,
 };
 use crate::terminal_map::TerminalMap;
 use crate::vertex::Vertex;
@@ -39,11 +42,13 @@ pub struct FrameGeometry {
     pub vertices: Vec<Vertex>,
     /// All indices for this frame (solid-color quads).
     pub indices: Vec<u16>,
-    /// Text vertices for textured glyph quads (populated when text rendering is integrated).
+    /// Text vertices for textured glyph quads.
     #[allow(dead_code)]
+    // Populated by build_frame_geometry; consumed by GPU text pass (next issue).
     pub text_vertices: Vec<TextVertex>,
-    /// Text indices for textured glyph quads (populated when text rendering is integrated).
+    /// Text indices for textured glyph quads.
     #[allow(dead_code)]
+    // Populated by build_frame_geometry; consumed by GPU text pass (next issue).
     pub text_indices: Vec<u16>,
     /// The clear color (window background).
     pub clear_color: wgpu::Color,
@@ -52,10 +57,59 @@ pub struct FrameGeometry {
 /// Resolve a cell's foreground color to RGBA f32.
 ///
 /// Uses the cell's explicit `fg_color` if set, otherwise the default foreground.
-#[allow(dead_code)] // Used by tests now; wired into frame builder when text rendering is integrated.
-pub fn cell_fg_color(cell: &veil_ghostty::CellData, default_fg: veil_ghostty::Color) -> [f32; 4] {
-    let color = cell.fg_color.unwrap_or(default_fg);
+pub fn cell_fg_color(cell: &veil_ghostty::CellData, foreground: veil_ghostty::Color) -> [f32; 4] {
+    let color = cell.fg_color.unwrap_or(foreground);
     crate::quad_builder::color_to_f32(color)
+}
+
+/// Generate text quads for all visible characters in a cell grid.
+///
+/// Iterates over the grid, skips empty/space/control characters, and for
+/// each visible char calls `ensure_glyph` + `text_quad_vertices`.
+#[allow(clippy::cast_precision_loss)]
+fn generate_text_quads(
+    pipeline: &mut FontPipeline,
+    grid: &veil_ghostty::CellGrid,
+    pane_rect: &Rect,
+    cols: u16,
+    rows: u16,
+    text_verts: &mut Vec<TextVertex>,
+    text_idxs: &mut Vec<u16>,
+) {
+    let cell_w = pane_rect.width / f32::from(cols);
+    let cell_h = pane_rect.height / f32::from(rows);
+    let ascent = pipeline.ascent();
+    let foreground = grid.colors.foreground;
+
+    for (row_idx, row) in grid.cells.iter().enumerate() {
+        for (col_idx, cell) in row.iter().enumerate() {
+            if cell.graphemes.is_empty() {
+                continue;
+            }
+            let ch = cell.graphemes[0];
+            if ch == ' ' || ch.is_control() {
+                continue;
+            }
+
+            if let Some(region) = pipeline.ensure_glyph(ch) {
+                if region.width == 0 || region.height == 0 {
+                    continue;
+                }
+
+                let cell_x = pane_rect.x + col_idx as f32 * cell_w;
+                let cell_y = pane_rect.y + row_idx as f32 * cell_h;
+                let fg_color = cell_fg_color(cell, foreground);
+
+                let verts = text_quad_vertices(cell_x, cell_y, &region, ascent, fg_color);
+                #[allow(clippy::cast_possible_truncation)]
+                let base = text_verts.len() as u16;
+                let indices = text_quad_indices(base);
+
+                text_verts.extend_from_slice(&verts);
+                text_idxs.extend_from_slice(&indices);
+            }
+        }
+    }
 }
 
 /// Build all geometry for the current frame.
@@ -63,11 +117,12 @@ pub fn cell_fg_color(cell: &veil_ghostty::CellData, default_fg: veil_ghostty::Co
 /// This is the main composition function called once per frame:
 /// 1. Compute available terminal area (window size minus sidebar if visible)
 /// 2. Get active workspace layout via `compute_layout` (respecting zoom)
-/// 3. Build cell background quads for each pane
-/// 4. Build cursor quad for the focused pane (if cursor visible)
+/// 3. Build cell background quads for each pane (using terminal state when available)
+/// 4. Build text quads for each pane (when font pipeline and terminal state are available)
 /// 5. Build divider quads between adjacent panes
-/// 6. Build focus border around the focused pane
-/// 7. Concatenate all vertices/indices with correct base offsets
+/// 6. Build cursor quad for the focused pane (if cursor visible)
+/// 7. Build focus border around the focused pane
+/// 8. Concatenate all vertices/indices with correct base offsets
 ///
 /// Returns `FrameGeometry` ready for a single draw call.
 // Window pixel dimensions and sidebar width_px all fit comfortably in f32.
@@ -77,8 +132,8 @@ pub fn build_frame_geometry(
     focus: &FocusManager,
     window_width: u32,
     window_height: u32,
-    _terminal_map: &mut TerminalMap,
-    _font_pipeline: Option<&mut FontPipeline>,
+    terminal_map: &mut TerminalMap,
+    mut font_pipeline: Option<&mut FontPipeline>,
 ) -> FrameGeometry {
     let empty = || FrameGeometry {
         vertices: Vec::new(),
@@ -108,6 +163,8 @@ pub fn build_frame_geometry(
 
     let mut all_vertices: Vec<Vertex> = Vec::new();
     let mut all_indices: Vec<u16> = Vec::new();
+    let mut all_text_vertices: Vec<TextVertex> = Vec::new();
+    let mut all_text_indices: Vec<u16> = Vec::new();
 
     // Append geometry with correct index offsets so multiple quad batches
     // share a single vertex/index buffer.
@@ -118,17 +175,49 @@ pub fn build_frame_geometry(
         all_indices.extend(idxs.iter().map(|i| i + base_offset));
     };
 
-    // Cell background quads for each pane.
+    // Collect CellGrid results for each surface so we can reuse them for
+    // cursor positioning without calling render_cells() twice.
+    let mut cached_grids: HashMap<SurfaceId, veil_ghostty::CellGrid> = HashMap::new();
     for pl in &pane_layouts {
-        let params = CellGridParams {
-            rect: pl.rect,
-            cols: DEFAULT_COLS,
-            rows: DEFAULT_ROWS,
-            bg_color: BG_COLOR,
-            cell_bg_colors: None,
+        if let Some(grid) = terminal_map.get_mut(pl.surface_id).and_then(|tw| tw.render_cells()) {
+            cached_grids.insert(pl.surface_id, grid);
+        }
+    }
+
+    // Cell background quads and text quads for each pane.
+    for pl in &pane_layouts {
+        let cell_grid = cached_grids.get(&pl.surface_id);
+
+        let (cols, rows, cell_bg_colors) = if let Some(grid) = cell_grid {
+            let bg_colors: Vec<Option<[f32; 4]>> = grid
+                .cells
+                .iter()
+                .flat_map(|row| row.iter().map(|cell| cell.bg_color.map(color_to_f32)))
+                .collect();
+            (grid.cols, grid.rows, Some(bg_colors))
+        } else {
+            (DEFAULT_COLS, DEFAULT_ROWS, None)
         };
+
+        let bg_fallback = cell_grid.map_or(BG_COLOR, |g| color_to_f32(g.colors.background));
+
+        let params =
+            CellGridParams { rect: pl.rect, cols, rows, bg_color: bg_fallback, cell_bg_colors };
         let (verts, indices) = build_cell_background_quads(&params);
         append(&verts, &indices);
+
+        // Generate text quads if font pipeline and cell data are available.
+        if let (Some(ref mut pipeline), Some(grid)) = (&mut font_pipeline, cell_grid) {
+            generate_text_quads(
+                pipeline,
+                grid,
+                &pl.rect,
+                cols,
+                rows,
+                &mut all_text_vertices,
+                &mut all_text_indices,
+            );
+        }
     }
 
     // Divider quads between adjacent panes.
@@ -138,9 +227,20 @@ pub fn build_frame_geometry(
     // Cursor and focus border for the focused pane.
     if let Some(focused_surface) = focus.focused_surface() {
         if let Some(pl) = pane_layouts.iter().find(|pl| pl.surface_id == focused_surface) {
-            let (cursor_verts, cursor_indices) =
-                build_cursor_quad(&pl.rect, DEFAULT_COLS, DEFAULT_ROWS, 0, 0, CURSOR_COLOR);
-            append(&cursor_verts, &cursor_indices);
+            let cell_grid = cached_grids.get(&pl.surface_id);
+
+            let (cols, rows, cursor_col, cursor_row, cursor_visible) = if let Some(grid) = cell_grid
+            {
+                (grid.cols, grid.rows, grid.cursor.x, grid.cursor.y, grid.cursor.visible)
+            } else {
+                (DEFAULT_COLS, DEFAULT_ROWS, 0, 0, true)
+            };
+
+            if cursor_visible {
+                let (cursor_verts, cursor_indices) =
+                    build_cursor_quad(&pl.rect, cols, rows, cursor_col, cursor_row, CURSOR_COLOR);
+                append(&cursor_verts, &cursor_indices);
+            }
 
             let (border_verts, border_indices) =
                 build_focus_border(&pl.rect, FOCUS_BORDER_THICKNESS, FOCUS_BORDER_COLOR);
@@ -151,8 +251,8 @@ pub fn build_frame_geometry(
     FrameGeometry {
         vertices: all_vertices,
         indices: all_indices,
-        text_vertices: Vec::new(),
-        text_indices: Vec::new(),
+        text_vertices: all_text_vertices,
+        text_indices: all_text_indices,
         clear_color: CLEAR_COLOR,
     }
 }

@@ -33,7 +33,6 @@ pub struct CellGridParams {
 }
 
 /// Convert a `Color` (u8 RGB) to `[f32; 4]` (normalized RGBA with alpha 1.0).
-#[allow(dead_code)] // Used by frame.rs cell_fg_color; wired into frame builder when text rendering is integrated.
 pub fn color_to_f32(color: veil_ghostty::Color) -> [f32; 4] {
     [f32::from(color.r) / 255.0, f32::from(color.g) / 255.0, f32::from(color.b) / 255.0, 1.0]
 }
