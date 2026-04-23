@@ -22,7 +22,6 @@ mod quad_builder;
 mod renderer;
 mod sidebar_wiring;
 mod socket_actor;
-#[allow(dead_code)]
 mod terminal_map;
 mod vertex;
 
@@ -78,6 +77,8 @@ struct VeilApp {
     aggregator_handle: Option<aggregator_actor::AggregatorHandle>,
     /// Socket server background actor handle.
     socket_handle: Option<socket_actor::SocketHandle>,
+    /// Terminal emulator instances keyed by surface ID.
+    terminal_map: terminal_map::TerminalMap,
 }
 
 impl VeilApp {
@@ -115,6 +116,7 @@ impl VeilApp {
             config_watcher: None,
             aggregator_handle: None,
             socket_handle: None,
+            terminal_map: terminal_map::TerminalMap::new(),
         }
     }
 }
@@ -148,6 +150,14 @@ impl ApplicationHandler for VeilApp {
             tracing::error!("failed to spawn initial PTY: {e}");
         }
         self.pty_manager = Some(pty_manager);
+
+        if let Some(writer) =
+            terminal_map::create_ghostty_terminal(frame::DEFAULT_COLS, frame::DEFAULT_ROWS)
+        {
+            self.terminal_map.insert(surface_id, writer);
+        } else {
+            tracing::warn!(?surface_id, "no terminal created for root pane");
+        }
 
         self.start_config_watcher();
 
@@ -307,9 +317,41 @@ impl VeilApp {
                     self.app_state.update_conversations(sessions);
                     self.request_redraw();
                 }
-                _ => {
-                    // Other StateUpdate variants (PtyOutput, SurfaceExited, etc.)
-                    // will be handled in future wiring tasks.
+                StateUpdate::PtyOutput { surface_id, data } => {
+                    if !self.terminal_map.write_vt(surface_id, &data) {
+                        tracing::debug!(?surface_id, "PtyOutput for unknown surface");
+                    }
+                    self.request_redraw();
+                }
+                StateUpdate::SurfaceExited { surface_id, exit_code } => {
+                    tracing::info!(?surface_id, ?exit_code, "surface exited");
+                    self.terminal_map.remove(surface_id);
+                    let outcome = terminal_map::handle_surface_exit(
+                        surface_id,
+                        &mut self.app_state,
+                        &mut self.focus,
+                    );
+                    tracing::debug!(?surface_id, ?outcome, "surface exit handled");
+                    self.request_redraw();
+                }
+                StateUpdate::ActorError { actor_name, message } => {
+                    tracing::error!(actor = %actor_name, "actor error: {message}");
+                }
+                StateUpdate::ErrorOccurred(report) => {
+                    let id = self.app_state.add_error(report);
+                    tracing::debug!(?id, "error tracked");
+                    self.request_redraw();
+                }
+                StateUpdate::ErrorDismissed { error_id } => {
+                    self.app_state.dismiss_error(error_id);
+                    self.request_redraw();
+                }
+                StateUpdate::NotificationReceived { workspace_id, message } => {
+                    self.app_state.add_notification(workspace_id, message);
+                    self.request_redraw();
+                }
+                StateUpdate::UpdateAvailable(notification) => {
+                    tracing::info!(?notification, "update available");
                 }
             }
         }
@@ -424,6 +466,11 @@ impl VeilApp {
                 if let Some(ref mut mgr) = self.pty_manager {
                     if let Err(e) = mgr.spawn(surface_id, default_pty_config(working_directory)) {
                         tracing::error!(?surface_id, "failed to spawn PTY: {e}");
+                    } else if let Some(writer) = terminal_map::create_ghostty_terminal(
+                        frame::DEFAULT_COLS,
+                        frame::DEFAULT_ROWS,
+                    ) {
+                        self.terminal_map.insert(surface_id, writer);
                     }
                 }
             }
@@ -433,6 +480,7 @@ impl VeilApp {
                         tracing::warn!(?surface_id, "failed to close PTY: {e}");
                     }
                 }
+                self.terminal_map.remove(surface_id);
             }
             ActionEffect::Redraw => {
                 self.request_redraw();

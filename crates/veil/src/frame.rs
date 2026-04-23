@@ -13,8 +13,8 @@ use crate::quad_builder::{
 use crate::vertex::Vertex;
 
 // -- Default grid dimensions (until real terminal state is wired in) ----------
-const DEFAULT_COLS: u16 = 80;
-const DEFAULT_ROWS: u16 = 24;
+pub(crate) const DEFAULT_COLS: u16 = 80;
+pub(crate) const DEFAULT_ROWS: u16 = 24;
 
 // -- Default colors (until real per-cell colors arrive from RenderState) ------
 
