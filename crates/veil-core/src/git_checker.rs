@@ -3,7 +3,9 @@
 //! Shells out to `git` via `std::process::Command` to check whether branches
 //! exist in repositories. Supports batching multiple branch checks per repo.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use crate::live_state::BranchState;
 
@@ -33,8 +35,24 @@ impl GitChecker {
     ///
     /// Runs `git -C <repo_path> branch --list <branch_name>` and checks
     /// whether the output is non-empty.
-    pub fn check_branch(_repo_path: &Path, _branch_name: &str) -> BranchState {
-        todo!()
+    pub fn check_branch(repo_path: &Path, branch_name: &str) -> BranchState {
+        let output = Command::new("git")
+            .args(["-C"])
+            .arg(repo_path)
+            .args(["branch", "--list", branch_name])
+            .output();
+
+        match output {
+            Ok(result) if result.status.success() => {
+                let stdout = String::from_utf8_lossy(&result.stdout);
+                if stdout.trim().is_empty() {
+                    BranchState::Deleted
+                } else {
+                    BranchState::Exists
+                }
+            }
+            _ => BranchState::Unknown,
+        }
     }
 
     /// Check multiple branches, batching by repo.
@@ -42,13 +60,75 @@ impl GitChecker {
     /// For each unique `repo_path`, runs a single `git -C <repo_path> branch --list`
     /// (with all branch names for that repo) and parses the output.
     /// Returns results in the same order as the input requests.
-    pub fn check_branches(_requests: &[BranchCheckRequest]) -> Vec<BranchCheckResult> {
-        todo!()
+    pub fn check_branches(requests: &[BranchCheckRequest]) -> Vec<BranchCheckResult> {
+        if requests.is_empty() {
+            return Vec::new();
+        }
+
+        // Group request indices by repo_path.
+        let mut repo_groups: HashMap<&Path, Vec<usize>> = HashMap::new();
+        for (idx, req) in requests.iter().enumerate() {
+            repo_groups.entry(req.repo_path.as_path()).or_default().push(idx);
+        }
+
+        // Pre-allocate results with Unknown as default.
+        let mut results: Vec<Option<BranchState>> = vec![None; requests.len()];
+
+        for (repo_path, indices) in &repo_groups {
+            // Collect all branch names for this repo.
+            let branch_names: Vec<&str> =
+                indices.iter().map(|&i| requests[i].branch_name.as_str()).collect();
+
+            let mut cmd = Command::new("git");
+            cmd.args(["-C"]).arg(repo_path).args(["branch", "--list"]);
+            for name in &branch_names {
+                cmd.arg(name);
+            }
+
+            match cmd.output() {
+                Ok(output) if output.status.success() => {
+                    // Parse output lines: each existing branch appears as a line,
+                    // possibly prefixed with `* ` for the current branch.
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let found_branches: Vec<String> = stdout
+                        .lines()
+                        .map(|line| {
+                            line.trim().strip_prefix("* ").unwrap_or(line.trim()).to_string()
+                        })
+                        .filter(|s| !s.is_empty())
+                        .collect();
+
+                    for &idx in indices {
+                        let name = &requests[idx].branch_name;
+                        if found_branches.iter().any(|b| b == name) {
+                            results[idx] = Some(BranchState::Exists);
+                        } else {
+                            results[idx] = Some(BranchState::Deleted);
+                        }
+                    }
+                }
+                _ => {
+                    // Git command failed for this repo -- mark all as Unknown.
+                    for &idx in indices {
+                        results[idx] = Some(BranchState::Unknown);
+                    }
+                }
+            }
+        }
+
+        requests
+            .iter()
+            .zip(results)
+            .map(|(req, state)| BranchCheckResult {
+                request: req.clone(),
+                state: state.unwrap_or(BranchState::Unknown),
+            })
+            .collect()
     }
 
     /// Check whether `git` is available on the system PATH.
     pub fn is_available() -> bool {
-        todo!()
+        Command::new("git").arg("--version").output().is_ok_and(|output| output.status.success())
     }
 }
 
