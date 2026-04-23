@@ -39,8 +39,60 @@ pub struct EnvReport {
 /// with all detected characteristics.
 ///
 /// If the directory does not exist or is not readable, returns an empty report.
-pub fn detect_env(_dir: &Path) -> EnvReport {
-    todo!()
+pub fn detect_env(dir: &Path) -> EnvReport {
+    if !dir.exists() || !dir.is_dir() {
+        return EnvReport { kinds: vec![] };
+    }
+
+    let mut kinds = Vec::new();
+
+    // Git: .git (file or directory)
+    if dir.join(".git").exists() {
+        kinds.push(EnvKind::Git);
+    }
+
+    // Node: package.json
+    if dir.join("package.json").exists() {
+        kinds.push(EnvKind::Node);
+    }
+
+    // Python: pyproject.toml, setup.py, requirements.txt
+    if dir.join("pyproject.toml").exists()
+        || dir.join("setup.py").exists()
+        || dir.join("requirements.txt").exists()
+    {
+        kinds.push(EnvKind::Python);
+    }
+
+    // Rust: Cargo.toml
+    if dir.join("Cargo.toml").exists() {
+        kinds.push(EnvKind::Rust);
+    }
+
+    // Go: go.mod
+    if dir.join("go.mod").exists() {
+        kinds.push(EnvKind::Go);
+    }
+
+    // Java: pom.xml, build.gradle, build.gradle.kts
+    if dir.join("pom.xml").exists()
+        || dir.join("build.gradle").exists()
+        || dir.join("build.gradle.kts").exists()
+    {
+        kinds.push(EnvKind::Java);
+    }
+
+    // Nix: flake.nix, shell.nix, default.nix
+    if dir.join("flake.nix").exists()
+        || dir.join("shell.nix").exists()
+        || dir.join("default.nix").exists()
+    {
+        kinds.push(EnvKind::Nix);
+    }
+
+    kinds.sort();
+
+    EnvReport { kinds }
 }
 
 #[cfg(test)]
