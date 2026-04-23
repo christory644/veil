@@ -9,7 +9,6 @@
 
 mod action_dispatch;
 mod bootstrap;
-#[allow(dead_code)]
 mod config_reload;
 mod egui_integration;
 #[allow(dead_code)]
@@ -33,10 +32,11 @@ use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
+use veil_core::config::{AppConfig, ConfigEvent, ConfigWatcher};
 use veil_core::focus::{route_key_event, FocusManager, KeyRoute};
 use veil_core::keyboard::{self, KeybindingRegistry};
 use veil_core::lifecycle::ShutdownSignal;
-use veil_core::message::Channels;
+use veil_core::message::{Channels, StateUpdate};
 use veil_core::state::AppState;
 
 use crate::action_dispatch::ActionEffect;
@@ -66,21 +66,47 @@ struct VeilApp {
     window_size: (u32, u32),
     /// PTY manager -- owns all active PTY instances.
     pty_manager: Option<veil_pty::PtyManager>,
+    /// The current application config (loaded at startup, updated on reload).
+    app_config: AppConfig,
+    /// Path to the config file, if one was found.
+    config_path: Option<std::path::PathBuf>,
+    /// Config file watcher for hot-reload. Started after window creation.
+    config_watcher: Option<ConfigWatcher>,
 }
 
 impl VeilApp {
     fn new() -> Self {
+        let (config, config_path) = veil_core::config::load_or_default();
+
+        let mut app_state = AppState::new();
+        app_state.apply_config(&config);
+
+        let mut keybindings = KeybindingRegistry::with_defaults();
+        let kb_warnings = keyboard::apply_keybindings_config(&mut keybindings, &config.keybindings);
+        for w in &kb_warnings {
+            tracing::warn!("keybinding config warning: {w}");
+        }
+
+        if let Some(ref path) = config_path {
+            tracing::info!("loaded config from {}", path.display());
+        } else {
+            tracing::info!("no config file found, using defaults");
+        }
+
         Self {
             window: None,
             renderer: None,
-            app_state: AppState::new(),
+            app_state,
             channels: Channels::new(256),
             shutdown: ShutdownSignal::new(),
-            keybindings: KeybindingRegistry::with_defaults(),
+            keybindings,
             focus: FocusManager::new(),
             current_modifiers: keyboard::Modifiers::default(),
             window_size: (1280, 800),
             pty_manager: None,
+            app_config: config,
+            config_path,
+            config_watcher: None,
         }
     }
 }
@@ -114,6 +140,46 @@ impl ApplicationHandler for VeilApp {
             tracing::error!("failed to spawn initial PTY: {e}");
         }
         self.pty_manager = Some(pty_manager);
+
+        // Start config file watcher if a config path was discovered.
+        if let Some(ref config_path) = self.config_path {
+            let (config_event_tx, mut config_event_rx) =
+                tokio::sync::mpsc::channel::<ConfigEvent>(16);
+
+            match ConfigWatcher::new(config_path.clone(), self.app_config.clone(), config_event_tx)
+            {
+                Ok(mut watcher) => {
+                    if let Err(e) = watcher.start(self.shutdown.handle()) {
+                        tracing::warn!("failed to start config watcher: {e}");
+                    } else {
+                        tracing::info!("config watcher started for {}", config_path.display());
+                        self.config_watcher = Some(watcher);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("failed to create config watcher: {e}");
+                }
+            }
+
+            // Bridge: forward ConfigEvents to state_tx as StateUpdate::ConfigReloaded.
+            let state_tx = self.channels.state_tx.clone();
+            std::thread::spawn(move || {
+                while let Some(event) = config_event_rx.blocking_recv() {
+                    let update = match event {
+                        ConfigEvent::Reloaded { config, delta, warnings } => {
+                            StateUpdate::ConfigReloaded { config, delta, warnings }
+                        }
+                        ConfigEvent::Error(e) => {
+                            tracing::warn!("config reload error: {e}");
+                            continue;
+                        }
+                    };
+                    if state_tx.blocking_send(update).is_err() {
+                        break; // receiver dropped
+                    }
+                }
+            });
+        }
     }
 
     fn window_event(
@@ -192,8 +258,49 @@ impl ApplicationHandler for VeilApp {
 }
 
 impl VeilApp {
+    /// Drain pending state updates from the channel and apply them.
+    fn drain_state_updates(&mut self) {
+        while let Ok(update) = self.channels.state_rx.try_recv() {
+            if let StateUpdate::ConfigReloaded { config, delta, warnings } = update {
+                for w in &warnings {
+                    tracing::warn!("config validation: {}: {}", w.field, w.message);
+                }
+
+                let needs_redraw = config_reload::apply_config_reload(
+                    &config,
+                    &delta,
+                    &mut self.app_state,
+                    &mut self.keybindings,
+                );
+
+                if delta.font_changed {
+                    tracing::info!(
+                        "font config changed (family={:?}, size={}) -- \
+                         font re-init will apply when font pipeline is wired",
+                        config.terminal.font_family,
+                        config.terminal.font_size,
+                    );
+                }
+
+                if delta.theme_changed {
+                    tracing::info!("theme changed to {:?}", config.general.theme);
+                }
+
+                self.app_config = *config;
+
+                if needs_redraw {
+                    if let Some(ref window) = self.window {
+                        window.request_redraw();
+                    }
+                }
+            }
+        }
+    }
+
     /// Run a single frame: build geometry, execute sidebar UI, render, request next frame.
     fn handle_redraw(&mut self, event_loop: &ActiveEventLoop) {
+        self.drain_state_updates();
+
         let frame_geometry = build_frame_geometry(
             &self.app_state,
             &self.focus,
