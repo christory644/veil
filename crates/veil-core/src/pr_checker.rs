@@ -33,8 +33,43 @@ pub struct PrCheckResult {
 /// Expects a JSON string containing `"state":"OPEN"`, `"state":"MERGED"`,
 /// or `"state":"CLOSED"`. Uses manual parsing to avoid a `serde_json`
 /// runtime dependency in veil-core.
-pub fn parse_pr_state_json(_json: &str) -> PrState {
-    todo!()
+pub fn parse_pr_state_json(json: &str) -> PrState {
+    // Find the "state" key in the JSON. We look for `"state"` followed by
+    // optional whitespace, a colon, optional whitespace, then a quoted string value.
+    let Some(state_key_pos) = json.find("\"state\"") else {
+        return PrState::Unknown;
+    };
+
+    // Move past `"state"`
+    let after_key = &json[state_key_pos + "\"state\"".len()..];
+
+    // Skip whitespace, then expect a colon
+    let after_key = after_key.trim_start();
+    let Some(after_colon) = after_key.strip_prefix(':') else {
+        return PrState::Unknown;
+    };
+
+    // Skip whitespace after colon
+    let after_colon = after_colon.trim_start();
+
+    // The value must be a quoted string; anything else (null, number, etc.) is Unknown
+    let Some(after_quote) = after_colon.strip_prefix('"') else {
+        return PrState::Unknown;
+    };
+
+    // Extract the value up to the closing quote
+    let Some(end_quote) = after_quote.find('"') else {
+        return PrState::Unknown;
+    };
+
+    let value = &after_quote[..end_quote];
+
+    match value {
+        "OPEN" => PrState::Open,
+        "MERGED" => PrState::Merged,
+        "CLOSED" => PrState::Closed,
+        _ => PrState::Unknown,
+    }
 }
 
 impl PrChecker {
@@ -42,20 +77,41 @@ impl PrChecker {
     ///
     /// Runs `gh pr view <number> --json state` in the repo directory
     /// and parses the JSON output.
-    pub fn check_pr(_repo_path: &Path, _pr_number: u64) -> PrState {
-        todo!()
+    pub fn check_pr(repo_path: &Path, pr_number: u64) -> PrState {
+        let output = std::process::Command::new("gh")
+            .args(["pr", "view", &pr_number.to_string(), "--json", "state"])
+            .current_dir(repo_path)
+            .output();
+
+        match output {
+            Ok(out) if out.status.success() => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                parse_pr_state_json(&stdout)
+            }
+            _ => PrState::Unknown,
+        }
     }
 
     /// Check multiple PRs. Does NOT batch (each PR is a separate gh call)
     /// but respects a simple rate limit: if any call returns a rate-limit
     /// error, remaining checks return `Unknown`.
-    pub fn check_prs(_requests: &[PrCheckRequest]) -> Vec<PrCheckResult> {
-        todo!()
+    pub fn check_prs(requests: &[PrCheckRequest]) -> Vec<PrCheckResult> {
+        requests
+            .iter()
+            .map(|req| {
+                let state = Self::check_pr(&req.repo_path, req.pr_number);
+                PrCheckResult { request: req.clone(), state }
+            })
+            .collect()
     }
 
     /// Check whether `gh` is available and authenticated.
     pub fn is_available() -> bool {
-        todo!()
+        std::process::Command::new("gh")
+            .arg("--version")
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false)
     }
 }
 
