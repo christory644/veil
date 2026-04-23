@@ -5,6 +5,13 @@
 //! initial discovery, watches for file-system changes, and responds to
 //! `AppCommand::RefreshConversations`.
 
+use std::time::Duration;
+
+use tokio::sync::broadcast::error::TryRecvError;
+use tracing::{error, info, warn};
+use veil_aggregator::claude_code::ClaudeCodeAdapter;
+use veil_aggregator::registry::AdapterRegistry;
+use veil_aggregator::store::SessionStore;
 use veil_core::lifecycle::ShutdownHandle;
 use veil_core::message::{AppCommand, StateUpdate};
 
@@ -38,14 +45,151 @@ impl AggregatorHandle {
 ///
 /// Returns an `AggregatorHandle` that keeps the thread alive.
 pub fn start_aggregator(
-    _state_tx: tokio::sync::mpsc::Sender<StateUpdate>,
-    _command_rx: tokio::sync::broadcast::Receiver<AppCommand>,
-    _shutdown: ShutdownHandle,
+    state_tx: tokio::sync::mpsc::Sender<StateUpdate>,
+    mut command_rx: tokio::sync::broadcast::Receiver<AppCommand>,
+    shutdown: ShutdownHandle,
 ) -> AggregatorHandle {
-    let handle = std::thread::spawn(move || {
-        // TODO: implement aggregator actor loop
-    });
+    let handle = std::thread::Builder::new()
+        .name("aggregator".into())
+        .spawn(move || {
+            // --- Open SessionStore ---
+            let store = match open_session_store() {
+                Ok(store) => store,
+                Err(err) => {
+                    error!(%err, "failed to open session store, falling back to in-memory");
+                    match SessionStore::open_in_memory() {
+                        Ok(store) => store,
+                        Err(err) => {
+                            error!(%err, "failed to open in-memory session store, aborting aggregator");
+                            return;
+                        }
+                    }
+                }
+            };
+
+            // --- Build adapter registry ---
+            let registry = build_adapter_registry();
+            info!(adapters = ?registry.adapter_names(), "built adapter registry");
+
+            // --- Send cached sessions immediately (fast initial response) ---
+            send_sessions(&store, &state_tx);
+
+            // --- Run initial discovery in background ---
+            // Discovery can be slow with many session files. We run it on
+            // a separate thread so the command loop stays responsive.
+            let discovery_tx = spawn_discovery(registry);
+
+            // --- Poll loop ---
+            let mut pending_discovery: Option<std::sync::mpsc::Receiver<Vec<veil_core::session::SessionEntry>>> =
+                Some(discovery_tx);
+
+            loop {
+                if shutdown.is_triggered() {
+                    info!("aggregator shutting down");
+                    break;
+                }
+
+                // Check for discovery results from background thread.
+                if let Some(ref rx) = pending_discovery {
+                    match rx.try_recv() {
+                        Ok(entries) => {
+                            info!(count = entries.len(), "background discovery completed");
+                            if let Err(err) = store.upsert_sessions(&entries) {
+                                warn!(%err, "failed to upsert discovered sessions");
+                            }
+                            send_sessions(&store, &state_tx);
+                            pending_discovery = None;
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => { /* still running */ }
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            warn!("discovery thread disconnected without sending results");
+                            pending_discovery = None;
+                        }
+                    }
+                }
+
+                // Check for commands.
+                match command_rx.try_recv() {
+                    Ok(AppCommand::RefreshConversations) => {
+                        info!("received RefreshConversations command");
+                        // If a discovery is already running, wait for it to finish,
+                        // otherwise start a new one. Either way, send current state
+                        // immediately for responsiveness.
+                        if pending_discovery.is_none() {
+                            let registry = build_adapter_registry();
+                            pending_discovery = Some(spawn_discovery(registry));
+                        }
+                        send_sessions(&store, &state_tx);
+                    }
+                    Ok(_) | Err(TryRecvError::Empty) => { /* no actionable message */ }
+                    Err(TryRecvError::Lagged(n)) => {
+                        warn!(skipped = n, "aggregator command receiver lagged, skipped messages");
+                    }
+                    Err(TryRecvError::Closed) => {
+                        info!("command channel closed, aggregator exiting");
+                        break;
+                    }
+                }
+
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        })
+        .expect("failed to spawn aggregator thread");
+
     AggregatorHandle { thread: handle }
+}
+
+/// Open the session store at the platform data directory, or return an error.
+fn open_session_store() -> Result<SessionStore, Box<dyn std::error::Error>> {
+    let data_dir =
+        dirs::data_dir().map(|d| d.join("veil")).ok_or("dirs::data_dir() returned None")?;
+    std::fs::create_dir_all(&data_dir)?;
+    let db_path = data_dir.join("sessions.db");
+    info!(?db_path, "opening session store");
+    let store = SessionStore::open(&db_path)?;
+    Ok(store)
+}
+
+/// Send the current session list from the store via `state_tx`.
+fn send_sessions(store: &SessionStore, state_tx: &tokio::sync::mpsc::Sender<StateUpdate>) {
+    match store.list_sessions() {
+        Ok(sessions) => {
+            info!(count = sessions.len(), "sending ConversationsUpdated");
+            if let Err(err) = state_tx.blocking_send(StateUpdate::ConversationsUpdated(sessions)) {
+                error!(%err, "failed to send ConversationsUpdated");
+            }
+        }
+        Err(err) => {
+            error!(%err, "failed to list sessions from store");
+        }
+    }
+}
+
+/// Build a new adapter registry with all available adapters.
+fn build_adapter_registry() -> AdapterRegistry {
+    let mut registry = AdapterRegistry::new();
+    if let Some(adapter) = ClaudeCodeAdapter::new() {
+        registry.register(Box::new(adapter));
+    }
+    registry
+}
+
+/// Spawn a discovery thread and return a receiver for the results.
+///
+/// Discovery can be slow on machines with many session files, so it runs on
+/// a separate thread to avoid blocking the command loop.
+fn spawn_discovery(
+    registry: AdapterRegistry,
+) -> std::sync::mpsc::Receiver<Vec<veil_core::session::SessionEntry>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("aggregator-discover".into())
+        .spawn(move || {
+            let entries = registry.discover_all();
+            let _ = tx.send(entries);
+        })
+        .expect("failed to spawn discovery thread");
+    rx
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
