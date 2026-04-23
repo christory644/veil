@@ -110,6 +110,11 @@ pub fn compute_pane_cells(
     cell_width_px: u32,
     cell_height_px: u32,
 ) -> (u16, u16) {
+    debug_assert!(cell_width_px > 0, "cell_width_px must be positive");
+    debug_assert!(cell_height_px > 0, "cell_height_px must be positive");
+    if cell_width_px == 0 || cell_height_px == 0 {
+        return (1, 1);
+    }
     let cols = (pane_width_px / cell_width_px as f32).floor() as u16;
     let rows = (pane_height_px / cell_height_px as f32).floor() as u16;
     (cols.max(1), rows.max(1))
@@ -561,6 +566,25 @@ mod tests {
         let (cols, rows) = compute_pane_cells(0.0, 0.0, 8, 16);
         assert_eq!(cols, 1, "zero width should clamp to 1 col");
         assert_eq!(rows, 1, "zero height should clamp to 1 row");
+    }
+
+    /// Zero cell dimensions hit `debug_assert!` in debug builds, so this test
+    /// only exercises the release-mode early-return fallback.
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn compute_pane_cells_zero_cell_dimensions_returns_fallback() {
+        // Zero cell dimensions should return (1, 1) rather than u16::MAX
+        let (cols, rows) = compute_pane_cells(800.0, 600.0, 0, 16);
+        assert_eq!(cols, 1, "zero cell_width_px should return fallback");
+        assert_eq!(rows, 1, "zero cell_width_px should return fallback");
+
+        let (cols, rows) = compute_pane_cells(800.0, 600.0, 8, 0);
+        assert_eq!(cols, 1, "zero cell_height_px should return fallback");
+        assert_eq!(rows, 1, "zero cell_height_px should return fallback");
+
+        let (cols, rows) = compute_pane_cells(800.0, 600.0, 0, 0);
+        assert_eq!(cols, 1, "both zero should return fallback");
+        assert_eq!(rows, 1, "both zero should return fallback");
     }
 
     #[test]
