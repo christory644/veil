@@ -19,19 +19,23 @@ pub struct EguiIntegration {
 
 impl EguiIntegration {
     /// Create an `EguiIntegration` with full windowing and GPU support.
+    #[allow(clippy::cast_possible_truncation)] // scale_factor f64→f32 is intentional; display DPI fits in f32
     pub fn new(
         window: &winit::window::Window,
         device: &wgpu::Device,
         surface_format: wgpu::TextureFormat,
     ) -> Self {
         let ctx = egui::Context::default();
+        let native_ppp = window.scale_factor() as f32;
+        ctx.set_pixels_per_point(native_ppp);
+        let max_texture_side = device.limits().max_texture_dimension_2d as usize;
         let winit_state = egui_winit::State::new(
             ctx.clone(),
             ctx.viewport_id(),
             window,
-            None, // native_pixels_per_point: auto-detect
+            Some(native_ppp),
             None, // theme: auto-detect
-            None, // max_texture_side: auto-detect
+            Some(max_texture_side),
         );
         let wgpu_renderer = egui_wgpu::Renderer::new(
             device,
@@ -40,7 +44,7 @@ impl EguiIntegration {
                 msaa_samples: 1,
                 depth_stencil_format: None,
                 dithering: false,
-                predictable_texture_filtering: false,
+                predictable_texture_filtering: true,
             },
         );
         Self { ctx, winit_state: Some(winit_state), wgpu_renderer: Some(wgpu_renderer) }
@@ -95,6 +99,7 @@ impl EguiIntegration {
     /// with `LoadOp::Load` to composite the sidebar on top of terminal quads.
     ///
     /// No-op if the wgpu renderer is not available (headless mode).
+    #[allow(clippy::cast_precision_loss)] // surface dimensions u32→f32 for diagnostic logging only
     pub fn render(
         &mut self,
         device: &wgpu::Device,
@@ -109,6 +114,18 @@ impl EguiIntegration {
         };
 
         let pixels_per_point = self.ctx.pixels_per_point();
+        debug_assert!(
+            pixels_per_point > 0.0,
+            "pixels_per_point must be positive, got {pixels_per_point}"
+        );
+        tracing::debug!(
+            pixels_per_point,
+            surface_width = surface_size[0],
+            surface_height = surface_size[1],
+            screen_points_w = surface_size[0] as f32 / pixels_per_point,
+            screen_points_h = surface_size[1] as f32 / pixels_per_point,
+            "egui ScreenDescriptor"
+        );
         let screen_descriptor =
             egui_wgpu::ScreenDescriptor { size_in_pixels: surface_size, pixels_per_point };
 
@@ -165,20 +182,31 @@ impl EguiIntegration {
 
     /// Create a headless `EguiIntegration` with a specific scale factor.
     ///
-    /// Mirrors what `EguiIntegration::new()` should do: initialize the egui
+    /// Mirrors what `EguiIntegration::new()` does: initialize the egui
     /// context with the given `native_pixels_per_point` so that
     /// `ctx.pixels_per_point()` returns the correct value from the first frame.
-    ///
-    /// TODO(VEI-84): Once the production constructor passes `native_pixels_per_point`
-    /// to `State::new()` and calls `ctx.set_pixels_per_point()`, this test helper
-    /// should mirror that behavior.
     fn new_headless_with_scale(native_pixels_per_point: f32) -> Self {
         let ctx = egui::Context::default();
-        // Currently does NOT set pixels_per_point — this is the bug VEI-84 fixes.
-        // The production `new()` should call:
-        //   ctx.set_pixels_per_point(native_pixels_per_point);
-        // but doesn't yet, so tests using this helper will fail.
-        let _ = native_pixels_per_point;
+
+        // Seed the context with the correct native_pixels_per_point by running
+        // an initial frame that includes viewport info. This mirrors what the
+        // production constructor does via `State::new()` + `set_pixels_per_point()`.
+        let viewport_info = egui::ViewportInfo {
+            native_pixels_per_point: Some(native_pixels_per_point),
+            ..Default::default()
+        };
+        let mut viewports = egui::ViewportIdMap::default();
+        viewports.insert(egui::ViewportId::ROOT, viewport_info);
+        let seed_input = egui::RawInput {
+            viewports,
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::Vec2::new(1280.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(seed_input, |_ui| {});
+
         Self { ctx, winit_state: None, wgpu_renderer: None }
     }
 
