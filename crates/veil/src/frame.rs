@@ -5,6 +5,7 @@ use veil_core::focus::FocusManager;
 use veil_core::layout::{compute_layout, Rect};
 use veil_core::state::AppState;
 
+use crate::font::text_vertex::TextVertex;
 use crate::quad_builder::{
     build_cell_background_quads, build_cursor_quad, build_divider_quads, build_focus_border,
     CellGridParams,
@@ -32,12 +33,29 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color { r: 0.05, g: 0.05, b: 0.05, a: 1.0
 
 /// Complete geometry for a single frame, ready for GPU upload.
 pub struct FrameGeometry {
-    /// All vertices for this frame.
+    /// All vertices for this frame (solid-color quads: backgrounds, cursor, dividers, borders).
     pub vertices: Vec<Vertex>,
-    /// All indices for this frame.
+    /// All indices for this frame (solid-color quads).
     pub indices: Vec<u16>,
+    /// Text vertices for textured glyph quads.
+    #[allow(dead_code)]
+    pub text_vertices: Vec<TextVertex>,
+    /// Text indices for textured glyph quads.
+    #[allow(dead_code)]
+    pub text_indices: Vec<u16>,
     /// The clear color (window background).
     pub clear_color: wgpu::Color,
+}
+
+/// Resolve a cell's foreground color to RGBA f32.
+///
+/// Uses the cell's explicit `fg_color` if set, otherwise the default foreground.
+///
+/// Stub: returns `[0.0, 0.0, 0.0, 1.0]` -- real implementation will convert
+/// the color.
+#[allow(dead_code)]
+pub fn cell_fg_color(_cell: &veil_ghostty::CellData, _default_fg: veil_ghostty::Color) -> [f32; 4] {
+    [0.0, 0.0, 0.0, 1.0]
 }
 
 /// Build all geometry for the current frame.
@@ -60,8 +78,13 @@ pub fn build_frame_geometry(
     window_width: u32,
     window_height: u32,
 ) -> FrameGeometry {
-    let empty =
-        || FrameGeometry { vertices: Vec::new(), indices: Vec::new(), clear_color: CLEAR_COLOR };
+    let empty = || FrameGeometry {
+        vertices: Vec::new(),
+        indices: Vec::new(),
+        text_vertices: Vec::new(),
+        text_indices: Vec::new(),
+        clear_color: CLEAR_COLOR,
+    };
 
     let Some(workspace) = app_state.active_workspace() else {
         return empty();
@@ -100,6 +123,7 @@ pub fn build_frame_geometry(
             cols: DEFAULT_COLS,
             rows: DEFAULT_ROWS,
             bg_color: BG_COLOR,
+            cell_bg_colors: None,
         };
         let (verts, indices) = build_cell_background_quads(&params);
         append(&verts, &indices);
@@ -122,7 +146,13 @@ pub fn build_frame_geometry(
         }
     }
 
-    FrameGeometry { vertices: all_vertices, indices: all_indices, clear_color: CLEAR_COLOR }
+    FrameGeometry {
+        vertices: all_vertices,
+        indices: all_indices,
+        text_vertices: Vec::new(),
+        text_indices: Vec::new(),
+        clear_color: CLEAR_COLOR,
+    }
 }
 
 #[cfg(test)]
@@ -311,5 +341,74 @@ mod tests {
                 && (v.color[3] - divider_color[3]).abs() < 0.01
         });
         assert!(!has_divider, "zoomed pane should have no dividers in output");
+    }
+
+    // ============================================================
+    // VEI-77 Unit 5: Text quad generation
+    // ============================================================
+
+    #[test]
+    fn frame_geometry_has_empty_text_fields_by_default() {
+        // Without terminal data or font pipeline, text vertices should be empty.
+        let (state, _ws_id, _pane_id, surface_id) = state_with_one_pane();
+        let mut focus = FocusManager::new();
+        focus.focus_surface(surface_id);
+        let geom = build_frame_geometry(&state, &focus, 1280, 800);
+        assert!(
+            geom.text_vertices.is_empty(),
+            "without font pipeline, text_vertices should be empty"
+        );
+        assert!(
+            geom.text_indices.is_empty(),
+            "without font pipeline, text_indices should be empty"
+        );
+    }
+
+    #[test]
+    fn frame_geometry_no_workspace_has_empty_text() {
+        let state = AppState::new();
+        let focus = FocusManager::new();
+        let geom = build_frame_geometry(&state, &focus, 1280, 800);
+        assert!(geom.text_vertices.is_empty());
+        assert!(geom.text_indices.is_empty());
+    }
+
+    #[test]
+    fn cell_fg_color_uses_cell_explicit_color() {
+        let cell = veil_ghostty::CellData {
+            graphemes: vec!['A'],
+            fg_color: Some(veil_ghostty::Color { r: 255, g: 0, b: 0 }),
+            bg_color: None,
+            bold: false,
+        };
+        let default_fg = veil_ghostty::Color { r: 200, g: 200, b: 200 };
+        let result = cell_fg_color(&cell, default_fg);
+        // Should use the cell's explicit red fg_color, not the default.
+        assert!(
+            (result[0] - 1.0).abs() < 0.01,
+            "cell with explicit red fg should have r=1.0, got {result:?}"
+        );
+        assert!(
+            result[1].abs() < 0.01,
+            "cell with explicit red fg should have g=0.0, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn cell_fg_color_falls_back_to_default() {
+        let cell = veil_ghostty::CellData {
+            graphemes: vec!['A'],
+            fg_color: None,
+            bg_color: None,
+            bold: false,
+        };
+        let default_fg = veil_ghostty::Color { r: 200, g: 200, b: 200 };
+        let result = cell_fg_color(&cell, default_fg);
+        let expected = 200.0 / 255.0;
+        // Should use the default foreground color.
+        assert!(
+            (result[0] - expected).abs() < 0.01,
+            "cell without explicit fg should use default, got {result:?}"
+        );
     }
 }

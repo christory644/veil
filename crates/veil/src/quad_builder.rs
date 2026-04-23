@@ -27,6 +27,19 @@ pub struct CellGridParams {
     pub rows: u16,
     /// Background color as RGBA.
     pub bg_color: [f32; 4],
+    /// Per-cell background colors. If provided, must be `cols * rows` in length.
+    /// Each entry is `None` (use `bg_color` default) or `Some(color)`.
+    #[allow(dead_code)]
+    pub cell_bg_colors: Option<Vec<Option<[f32; 4]>>>,
+}
+
+/// Convert a `Color` (u8 RGB) to `[f32; 4]` (normalized RGBA with alpha 1.0).
+///
+/// Stub: returns `[0.0, 0.0, 0.0, 1.0]` -- real implementation will normalize
+/// the color components.
+#[allow(dead_code)]
+pub fn color_to_f32(_color: veil_ghostty::Color) -> [f32; 4] {
+    [0.0, 0.0, 0.0, 1.0]
 }
 
 /// Build cell background quads for a single pane.
@@ -287,6 +300,7 @@ mod tests {
             cols: 80,
             rows: 24,
             bg_color: default_color(),
+            cell_bg_colors: None,
         };
         let (vertices, indices) = build_cell_background_quads(&params);
         let expected_quads = 80 * 24;
@@ -297,7 +311,13 @@ mod tests {
     #[test]
     fn cell_bg_single_cell_fills_rect() {
         let r = rect(10.0, 20.0, 100.0, 50.0);
-        let params = CellGridParams { rect: r, cols: 1, rows: 1, bg_color: [1.0, 0.0, 0.0, 1.0] };
+        let params = CellGridParams {
+            rect: r,
+            cols: 1,
+            rows: 1,
+            bg_color: [1.0, 0.0, 0.0, 1.0],
+            cell_bg_colors: None,
+        };
         let (vertices, indices) = build_cell_background_quads(&params);
         assert_eq!(vertices.len(), 4);
         assert_eq!(indices.len(), 6);
@@ -320,6 +340,7 @@ mod tests {
             cols: 0,
             rows: 24,
             bg_color: default_color(),
+            cell_bg_colors: None,
         };
         let (vertices, indices) = build_cell_background_quads(&params);
         assert!(vertices.is_empty());
@@ -333,6 +354,7 @@ mod tests {
             cols: 80,
             rows: 0,
             bg_color: default_color(),
+            cell_bg_colors: None,
         };
         let (vertices, indices) = build_cell_background_quads(&params);
         assert!(vertices.is_empty());
@@ -342,7 +364,13 @@ mod tests {
     #[test]
     fn cell_bg_vertices_within_rect() {
         let r = rect(50.0, 50.0, 400.0, 300.0);
-        let params = CellGridParams { rect: r, cols: 10, rows: 5, bg_color: default_color() };
+        let params = CellGridParams {
+            rect: r,
+            cols: 10,
+            rows: 5,
+            bg_color: default_color(),
+            cell_bg_colors: None,
+        };
         let (vertices, _) = build_cell_background_quads(&params);
         for v in &vertices {
             let [x, y] = v.position;
@@ -523,5 +551,155 @@ mod tests {
             assert!(x >= 10.0 - 0.01 && x <= 50.0 + 0.01, "x={x} should be in [10, 50]");
             assert!(y >= 20.0 - 0.01 && y <= 50.0 + 0.01, "y={y} should be in [20, 50]");
         }
+    }
+
+    // ============================================================
+    // VEI-77 Unit 3: Per-cell background colors
+    // ============================================================
+
+    #[test]
+    fn cell_bg_no_per_cell_colors_uses_default() {
+        // When cell_bg_colors is None, all cells should use bg_color.
+        let bg = [0.1, 0.1, 0.1, 1.0];
+        let params = CellGridParams {
+            rect: rect(0.0, 0.0, 100.0, 50.0),
+            cols: 2,
+            rows: 2,
+            bg_color: bg,
+            cell_bg_colors: None,
+        };
+        let (vertices, _) = build_cell_background_quads(&params);
+        for v in &vertices {
+            assert_eq!(v.color, bg, "without per-cell colors, all cells use bg_color");
+        }
+    }
+
+    #[test]
+    fn cell_bg_per_cell_colors_overrides_default() {
+        // When cell_bg_colors is Some, cells with Some(color) should use that color.
+        let bg = [0.1, 0.1, 0.1, 1.0];
+        let red = [1.0, 0.0, 0.0, 1.0];
+        let params = CellGridParams {
+            rect: rect(0.0, 0.0, 100.0, 50.0),
+            cols: 2,
+            rows: 1,
+            bg_color: bg,
+            cell_bg_colors: Some(vec![Some(red), None]),
+        };
+        let (vertices, _) = build_cell_background_quads(&params);
+        // First cell (vertices 0..4) should have red color.
+        for v in &vertices[0..4] {
+            assert_eq!(
+                v.color, red,
+                "cell (0,0) with explicit color should be red, got {:?}",
+                v.color
+            );
+        }
+        // Second cell (vertices 4..8) should have default bg color.
+        for v in &vertices[4..8] {
+            assert_eq!(v.color, bg, "cell (0,1) without explicit color should use default bg");
+        }
+    }
+
+    #[test]
+    fn cell_bg_per_cell_mixed_colors() {
+        let bg = [0.1, 0.1, 0.1, 1.0];
+        let red = [1.0, 0.0, 0.0, 1.0];
+        let green = [0.0, 1.0, 0.0, 1.0];
+        let params = CellGridParams {
+            rect: rect(0.0, 0.0, 300.0, 100.0),
+            cols: 3,
+            rows: 1,
+            bg_color: bg,
+            cell_bg_colors: Some(vec![Some(red), None, Some(green)]),
+        };
+        let (vertices, _) = build_cell_background_quads(&params);
+        // Cell 0 -> red
+        assert_eq!(vertices[0].color, red, "cell 0 should be red");
+        // Cell 1 -> default bg
+        assert_eq!(vertices[4].color, bg, "cell 1 should be default bg");
+        // Cell 2 -> green
+        assert_eq!(vertices[8].color, green, "cell 2 should be green");
+    }
+
+    #[test]
+    fn cell_bg_per_cell_colors_short_array_clamps() {
+        // If cell_bg_colors has fewer entries than cols*rows, excess cells
+        // should use default bg_color without panicking.
+        let bg = [0.1, 0.1, 0.1, 1.0];
+        let red = [1.0, 0.0, 0.0, 1.0];
+        let params = CellGridParams {
+            rect: rect(0.0, 0.0, 200.0, 100.0),
+            cols: 2,
+            rows: 2,
+            bg_color: bg,
+            cell_bg_colors: Some(vec![Some(red)]), // Only 1 entry for 4 cells
+        };
+        let (vertices, _) = build_cell_background_quads(&params);
+        // Should produce vertices for all 4 cells without panicking.
+        assert_eq!(vertices.len(), 4 * 4, "should still produce all 4 cells");
+        // First cell should be red.
+        assert_eq!(vertices[0].color, red, "cell 0 should be red");
+        // Remaining cells should fall back to default bg.
+        assert_eq!(vertices[4].color, bg, "cell 1 should be default bg (short array)");
+    }
+
+    // ============================================================
+    // VEI-77 Unit 3: color_to_f32 helper
+    // ============================================================
+
+    #[test]
+    fn color_to_f32_converts_white() {
+        let white = veil_ghostty::Color { r: 255, g: 255, b: 255 };
+        let result = color_to_f32(white);
+        assert!(
+            (result[0] - 1.0).abs() < 0.01
+                && (result[1] - 1.0).abs() < 0.01
+                && (result[2] - 1.0).abs() < 0.01
+                && (result[3] - 1.0).abs() < 0.01,
+            "white should convert to [1.0, 1.0, 1.0, 1.0], got {result:?}"
+        );
+    }
+
+    #[test]
+    fn color_to_f32_converts_black() {
+        let black = veil_ghostty::Color { r: 0, g: 0, b: 0 };
+        let result = color_to_f32(black);
+        assert!(
+            result[0].abs() < 0.01
+                && result[1].abs() < 0.01
+                && result[2].abs() < 0.01
+                && (result[3] - 1.0).abs() < 0.01,
+            "black should convert to [0.0, 0.0, 0.0, 1.0], got {result:?}"
+        );
+    }
+
+    #[test]
+    fn color_to_f32_converts_red() {
+        let red = veil_ghostty::Color { r: 255, g: 0, b: 0 };
+        let result = color_to_f32(red);
+        assert!(
+            (result[0] - 1.0).abs() < 0.01
+                && result[1].abs() < 0.01
+                && result[2].abs() < 0.01
+                && (result[3] - 1.0).abs() < 0.01,
+            "red should convert to [1.0, 0.0, 0.0, 1.0], got {result:?}"
+        );
+    }
+
+    #[test]
+    fn color_to_f32_normalizes_mid_value() {
+        let color = veil_ghostty::Color { r: 128, g: 64, b: 32 };
+        let result = color_to_f32(color);
+        let expected_r = 128.0 / 255.0;
+        let expected_g = 64.0 / 255.0;
+        let expected_b = 32.0 / 255.0;
+        assert!(
+            (result[0] - expected_r).abs() < 0.01
+                && (result[1] - expected_g).abs() < 0.01
+                && (result[2] - expected_b).abs() < 0.01
+                && (result[3] - 1.0).abs() < 0.01,
+            "mid-value color should be normalized, got {result:?}"
+        );
     }
 }

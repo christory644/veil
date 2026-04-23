@@ -72,6 +72,34 @@ pub struct RenderColors {
     pub cursor: Option<Color>,
 }
 
+/// Per-cell data snapshot extracted from the render state.
+#[derive(Debug, Clone, Default)]
+pub struct CellData {
+    /// The grapheme cluster as a list of chars. Empty for blank cells.
+    pub graphemes: Vec<char>,
+    /// Foreground color, if explicitly set by the terminal. `None` means use default.
+    pub fg_color: Option<Color>,
+    /// Background color, if explicitly set by the terminal. `None` means use default.
+    pub bg_color: Option<Color>,
+    /// Whether the cell has bold style.
+    pub bold: bool,
+}
+
+/// A snapshot of the entire terminal grid's cell data, extracted from the render state.
+#[derive(Debug, Clone)]
+pub struct CellGrid {
+    /// Number of columns.
+    pub cols: u16,
+    /// Number of rows.
+    pub rows: u16,
+    /// Per-cell data, indexed as `cells[row][col]`.
+    pub cells: Vec<Vec<CellData>>,
+    /// Cursor state within the viewport.
+    pub cursor: CursorState,
+    /// Color theme state.
+    pub colors: RenderColors,
+}
+
 /// Safe wrapper around a libghosty render state instance.
 ///
 /// Owns the underlying C handle and frees it on drop.

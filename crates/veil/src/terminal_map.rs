@@ -27,6 +27,12 @@ pub trait TerminalWriter {
 
     /// Query the terminal's current row count.
     fn rows(&self) -> u16;
+
+    /// Extract a snapshot of cell data for rendering.
+    /// Returns None if the terminal has no render state available.
+    fn render_cells(&mut self) -> Option<veil_ghostty::CellGrid> {
+        None
+    }
 }
 
 /// Manages Terminal instances keyed by `SurfaceId`.
@@ -97,6 +103,11 @@ impl TerminalMap {
     /// Whether the map is empty.
     pub fn is_empty(&self) -> bool {
         self.terminals.is_empty()
+    }
+
+    /// Iterate over surface IDs and their mutable terminal writers.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (SurfaceId, &mut Box<dyn TerminalWriter>)> {
+        self.terminals.iter_mut().map(|(&k, v)| (k, v))
     }
 }
 
@@ -769,5 +780,174 @@ mod tests {
             Some(surface1),
             "focus should remain on the non-exited surface"
         );
+    }
+
+    // ================================================================
+    // VEI-77 Unit 2: TerminalWriter render_cells() extension
+    // ================================================================
+
+    /// Helper to build a `CellGrid` with known content.
+    fn make_cell_grid(cols: u16, rows: u16, text: &str) -> veil_ghostty::CellGrid {
+        let mut cells = Vec::new();
+        let chars: Vec<char> = text.chars().collect();
+        let mut char_idx = 0;
+        for _row in 0..rows {
+            let mut row_cells = Vec::new();
+            for _col in 0..cols {
+                let cell = if char_idx < chars.len() {
+                    let ch = chars[char_idx];
+                    char_idx += 1;
+                    veil_ghostty::CellData {
+                        graphemes: vec![ch],
+                        fg_color: None,
+                        bg_color: None,
+                        bold: false,
+                    }
+                } else {
+                    veil_ghostty::CellData::default()
+                };
+                row_cells.push(cell);
+            }
+            cells.push(row_cells);
+        }
+        veil_ghostty::CellGrid {
+            cols,
+            rows,
+            cells,
+            cursor: veil_ghostty::CursorState {
+                in_viewport: true,
+                x: 0,
+                y: 0,
+                visible: true,
+                blinking: false,
+                style: veil_ghostty::CursorStyle::Block,
+                password_input: false,
+            },
+            colors: veil_ghostty::RenderColors {
+                background: veil_ghostty::Color { r: 0, g: 0, b: 0 },
+                foreground: veil_ghostty::Color { r: 255, g: 255, b: 255 },
+                cursor: None,
+            },
+        }
+    }
+
+    /// Mock that supports returning a configurable `CellGrid` from `render_cells()`.
+    struct CellGridMockWriter {
+        cols: u16,
+        rows: u16,
+        cell_grid: Option<veil_ghostty::CellGrid>,
+    }
+
+    impl CellGridMockWriter {
+        fn with_grid(grid: veil_ghostty::CellGrid) -> Self {
+            Self { cols: grid.cols, rows: grid.rows, cell_grid: Some(grid) }
+        }
+
+        fn without_grid(cols: u16, rows: u16) -> Self {
+            Self { cols, rows, cell_grid: None }
+        }
+    }
+
+    impl TerminalWriter for CellGridMockWriter {
+        fn write_vt(&mut self, _data: &[u8]) {}
+        fn resize(
+            &mut self,
+            cols: u16,
+            rows: u16,
+            _cell_width_px: u32,
+            _cell_height_px: u32,
+        ) -> Result<(), String> {
+            self.cols = cols;
+            self.rows = rows;
+            Ok(())
+        }
+        fn cols(&self) -> u16 {
+            self.cols
+        }
+        fn rows(&self) -> u16 {
+            self.rows
+        }
+        fn render_cells(&mut self) -> Option<veil_ghostty::CellGrid> {
+            self.cell_grid.clone()
+        }
+    }
+
+    #[test]
+    fn render_cells_default_returns_none() {
+        // The default implementation of render_cells() returns None.
+        let (mut mock, _state) = make_mock(80, 24);
+        let result = mock.render_cells();
+        assert!(result.is_none(), "default render_cells() should return None");
+    }
+
+    #[test]
+    fn render_cells_mock_returns_configured_grid() {
+        let grid = make_cell_grid(80, 24, "Hello");
+        let mut mock = CellGridMockWriter::with_grid(grid);
+        let result = mock.render_cells();
+        assert!(result.is_some(), "mock with grid should return Some");
+        let grid = result.unwrap();
+        assert_eq!(grid.cols, 80);
+        assert_eq!(grid.rows, 24);
+        assert_eq!(grid.cells[0][0].graphemes, vec!['H']);
+        assert_eq!(grid.cells[0][1].graphemes, vec!['e']);
+    }
+
+    #[test]
+    fn render_cells_mock_without_grid_returns_none() {
+        let mut mock = CellGridMockWriter::without_grid(80, 24);
+        let result = mock.render_cells();
+        assert!(result.is_none(), "mock without grid should return None");
+    }
+
+    #[test]
+    fn terminal_map_render_cells_via_get_mut() {
+        let grid = make_cell_grid(80, 24, "Test");
+        let mut map = TerminalMap::new();
+        map.insert(SurfaceId::new(1), Box::new(CellGridMockWriter::with_grid(grid)));
+
+        let terminal = map.get_mut(SurfaceId::new(1)).expect("terminal should exist");
+        let result = terminal.render_cells();
+        assert!(result.is_some(), "render_cells via get_mut should return Some");
+        let grid = result.unwrap();
+        assert_eq!(grid.cells[0][0].graphemes, vec!['T']);
+    }
+
+    #[test]
+    fn terminal_map_mixed_some_none_render_cells() {
+        let grid = make_cell_grid(80, 24, "A");
+        let mut map = TerminalMap::new();
+        map.insert(SurfaceId::new(1), Box::new(CellGridMockWriter::with_grid(grid)));
+        map.insert(SurfaceId::new(2), Box::new(CellGridMockWriter::without_grid(80, 24)));
+
+        let t1 = map.get_mut(SurfaceId::new(1)).unwrap();
+        assert!(t1.render_cells().is_some(), "terminal 1 should have cell grid");
+
+        let t2 = map.get_mut(SurfaceId::new(2)).unwrap();
+        assert!(t2.render_cells().is_none(), "terminal 2 should not have cell grid");
+    }
+
+    #[test]
+    fn render_cells_grid_contains_cursor_state() {
+        let mut grid = make_cell_grid(80, 24, "");
+        grid.cursor.x = 5;
+        grid.cursor.y = 3;
+        grid.cursor.visible = true;
+        let mut mock = CellGridMockWriter::with_grid(grid);
+        let result = mock.render_cells().unwrap();
+        assert_eq!(result.cursor.x, 5);
+        assert_eq!(result.cursor.y, 3);
+        assert!(result.cursor.visible);
+    }
+
+    #[test]
+    fn render_cells_grid_contains_colors() {
+        let mut grid = make_cell_grid(80, 24, "");
+        grid.colors.foreground = veil_ghostty::Color { r: 200, g: 200, b: 200 };
+        grid.colors.background = veil_ghostty::Color { r: 30, g: 30, b: 30 };
+        let mut mock = CellGridMockWriter::with_grid(grid);
+        let result = mock.render_cells().unwrap();
+        assert_eq!(result.colors.foreground.r, 200);
+        assert_eq!(result.colors.background.r, 30);
     }
 }

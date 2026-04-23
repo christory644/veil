@@ -28,4 +28,6 @@ mod render_state;
 pub use terminal::{Screen, Terminal, TerminalConfig};
 
 #[cfg(not(no_libghosty))]
-pub use render_state::{Color, CursorState, CursorStyle, DirtyState, RenderColors, RenderState};
+pub use render_state::{
+    CellData, CellGrid, Color, CursorState, CursorStyle, DirtyState, RenderColors, RenderState,
+};

@@ -11,6 +11,8 @@ mod action_dispatch;
 mod bootstrap;
 #[allow(dead_code)]
 mod font;
+#[allow(dead_code)]
+mod font_pipeline;
 mod frame;
 mod key_translation;
 mod quad_builder;
