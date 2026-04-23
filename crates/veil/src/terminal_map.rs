@@ -7,6 +7,24 @@ use std::collections::HashMap;
 
 use veil_core::workspace::SurfaceId;
 
+/// Factory function to create a real terminal writer backed by libghosty.
+///
+/// Returns `None` if terminal creation fails or if libghosty is not available.
+/// The returned writer wraps a `veil_ghostty::Terminal` instance configured with
+/// the given cell dimensions and 10,000 lines of scrollback.
+#[cfg(not(no_libghosty))]
+pub fn create_ghostty_terminal(_cols: u16, _rows: u16) -> Option<Box<dyn TerminalWriter>> {
+    // RED stub: real implementation will wrap veil_ghostty::Terminal in GhosttyTerminalWriter.
+    None
+}
+
+/// Stub factory when libghosty is not available. Always returns `None`.
+#[cfg(no_libghosty)]
+pub fn create_ghostty_terminal(_cols: u16, _rows: u16) -> Option<Box<dyn TerminalWriter>> {
+    tracing::warn!("libghosty not available, terminal emulation disabled");
+    None
+}
+
 /// Abstraction over terminal state management.
 /// Real impl wraps `veil_ghostty::Terminal`. Tests use a mock.
 pub trait TerminalWriter {
@@ -949,5 +967,55 @@ mod tests {
         let result = mock.render_cells().unwrap();
         assert_eq!(result.colors.foreground.r, 200);
         assert_eq!(result.colors.background.r, 30);
+    }
+
+    // ================================================================
+    // VEI-81 Unit 1: GhosttyTerminalWriter via create_ghostty_terminal
+    // ================================================================
+
+    #[cfg(not(no_libghosty))]
+    #[test]
+    fn create_ghostty_terminal_happy_path() {
+        let writer = create_ghostty_terminal(80, 24);
+        assert!(writer.is_some(), "create_ghostty_terminal(80, 24) should return Some");
+    }
+
+    #[cfg(not(no_libghosty))]
+    #[test]
+    fn ghostty_terminal_writer_cols_rows() {
+        let writer =
+            create_ghostty_terminal(80, 24).expect("create_ghostty_terminal should succeed");
+        assert_eq!(writer.cols(), 80, "cols() should return 80 after creation with cols=80");
+        assert_eq!(writer.rows(), 24, "rows() should return 24 after creation with rows=24");
+    }
+
+    #[cfg(not(no_libghosty))]
+    #[test]
+    fn ghostty_terminal_writer_write_vt_no_panic() {
+        let mut writer =
+            create_ghostty_terminal(80, 24).expect("create_ghostty_terminal should succeed");
+        // Writing VT data should not panic. This verifies the FFI delegation works.
+        writer.write_vt(b"hello world");
+    }
+
+    #[cfg(not(no_libghosty))]
+    #[test]
+    fn ghostty_terminal_writer_resize() {
+        let mut writer =
+            create_ghostty_terminal(80, 24).expect("create_ghostty_terminal should succeed");
+        let result = writer.resize(120, 40, 8, 16);
+        assert!(result.is_ok(), "resize should succeed");
+        assert_eq!(writer.cols(), 120, "cols() should return 120 after resize");
+        assert_eq!(writer.rows(), 40, "rows() should return 40 after resize");
+    }
+
+    #[cfg(not(no_libghosty))]
+    #[test]
+    fn ghostty_terminal_writer_render_cells_returns_none() {
+        let mut writer =
+            create_ghostty_terminal(80, 24).expect("create_ghostty_terminal should succeed");
+        // MVP: render_cells() returns None before cell iteration FFI is wired (VEI-77).
+        let result = writer.render_cells();
+        assert!(result.is_none(), "render_cells() should return None in MVP (before cell FFI)");
     }
 }

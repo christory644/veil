@@ -57,6 +57,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt",
 tracing-appender = "0.2"
 ureq = { version = "3", features = ["json"] }
 
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(no_libghosty)'] }
+
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
