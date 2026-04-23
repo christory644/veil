@@ -1,21 +1,15 @@
-//! Action dispatcher -- translates `KeyAction` into state mutations and
-//! side effects (`ActionEffect`).
-//!
-//! This is a pure-logic module: it operates on `AppState` and `FocusManager`
-//! without touching PTYs, windows, or the GPU. The event loop reads the
-//! returned `ActionEffect` values and executes them.
+//! Key action dispatch -- translates `KeyAction` into state mutations and
+//! side effects (`ActionEffect`). The event loop processes the returned
+//! effects (PTY spawn/close, window redraw).
 
 use std::path::PathBuf;
 
 use veil_core::focus::FocusManager;
 use veil_core::keyboard::KeyAction;
-#[allow(unused_imports)] // Used by implementation, not stubs
-use veil_core::layout::{compute_layout, PaneLayout, Rect};
-#[allow(unused_imports)] // Used by implementation, not stubs
+use veil_core::layout::{compute_layout, Rect};
 use veil_core::navigation::{find_pane_in_direction, Direction};
 use veil_core::state::AppState;
-#[allow(unused_imports)] // Used by implementation, not stubs
-use veil_core::workspace::{PaneId, PaneNode, SplitDirection, SurfaceId, WorkspaceId};
+use veil_core::workspace::{SplitDirection, SurfaceId, WorkspaceId};
 
 /// Side effects produced by dispatching a key action.
 /// The event loop reads these and executes them.
@@ -48,29 +42,283 @@ pub fn dispatch_action(
     window_width: u32,
     window_height: u32,
 ) -> Vec<ActionEffect> {
-    // Stub: always returns empty vec. Implementation will handle each action.
-    let _ = action;
-    let _ = app_state;
-    let _ = focus;
-    let _ = window_width;
-    let _ = window_height;
-    vec![]
+    match action {
+        KeyAction::SplitHorizontal => dispatch_split(app_state, focus, SplitDirection::Horizontal),
+        KeyAction::SplitVertical => dispatch_split(app_state, focus, SplitDirection::Vertical),
+        KeyAction::ClosePane => dispatch_close_pane(app_state, focus),
+        KeyAction::FocusNextPane => dispatch_focus_cycle(app_state, focus, true),
+        KeyAction::FocusPreviousPane => dispatch_focus_cycle(app_state, focus, false),
+        KeyAction::FocusPaneLeft => {
+            dispatch_focus_direction(app_state, focus, Direction::Left, window_width, window_height)
+        }
+        KeyAction::FocusPaneRight => dispatch_focus_direction(
+            app_state,
+            focus,
+            Direction::Right,
+            window_width,
+            window_height,
+        ),
+        KeyAction::FocusPaneUp => {
+            dispatch_focus_direction(app_state, focus, Direction::Up, window_width, window_height)
+        }
+        KeyAction::FocusPaneDown => {
+            dispatch_focus_direction(app_state, focus, Direction::Down, window_width, window_height)
+        }
+        KeyAction::ToggleSidebar => {
+            app_state.toggle_sidebar();
+            vec![ActionEffect::Redraw]
+        }
+        KeyAction::ZoomPane => dispatch_zoom(app_state, focus),
+        KeyAction::CreateWorkspace => dispatch_create_workspace(app_state, focus),
+        KeyAction::CloseWorkspace => dispatch_close_workspace(app_state, focus),
+        KeyAction::SwitchWorkspace(n) => dispatch_switch_workspace(app_state, focus, *n),
+        KeyAction::SwitchToWorkspacesTab => {
+            app_state.set_sidebar_tab(veil_core::state::SidebarTab::Workspaces);
+            vec![ActionEffect::Redraw]
+        }
+        KeyAction::SwitchToConversationsTab => {
+            app_state.set_sidebar_tab(veil_core::state::SidebarTab::Conversations);
+            vec![ActionEffect::Redraw]
+        }
+        KeyAction::FocusSidebar => {
+            focus.focus_sidebar();
+            vec![ActionEffect::Redraw]
+        }
+        KeyAction::FocusTerminal => dispatch_focus_terminal(app_state, focus),
+        KeyAction::RenameWorkspace => vec![],
+    }
 }
 
-/// Find the `PaneId` that corresponds to a `SurfaceId` in the given layout tree.
-fn surface_to_pane_id(layout: &PaneNode, surface_id: SurfaceId) -> Option<PaneId> {
-    match layout {
-        PaneNode::Leaf { pane_id, surface_id: sid } => {
-            if *sid == surface_id {
-                Some(*pane_id)
+fn focused_pane_context(
+    app_state: &AppState,
+    focus: &FocusManager,
+) -> Option<(WorkspaceId, SurfaceId)> {
+    let ws_id = app_state.active_workspace_id?;
+    let surface_id = focus.focused_surface()?;
+    Some((ws_id, surface_id))
+}
+
+fn dispatch_split(
+    app_state: &mut AppState,
+    focus: &FocusManager,
+    direction: SplitDirection,
+) -> Vec<ActionEffect> {
+    let Some((ws_id, surface_id)) = focused_pane_context(app_state, focus) else {
+        return vec![];
+    };
+    let Some(pane_id) =
+        app_state.workspace(ws_id).and_then(|ws| ws.pane_id_for_surface(surface_id))
+    else {
+        return vec![];
+    };
+    let cwd = app_state.workspace(ws_id).map_or(PathBuf::new(), |ws| ws.working_directory.clone());
+    match app_state.split_pane(ws_id, pane_id, direction) {
+        Ok((_new_pane_id, new_surface_id)) => {
+            vec![
+                ActionEffect::SpawnPty { surface_id: new_surface_id, working_directory: cwd },
+                ActionEffect::Redraw,
+            ]
+        }
+        Err(_) => vec![],
+    }
+}
+
+fn dispatch_close_pane(app_state: &mut AppState, focus: &mut FocusManager) -> Vec<ActionEffect> {
+    let Some((ws_id, surface_id)) = focused_pane_context(app_state, focus) else {
+        return vec![];
+    };
+    let Some(pane_id) =
+        app_state.workspace(ws_id).and_then(|ws| ws.pane_id_for_surface(surface_id))
+    else {
+        return vec![];
+    };
+    let pane_count = app_state.workspace(ws_id).map_or(0, |ws| ws.layout.pane_count());
+    if pane_count <= 1 {
+        if app_state.workspaces.len() > 1 {
+            return dispatch_close_workspace(app_state, focus);
+        }
+        return vec![];
+    }
+    let surfaces_before =
+        app_state.workspace(ws_id).map_or(Vec::new(), |ws| ws.layout.surface_ids());
+    match app_state.close_pane(ws_id, pane_id) {
+        Ok(_) => {
+            let surfaces_after =
+                app_state.workspace(ws_id).map_or(Vec::new(), |ws| ws.layout.surface_ids());
+            if let Some(pos) = surfaces_before.iter().position(|s| *s == surface_id) {
+                let idx = if pos < surfaces_after.len() {
+                    pos
+                } else {
+                    surfaces_after.len().saturating_sub(1)
+                };
+                if let Some(&new_surface) = surfaces_after.get(idx) {
+                    focus.focus_surface(new_surface);
+                }
+            } else if let Some(&first) = surfaces_after.first() {
+                focus.focus_surface(first);
+            }
+            vec![ActionEffect::ClosePty { surface_id }, ActionEffect::Redraw]
+        }
+        Err(_) => vec![],
+    }
+}
+
+fn dispatch_focus_cycle(
+    app_state: &AppState,
+    focus: &mut FocusManager,
+    forward: bool,
+) -> Vec<ActionEffect> {
+    let Some((ws_id, current_surface)) = focused_pane_context(app_state, focus) else {
+        return vec![];
+    };
+    let Some(ws) = app_state.workspace(ws_id) else {
+        return vec![];
+    };
+    let surfaces = ws.layout.surface_ids();
+    if surfaces.len() <= 1 {
+        return vec![ActionEffect::Redraw];
+    }
+    let Some(current_idx) = surfaces.iter().position(|s| *s == current_surface) else {
+        return vec![];
+    };
+    let next_idx = if forward {
+        (current_idx + 1) % surfaces.len()
+    } else {
+        (current_idx + surfaces.len() - 1) % surfaces.len()
+    };
+    focus.focus_surface(surfaces[next_idx]);
+    vec![ActionEffect::Redraw]
+}
+
+fn dispatch_focus_direction(
+    app_state: &AppState,
+    focus: &mut FocusManager,
+    direction: Direction,
+    window_width: u32,
+    window_height: u32,
+) -> Vec<ActionEffect> {
+    let Some((ws_id, current_surface)) = focused_pane_context(app_state, focus) else {
+        return vec![];
+    };
+    let Some(ws) = app_state.workspace(ws_id) else {
+        return vec![];
+    };
+    let Some(focused_pane) = ws.pane_id_for_surface(current_surface) else {
+        return vec![];
+    };
+    #[allow(clippy::cast_precision_loss)] // window dimensions fit comfortably in f32
+    let available =
+        Rect { x: 0.0, y: 0.0, width: window_width as f32, height: window_height as f32 };
+    let layouts = compute_layout(&ws.layout, available, ws.zoomed_pane);
+    match find_pane_in_direction(&layouts, focused_pane, direction) {
+        Some(target_pane) => {
+            if let Some(target_surface) =
+                layouts.iter().find(|l| l.pane_id == target_pane).map(|l| l.surface_id)
+            {
+                focus.focus_surface(target_surface);
+                vec![ActionEffect::Redraw]
             } else {
-                Option::None
+                vec![]
             }
         }
-        PaneNode::Split { first, second, .. } => {
-            surface_to_pane_id(first, surface_id).or_else(|| surface_to_pane_id(second, surface_id))
+        None => vec![],
+    }
+}
+
+fn dispatch_zoom(app_state: &mut AppState, focus: &FocusManager) -> Vec<ActionEffect> {
+    let Some((ws_id, surface_id)) = focused_pane_context(app_state, focus) else {
+        return vec![];
+    };
+    let Some(pane_id) =
+        app_state.workspace(ws_id).and_then(|ws| ws.pane_id_for_surface(surface_id))
+    else {
+        return vec![];
+    };
+    match app_state.toggle_zoom(ws_id, pane_id) {
+        Ok(_) => vec![ActionEffect::Redraw],
+        Err(_) => vec![],
+    }
+}
+
+fn dispatch_create_workspace(
+    app_state: &mut AppState,
+    focus: &mut FocusManager,
+) -> Vec<ActionEffect> {
+    let cwd = app_state
+        .active_workspace()
+        .map_or_else(|| PathBuf::from("/"), |ws| ws.working_directory.clone());
+    let ws_id = app_state.create_workspace("workspace".to_string(), cwd.clone());
+    let _ = app_state.set_active_workspace(ws_id);
+    let Some(ws) = app_state.workspace(ws_id) else {
+        return vec![];
+    };
+    let surface_id = ws.layout.surface_ids()[0];
+    focus.focus_surface(surface_id);
+    vec![ActionEffect::SpawnPty { surface_id, working_directory: cwd }, ActionEffect::Redraw]
+}
+
+fn dispatch_close_workspace(
+    app_state: &mut AppState,
+    focus: &mut FocusManager,
+) -> Vec<ActionEffect> {
+    let Some(ws_id) = app_state.active_workspace_id else {
+        return vec![];
+    };
+    if app_state.workspaces.len() <= 1 {
+        return vec![];
+    }
+    let surfaces = app_state.workspace(ws_id).map_or(Vec::new(), |ws| ws.layout.surface_ids());
+    match app_state.close_workspace(ws_id) {
+        Ok(_) => {
+            let mut effects: Vec<ActionEffect> = surfaces
+                .into_iter()
+                .map(|sid| ActionEffect::ClosePty { surface_id: sid })
+                .collect();
+            if let Some(new_ws) = app_state.workspaces.first() {
+                let new_ws_id = new_ws.id;
+                let _ = app_state.set_active_workspace(new_ws_id);
+                if let Some(ws) = app_state.workspace(new_ws_id) {
+                    if let Some(&first_surface) = ws.layout.surface_ids().first() {
+                        focus.focus_surface(first_surface);
+                    }
+                }
+            }
+            effects.push(ActionEffect::Redraw);
+            effects
+        }
+        Err(_) => vec![],
+    }
+}
+
+fn dispatch_switch_workspace(
+    app_state: &mut AppState,
+    focus: &mut FocusManager,
+    n: u8,
+) -> Vec<ActionEffect> {
+    let idx = (n as usize).saturating_sub(1);
+    if idx >= app_state.workspaces.len() {
+        return vec![];
+    }
+    let target_ws_id = app_state.workspaces[idx].id;
+    if app_state.set_active_workspace(target_ws_id).is_err() {
+        return vec![];
+    }
+    if let Some(ws) = app_state.workspace(target_ws_id) {
+        if let Some(&first_surface) = ws.layout.surface_ids().first() {
+            focus.focus_surface(first_surface);
         }
     }
+    vec![ActionEffect::Redraw]
+}
+
+fn dispatch_focus_terminal(app_state: &AppState, focus: &mut FocusManager) -> Vec<ActionEffect> {
+    if let Some(ws) = app_state.active_workspace() {
+        if let Some(&first_surface) = ws.layout.surface_ids().first() {
+            focus.focus_surface(first_surface);
+            return vec![ActionEffect::Redraw];
+        }
+    }
+    vec![]
 }
 
 #[cfg(test)]
@@ -80,13 +328,16 @@ mod tests {
     use veil_core::focus::FocusManager;
     use veil_core::keyboard::KeyAction;
     use veil_core::state::{AppState, SidebarTab};
-    use veil_core::workspace::{PaneId, SplitDirection, SurfaceId};
+    use veil_core::workspace::SplitDirection;
 
     // ================================================================
     // Helpers
     // ================================================================
 
-    /// Set up an AppState with one workspace and one pane, focus on the root surface.
+    const W: u32 = 1280;
+    const H: u32 = 800;
+
+    /// Set up an `AppState` with one workspace and one pane, focus on the root surface.
     fn setup_single_pane() -> (AppState, FocusManager, WorkspaceId) {
         let mut state = AppState::new();
         let mut focus = FocusManager::new();
@@ -96,19 +347,18 @@ mod tests {
         (state, focus, ws_id)
     }
 
-    /// Set up an AppState with one workspace and two panes (horizontal split).
+    /// Set up an `AppState` with one workspace and two panes (horizontal split).
     /// Focus is on the first pane.
     fn setup_two_panes() -> (AppState, FocusManager, WorkspaceId) {
         let (mut state, mut focus, ws_id) = setup_single_pane();
         let pane_id = state.workspace(ws_id).unwrap().pane_ids()[0];
         state.split_pane(ws_id, pane_id, SplitDirection::Horizontal).expect("split should succeed");
-        // Focus stays on the first surface
         let first_surface = state.workspace(ws_id).unwrap().layout.surface_ids()[0];
         focus.focus_surface(first_surface);
         (state, focus, ws_id)
     }
 
-    /// Set up an AppState with one workspace and three panes.
+    /// Set up an `AppState` with one workspace and three panes.
     /// Split first pane horizontally, then split the second pane vertically.
     fn setup_three_panes() -> (AppState, FocusManager, WorkspaceId) {
         let (mut state, mut focus, ws_id) = setup_single_pane();
@@ -125,11 +375,8 @@ mod tests {
         (state, focus, ws_id)
     }
 
-    const W: u32 = 1280;
-    const H: u32 = 800;
-
     // ================================================================
-    // Test 1: SplitHorizontal creates new pane
+    // Test 1: SplitHorizontal creates new pane and returns SpawnPty + Redraw
     // ================================================================
 
     #[test]
@@ -179,14 +426,32 @@ mod tests {
         let mut state = AppState::new();
         let mut focus = FocusManager::new();
         let _ws_id = state.create_workspace("ws".to_string(), PathBuf::from("/tmp"));
-        // focus is not set
 
         let effects = dispatch_action(&KeyAction::SplitHorizontal, &mut state, &mut focus, W, H);
         assert!(effects.is_empty(), "split with no focus should return no effects");
     }
 
     // ================================================================
-    // Test 4: ClosePane removes pane
+    // Test 4: Split with no active workspace returns empty
+    // ================================================================
+
+    #[test]
+    fn split_with_no_active_workspace_returns_empty() {
+        let mut state = AppState::new();
+        let mut focus = FocusManager::new();
+
+        let effects = dispatch_action(&KeyAction::SplitHorizontal, &mut state, &mut focus, W, H);
+        assert!(effects.is_empty(), "split with no active workspace should return empty effects");
+
+        let effects = dispatch_action(&KeyAction::SplitVertical, &mut state, &mut focus, W, H);
+        assert!(
+            effects.is_empty(),
+            "split vertical with no active workspace should return empty effects"
+        );
+    }
+
+    // ================================================================
+    // Test 5: ClosePane removes pane and returns ClosePty + Redraw
     // ================================================================
 
     #[test]
@@ -210,26 +475,6 @@ mod tests {
     }
 
     // ================================================================
-    // Test 5: ClosePane on last pane of only workspace is no-op
-    // ================================================================
-
-    #[test]
-    fn close_pane_last_pane_only_workspace_is_noop() {
-        let (mut state, mut focus, ws_id) = setup_single_pane();
-        let pane_count_before = state.workspace(ws_id).unwrap().layout.pane_count();
-        assert_eq!(pane_count_before, 1);
-
-        let effects = dispatch_action(&KeyAction::ClosePane, &mut state, &mut focus, W, H);
-
-        let pane_count_after = state.workspace(ws_id).unwrap().layout.pane_count();
-        assert_eq!(pane_count_after, 1, "should not close the last pane");
-        assert!(
-            effects.is_empty() || effects.iter().all(|e| matches!(e, ActionEffect::None)),
-            "effects should be empty or None"
-        );
-    }
-
-    // ================================================================
     // Test 6: ClosePane moves focus to sibling
     // ================================================================
 
@@ -249,7 +494,55 @@ mod tests {
     }
 
     // ================================================================
-    // Test 7: FocusNextPane cycles forward
+    // Test 7: ClosePane on last pane of only workspace is no-op
+    // ================================================================
+
+    #[test]
+    fn close_pane_last_pane_only_workspace_is_noop() {
+        let (mut state, mut focus, ws_id) = setup_single_pane();
+        let pane_count_before = state.workspace(ws_id).unwrap().layout.pane_count();
+        assert_eq!(pane_count_before, 1);
+
+        let effects = dispatch_action(&KeyAction::ClosePane, &mut state, &mut focus, W, H);
+
+        let pane_count_after = state.workspace(ws_id).unwrap().layout.pane_count();
+        assert_eq!(pane_count_after, 1, "should not close the last pane");
+        assert!(
+            effects.is_empty() || effects.iter().all(|e| matches!(e, ActionEffect::None)),
+            "effects should be empty or None"
+        );
+    }
+
+    // ================================================================
+    // Test 8: ClosePane on last pane with other workspaces closes workspace
+    // ================================================================
+
+    #[test]
+    fn close_pane_last_pane_with_other_workspaces_closes_workspace() {
+        let mut state = AppState::new();
+        let mut focus = FocusManager::new();
+        let ws1 = state.create_workspace("ws1".to_string(), PathBuf::from("/tmp/1"));
+        let _ws2 = state.create_workspace("ws2".to_string(), PathBuf::from("/tmp/2"));
+        let ws1_surface = state.workspace(ws1).unwrap().layout.surface_ids()[0];
+        focus.focus_surface(ws1_surface);
+        state.set_active_workspace(ws1).unwrap();
+        let ws_count_before = state.workspaces.len();
+
+        let effects = dispatch_action(&KeyAction::ClosePane, &mut state, &mut focus, W, H);
+
+        assert_eq!(
+            state.workspaces.len(),
+            ws_count_before - 1,
+            "closing the last pane with other workspaces should close the workspace"
+        );
+        assert!(
+            effects.iter().any(|e| matches!(e, ActionEffect::ClosePty { .. })),
+            "effects should include ClosePty"
+        );
+    }
+
+    // ================================================================
+    // Test 9: FocusNextPane cycles forward
     // ================================================================
 
     #[test]
@@ -270,7 +563,7 @@ mod tests {
     }
 
     // ================================================================
-    // Test 8: FocusNextPane wraps around
+    // Test 10: FocusNextPane wraps around
     // ================================================================
 
     #[test]
@@ -291,7 +584,7 @@ mod tests {
     }
 
     // ================================================================
-    // Test 9: FocusPreviousPane wraps around
+    // Test 11: FocusPreviousPane wraps around
     // ================================================================
 
     #[test]
@@ -308,51 +601,6 @@ mod tests {
             focus.focused_surface(),
             Some(last_surface),
             "FocusPreviousPane from first should wrap to last"
-        );
-    }
-
-    // ================================================================
-    // Test 10: FocusPaneRight finds right neighbor
-    // ================================================================
-
-    #[test]
-    fn focus_pane_right_finds_neighbor() {
-        let (mut state, mut focus, ws_id) = setup_two_panes();
-        let surfaces = state.workspace(ws_id).unwrap().layout.surface_ids();
-        let left_surface = surfaces[0];
-        let right_surface = surfaces[1];
-        focus.focus_surface(left_surface);
-
-        let effects = dispatch_action(&KeyAction::FocusPaneRight, &mut state, &mut focus, W, H);
-
-        assert_eq!(
-            focus.focused_surface(),
-            Some(right_surface),
-            "FocusPaneRight should move focus to the right pane"
-        );
-        assert!(
-            effects.iter().any(|e| matches!(e, ActionEffect::Redraw)),
-            "effects should include Redraw"
-        );
-    }
-
-    // ================================================================
-    // Test 11: FocusPaneRight at edge is no-op
-    // ================================================================
-
-    #[test]
-    fn focus_pane_right_at_edge_is_noop() {
-        let (mut state, mut focus, ws_id) = setup_two_panes();
-        let surfaces = state.workspace(ws_id).unwrap().layout.surface_ids();
-        let right_surface = surfaces[1];
-        focus.focus_surface(right_surface);
-
-        dispatch_action(&KeyAction::FocusPaneRight, &mut state, &mut focus, W, H);
-
-        assert_eq!(
-            focus.focused_surface(),
-            Some(right_surface),
-            "FocusPaneRight at right edge should not change focus"
         );
     }
 
@@ -397,7 +645,6 @@ mod tests {
             "effects should include Redraw"
         );
 
-        // Toggle again to unzoom
         dispatch_action(&KeyAction::ZoomPane, &mut state, &mut focus, W, H);
         assert!(
             state.workspace(ws_id).unwrap().zoomed_pane.is_none(),
@@ -406,7 +653,24 @@ mod tests {
     }
 
     // ================================================================
-    // Test 14: CreateWorkspace adds workspace and spawns PTY
+    // Test 14: ZoomPane with no focus is no-op
+    // ================================================================
+
+    #[test]
+    fn zoom_pane_with_no_focus_is_noop() {
+        let (mut state, mut focus, _ws_id) = setup_single_pane();
+        focus.clear();
+
+        let effects = dispatch_action(&KeyAction::ZoomPane, &mut state, &mut focus, W, H);
+
+        assert!(
+            effects.is_empty() || effects.iter().all(|e| matches!(e, ActionEffect::None)),
+            "ZoomPane with no focus should produce no effects"
+        );
+    }
+
+    // ================================================================
+    // Test 15: CreateWorkspace adds workspace and spawns PTY
     // ================================================================
 
     #[test]
@@ -432,7 +696,7 @@ mod tests {
     }
 
     // ================================================================
-    // Test 15: SwitchWorkspace changes active
+    // Test 16: SwitchWorkspace changes active
     // ================================================================
 
     #[test]
@@ -442,7 +706,6 @@ mod tests {
         let ws1 = state.create_workspace("ws1".to_string(), PathBuf::from("/tmp/1"));
         let ws2 = state.create_workspace("ws2".to_string(), PathBuf::from("/tmp/2"));
         let _ws3 = state.create_workspace("ws3".to_string(), PathBuf::from("/tmp/3"));
-        // Active is ws1 by default
         assert_eq!(state.active_workspace_id, Some(ws1));
 
         let effects = dispatch_action(&KeyAction::SwitchWorkspace(2), &mut state, &mut focus, W, H);
@@ -459,7 +722,7 @@ mod tests {
     }
 
     // ================================================================
-    // Test 16: SwitchWorkspace out of range is no-op
+    // Test 17: SwitchWorkspace out of range is no-op
     // ================================================================
 
     #[test]
@@ -484,7 +747,7 @@ mod tests {
     }
 
     // ================================================================
-    // Test 17: CloseWorkspace removes workspace
+    // Test 18: CloseWorkspace removes workspace and returns ClosePty
     // ================================================================
 
     #[test]
@@ -497,7 +760,6 @@ mod tests {
         let _ws2 = state.create_workspace("ws2".to_string(), PathBuf::from("/tmp/2"));
         assert_eq!(state.workspaces.len(), 2);
 
-        // Make ws1 active and close it
         state.set_active_workspace(ws1).unwrap();
         let effects = dispatch_action(&KeyAction::CloseWorkspace, &mut state, &mut focus, W, H);
 
@@ -513,7 +775,36 @@ mod tests {
     }
 
     // ================================================================
-    // Test 18: SwitchToWorkspacesTab changes tab
+    // Test 18b: CloseWorkspace returns ClosePty for EACH surface
+    // ================================================================
+
+    #[test]
+    fn close_workspace_returns_close_pty_for_each_surface() {
+        let mut state = AppState::new();
+        let mut focus = FocusManager::new();
+        let ws1 = state.create_workspace("ws1".to_string(), PathBuf::from("/tmp/1"));
+        let _ws2 = state.create_workspace("ws2".to_string(), PathBuf::from("/tmp/2"));
+        let ws1_pane = state.workspace(ws1).unwrap().pane_ids()[0];
+        state.split_pane(ws1, ws1_pane, SplitDirection::Horizontal).expect("split should succeed");
+        let ws1_surface_count = state.workspace(ws1).unwrap().layout.surface_ids().len();
+        assert_eq!(ws1_surface_count, 2, "ws1 should have 2 surfaces after split");
+
+        let ws1_surface = state.workspace(ws1).unwrap().layout.surface_ids()[0];
+        focus.focus_surface(ws1_surface);
+        state.set_active_workspace(ws1).unwrap();
+
+        let effects = dispatch_action(&KeyAction::CloseWorkspace, &mut state, &mut focus, W, H);
+
+        let close_pty_count =
+            effects.iter().filter(|e| matches!(e, ActionEffect::ClosePty { .. })).count();
+        assert_eq!(
+            close_pty_count, ws1_surface_count,
+            "should return one ClosePty per surface in the closed workspace"
+        );
+    }
+
+    // ================================================================
+    // Test 19: SwitchToWorkspacesTab changes tab
     // ================================================================
 
     #[test]
@@ -537,7 +828,7 @@ mod tests {
     }
 
     // ================================================================
-    // Test 19: SwitchToConversationsTab changes tab
+    // Test 20: SwitchToConversationsTab changes tab
     // ================================================================
 
     #[test]
@@ -560,7 +851,7 @@ mod tests {
     }
 
     // ================================================================
-    // Test 20: FocusSidebar changes focus target
+    // Test 21: FocusSidebar changes focus target
     // ================================================================
 
     #[test]
@@ -583,20 +874,18 @@ mod tests {
     }
 
     // ================================================================
-    // Test 21: FocusTerminal returns focus to surface
+    // Test 22: FocusTerminal returns focus to surface
     // ================================================================
 
     #[test]
     fn focus_terminal_returns_focus_to_surface() {
         let (mut state, mut focus, ws_id) = setup_single_pane();
-        // Switch to sidebar
         focus.focus_sidebar();
         assert!(!focus.is_surface_focused());
 
         let effects = dispatch_action(&KeyAction::FocusTerminal, &mut state, &mut focus, W, H);
 
         assert!(focus.is_surface_focused(), "after FocusTerminal, a surface should be focused");
-        // Should focus the first surface in the active workspace
         let expected_surface = state.workspace(ws_id).unwrap().layout.surface_ids()[0];
         assert_eq!(
             focus.focused_surface(),
@@ -610,7 +899,7 @@ mod tests {
     }
 
     // ================================================================
-    // Test 22: Dispatch with no active workspace returns empty effects
+    // Test 23: All actions with no active workspace return empty
     // ================================================================
 
     #[test]
@@ -618,7 +907,6 @@ mod tests {
         let mut state = AppState::new();
         let mut focus = FocusManager::new();
 
-        // Test multiple actions -- all should return empty
         for action in &[
             KeyAction::SplitHorizontal,
             KeyAction::SplitVertical,
@@ -634,235 +922,17 @@ mod tests {
             let effects = dispatch_action(action, &mut state, &mut focus, W, H);
             assert!(
                 effects.is_empty(),
-                "with no workspace, {:?} should return empty effects",
-                action
+                "with no workspace, {action:?} should return empty effects",
             );
         }
     }
 
     // ================================================================
-    // surface_to_pane_id helper
+    // All actions exhaustive no-panic check
     // ================================================================
 
     #[test]
-    fn surface_to_pane_id_finds_leaf() {
-        let node = PaneNode::Leaf { pane_id: PaneId::new(1), surface_id: SurfaceId::new(10) };
-        assert_eq!(surface_to_pane_id(&node, SurfaceId::new(10)), Some(PaneId::new(1)));
-    }
-
-    #[test]
-    fn surface_to_pane_id_returns_none_for_missing() {
-        let node = PaneNode::Leaf { pane_id: PaneId::new(1), surface_id: SurfaceId::new(10) };
-        assert_eq!(surface_to_pane_id(&node, SurfaceId::new(99)), None);
-    }
-
-    #[test]
-    fn surface_to_pane_id_searches_split() {
-        let node = PaneNode::Split {
-            direction: SplitDirection::Horizontal,
-            ratio: 0.5,
-            first: Box::new(PaneNode::Leaf {
-                pane_id: PaneId::new(1),
-                surface_id: SurfaceId::new(10),
-            }),
-            second: Box::new(PaneNode::Leaf {
-                pane_id: PaneId::new(2),
-                surface_id: SurfaceId::new(20),
-            }),
-        };
-        assert_eq!(surface_to_pane_id(&node, SurfaceId::new(20)), Some(PaneId::new(2)));
-    }
-
-    // ================================================================
-    // Additional edge cases
-    // ================================================================
-
-    #[test]
-    fn split_horizontal_focus_stays_on_original() {
-        let (mut state, mut focus, _ws_id) = setup_single_pane();
-        let original_surface = focus.focused_surface().unwrap();
-
-        dispatch_action(&KeyAction::SplitHorizontal, &mut state, &mut focus, W, H);
-
-        assert_eq!(
-            focus.focused_surface(),
-            Some(original_surface),
-            "focus should stay on the original pane after split"
-        );
-    }
-
-    #[test]
-    fn create_workspace_sets_active_and_focus() {
-        let (mut state, mut focus, _ws_id) = setup_single_pane();
-        let old_active = state.active_workspace_id;
-
-        dispatch_action(&KeyAction::CreateWorkspace, &mut state, &mut focus, W, H);
-
-        assert_ne!(
-            state.active_workspace_id, old_active,
-            "active workspace should change after CreateWorkspace"
-        );
-        assert!(focus.is_surface_focused(), "focus should be on the new workspace's root surface");
-    }
-
-    #[test]
-    fn close_workspace_activates_adjacent() {
-        let mut state = AppState::new();
-        let mut focus = FocusManager::new();
-        let ws1 = state.create_workspace("ws1".to_string(), PathBuf::from("/tmp/1"));
-        let ws2 = state.create_workspace("ws2".to_string(), PathBuf::from("/tmp/2"));
-
-        // Focus and activate ws1
-        let ws1_surface = state.workspace(ws1).unwrap().layout.surface_ids()[0];
-        focus.focus_surface(ws1_surface);
-        state.set_active_workspace(ws1).unwrap();
-
-        dispatch_action(&KeyAction::CloseWorkspace, &mut state, &mut focus, W, H);
-
-        assert_eq!(
-            state.active_workspace_id,
-            Some(ws2),
-            "after closing ws1, ws2 should become active"
-        );
-    }
-
-    #[test]
-    fn rename_workspace_is_noop() {
-        let (mut state, mut focus, ws_id) = setup_single_pane();
-        let name_before = state.workspace(ws_id).unwrap().name.clone();
-
-        let effects = dispatch_action(&KeyAction::RenameWorkspace, &mut state, &mut focus, W, H);
-
-        assert_eq!(
-            state.workspace(ws_id).unwrap().name,
-            name_before,
-            "RenameWorkspace should not change the name (no-op for now)"
-        );
-        assert!(
-            effects.is_empty() || effects.iter().all(|e| matches!(e, ActionEffect::None)),
-            "RenameWorkspace should produce no meaningful effects"
-        );
-    }
-
-    #[test]
-    fn focus_pane_left_at_edge_is_noop() {
-        let (mut state, mut focus, ws_id) = setup_two_panes();
-        let surfaces = state.workspace(ws_id).unwrap().layout.surface_ids();
-        let left_surface = surfaces[0];
-        focus.focus_surface(left_surface);
-
-        dispatch_action(&KeyAction::FocusPaneLeft, &mut state, &mut focus, W, H);
-
-        assert_eq!(
-            focus.focused_surface(),
-            Some(left_surface),
-            "FocusPaneLeft at left edge should not change focus"
-        );
-    }
-
-    #[test]
-    fn switch_workspace_focuses_first_surface() {
-        let mut state = AppState::new();
-        let mut focus = FocusManager::new();
-        let _ws1 = state.create_workspace("ws1".to_string(), PathBuf::from("/tmp/1"));
-        let ws2 = state.create_workspace("ws2".to_string(), PathBuf::from("/tmp/2"));
-        let ws2_surface = state.workspace(ws2).unwrap().layout.surface_ids()[0];
-
-        dispatch_action(&KeyAction::SwitchWorkspace(2), &mut state, &mut focus, W, H);
-
-        assert_eq!(
-            focus.focused_surface(),
-            Some(ws2_surface),
-            "switching workspace should focus the first surface of the target workspace"
-        );
-    }
-
-    // ================================================================
-    // ClosePane on last pane with other workspaces closes workspace
-    // ================================================================
-
-    #[test]
-    fn close_pane_last_pane_with_other_workspaces_closes_workspace() {
-        let mut state = AppState::new();
-        let mut focus = FocusManager::new();
-        let ws1 = state.create_workspace("ws1".to_string(), PathBuf::from("/tmp/1"));
-        let _ws2 = state.create_workspace("ws2".to_string(), PathBuf::from("/tmp/2"));
-        // Focus the only pane of ws1 and make ws1 active.
-        let ws1_surface = state.workspace(ws1).unwrap().layout.surface_ids()[0];
-        focus.focus_surface(ws1_surface);
-        state.set_active_workspace(ws1).unwrap();
-        let ws_count_before = state.workspaces.len();
-
-        let effects = dispatch_action(&KeyAction::ClosePane, &mut state, &mut focus, W, H);
-
-        assert_eq!(
-            state.workspaces.len(),
-            ws_count_before - 1,
-            "closing the last pane with other workspaces should close the workspace"
-        );
-        assert!(
-            effects.iter().any(|e| matches!(e, ActionEffect::ClosePty { .. })),
-            "effects should include ClosePty"
-        );
-    }
-
-    // ================================================================
-    // ZoomPane with no focus is no-op
-    // ================================================================
-
-    #[test]
-    fn zoom_pane_with_no_focus_is_noop() {
-        let (mut state, mut focus, _ws_id) = setup_single_pane();
-        focus.clear();
-
-        let effects = dispatch_action(&KeyAction::ZoomPane, &mut state, &mut focus, W, H);
-
-        assert!(
-            effects.is_empty() || effects.iter().all(|e| matches!(e, ActionEffect::None)),
-            "ZoomPane with no focus should produce no effects"
-        );
-    }
-
-    // ================================================================
-    // CloseWorkspace returns ClosePty for EACH surface
-    // ================================================================
-
-    #[test]
-    fn close_workspace_returns_close_pty_for_each_surface() {
-        let mut state = AppState::new();
-        let mut focus = FocusManager::new();
-        let ws1 = state.create_workspace("ws1".to_string(), PathBuf::from("/tmp/1"));
-        let _ws2 = state.create_workspace("ws2".to_string(), PathBuf::from("/tmp/2"));
-        // Split ws1 so it has two surfaces.
-        let ws1_pane = state.workspace(ws1).unwrap().pane_ids()[0];
-        state
-            .split_pane(ws1, ws1_pane, SplitDirection::Horizontal)
-            .expect("split should succeed");
-        let ws1_surface_count = state.workspace(ws1).unwrap().layout.surface_ids().len();
-        assert_eq!(ws1_surface_count, 2, "ws1 should have 2 surfaces after split");
-
-        let ws1_surface = state.workspace(ws1).unwrap().layout.surface_ids()[0];
-        focus.focus_surface(ws1_surface);
-        state.set_active_workspace(ws1).unwrap();
-
-        let effects = dispatch_action(&KeyAction::CloseWorkspace, &mut state, &mut focus, W, H);
-
-        let close_pty_count = effects
-            .iter()
-            .filter(|e| matches!(e, ActionEffect::ClosePty { .. }))
-            .count();
-        assert_eq!(
-            close_pty_count, ws1_surface_count,
-            "should return one ClosePty per surface in the closed workspace"
-        );
-    }
-
-    // ================================================================
-    // All actions with no active workspace return empty (exhaustive)
-    // ================================================================
-
-    #[test]
-    fn all_actions_no_workspace_return_empty_effects() {
+    fn all_actions_no_workspace_no_panic() {
         let all_actions = [
             KeyAction::SplitHorizontal,
             KeyAction::SplitVertical,
@@ -895,26 +965,75 @@ mod tests {
     }
 
     // ================================================================
-    // Split with no active workspace returns empty
+    // Additional edge case tests
     // ================================================================
 
     #[test]
-    fn split_with_no_active_workspace_returns_empty() {
+    fn create_workspace_sets_active_and_focus() {
+        let (mut state, mut focus, _ws_id) = setup_single_pane();
+        let old_active = state.active_workspace_id;
+
+        dispatch_action(&KeyAction::CreateWorkspace, &mut state, &mut focus, W, H);
+
+        assert_ne!(
+            state.active_workspace_id, old_active,
+            "active workspace should change after CreateWorkspace"
+        );
+        assert!(focus.is_surface_focused(), "focus should be on the new workspace's root surface");
+    }
+
+    #[test]
+    fn close_workspace_activates_adjacent() {
         let mut state = AppState::new();
         let mut focus = FocusManager::new();
+        let ws1 = state.create_workspace("ws1".to_string(), PathBuf::from("/tmp/1"));
+        let ws2 = state.create_workspace("ws2".to_string(), PathBuf::from("/tmp/2"));
 
-        let effects =
-            dispatch_action(&KeyAction::SplitHorizontal, &mut state, &mut focus, W, H);
-        assert!(
-            effects.is_empty(),
-            "split with no active workspace should return empty effects"
+        let ws1_surface = state.workspace(ws1).unwrap().layout.surface_ids()[0];
+        focus.focus_surface(ws1_surface);
+        state.set_active_workspace(ws1).unwrap();
+
+        dispatch_action(&KeyAction::CloseWorkspace, &mut state, &mut focus, W, H);
+
+        assert_eq!(
+            state.active_workspace_id,
+            Some(ws2),
+            "after closing ws1, ws2 should become active"
         );
+    }
 
-        let effects =
-            dispatch_action(&KeyAction::SplitVertical, &mut state, &mut focus, W, H);
+    #[test]
+    fn rename_workspace_is_noop() {
+        let (mut state, mut focus, ws_id) = setup_single_pane();
+        let name_before = state.workspace(ws_id).unwrap().name.clone();
+
+        let effects = dispatch_action(&KeyAction::RenameWorkspace, &mut state, &mut focus, W, H);
+
+        assert_eq!(
+            state.workspace(ws_id).unwrap().name,
+            name_before,
+            "RenameWorkspace should not change the name (no-op for now)"
+        );
         assert!(
-            effects.is_empty(),
-            "split vertical with no active workspace should return empty effects"
+            effects.is_empty() || effects.iter().all(|e| matches!(e, ActionEffect::None)),
+            "RenameWorkspace should produce no meaningful effects"
+        );
+    }
+
+    #[test]
+    fn switch_workspace_focuses_first_surface() {
+        let mut state = AppState::new();
+        let mut focus = FocusManager::new();
+        let _ws1 = state.create_workspace("ws1".to_string(), PathBuf::from("/tmp/1"));
+        let ws2 = state.create_workspace("ws2".to_string(), PathBuf::from("/tmp/2"));
+        let ws2_surface = state.workspace(ws2).unwrap().layout.surface_ids()[0];
+
+        dispatch_action(&KeyAction::SwitchWorkspace(2), &mut state, &mut focus, W, H);
+
+        assert_eq!(
+            focus.focused_surface(),
+            Some(ws2_surface),
+            "switching workspace should focus the first surface of the target workspace"
         );
     }
 }

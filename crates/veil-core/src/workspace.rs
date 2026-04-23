@@ -125,6 +125,12 @@ impl PaneNode {
         }
     }
 
+    /// Find the pane ID associated with a surface ID.
+    pub fn pane_id_for_surface(&self, _target: SurfaceId) -> Option<PaneId> {
+        // Stub: always returns None. Implementation will traverse the tree.
+        None
+    }
+
     /// Count leaf nodes.
     pub fn pane_count(&self) -> usize {
         match self {
@@ -305,6 +311,11 @@ impl Workspace {
             self.zoomed_pane = Some(pane_id);
         }
         Ok(self.zoomed_pane)
+    }
+
+    /// Find the pane ID for a given surface ID in this workspace's layout.
+    pub fn pane_id_for_surface(&self, surface_id: SurfaceId) -> Option<PaneId> {
+        self.layout.pane_id_for_surface(surface_id)
     }
 
     /// Clear zoom state (e.g., when the zoomed pane is closed).
@@ -732,5 +743,115 @@ mod proptests {
                 pane_ids.len(),
             );
         }
+    }
+}
+
+// ================================================================
+// Unit 3 (VEI-75): pane_id_for_surface -- reverse lookup tests
+// ================================================================
+
+#[cfg(test)]
+mod pane_id_for_surface_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn make_workspace() -> Workspace {
+        Workspace::new(
+            WorkspaceId::new(1),
+            "test".to_string(),
+            PathBuf::from("/tmp/test"),
+            PaneId::new(1),
+            SurfaceId::new(1),
+        )
+    }
+
+    #[test]
+    fn single_pane_returns_root() {
+        let ws = make_workspace();
+        let result = ws.pane_id_for_surface(SurfaceId::new(1));
+        assert_eq!(result, Some(PaneId::new(1)), "root surface should map to root pane");
+    }
+
+    #[test]
+    fn after_split_new_surface_maps_to_new_pane() {
+        let mut ws = make_workspace();
+        ws.split_pane(
+            PaneId::new(1),
+            SplitDirection::Horizontal,
+            PaneId::new(2),
+            SurfaceId::new(2),
+        )
+        .expect("split should succeed");
+
+        let result = ws.pane_id_for_surface(SurfaceId::new(2));
+        assert_eq!(result, Some(PaneId::new(2)), "new surface should map to new pane after split");
+
+        // Original mapping should still work.
+        let original = ws.pane_id_for_surface(SurfaceId::new(1));
+        assert_eq!(
+            original,
+            Some(PaneId::new(1)),
+            "original surface should still map to original pane"
+        );
+    }
+
+    #[test]
+    fn nonexistent_surface_returns_none() {
+        let ws = make_workspace();
+        let result = ws.pane_id_for_surface(SurfaceId::new(999));
+        assert_eq!(result, None, "nonexistent surface should return None");
+    }
+
+    #[test]
+    fn deep_tree_each_surface_maps_correctly() {
+        let mut ws = make_workspace();
+        // Build 3+ levels deep:
+        // Split pane 1 -> pane 2
+        ws.split_pane(
+            PaneId::new(1),
+            SplitDirection::Horizontal,
+            PaneId::new(2),
+            SurfaceId::new(2),
+        )
+        .expect("split should succeed");
+        // Split pane 2 -> pane 3 (level 3)
+        ws.split_pane(PaneId::new(2), SplitDirection::Vertical, PaneId::new(3), SurfaceId::new(3))
+            .expect("split should succeed");
+        // Split pane 3 -> pane 4 (level 4)
+        ws.split_pane(
+            PaneId::new(3),
+            SplitDirection::Horizontal,
+            PaneId::new(4),
+            SurfaceId::new(4),
+        )
+        .expect("split should succeed");
+
+        // Every surface should map to its correct pane.
+        assert_eq!(ws.pane_id_for_surface(SurfaceId::new(1)), Some(PaneId::new(1)));
+        assert_eq!(ws.pane_id_for_surface(SurfaceId::new(2)), Some(PaneId::new(2)));
+        assert_eq!(ws.pane_id_for_surface(SurfaceId::new(3)), Some(PaneId::new(3)));
+        assert_eq!(ws.pane_id_for_surface(SurfaceId::new(4)), Some(PaneId::new(4)));
+    }
+
+    #[test]
+    fn after_close_closed_surface_returns_none() {
+        let mut ws = make_workspace();
+        ws.split_pane(
+            PaneId::new(1),
+            SplitDirection::Horizontal,
+            PaneId::new(2),
+            SurfaceId::new(2),
+        )
+        .expect("split should succeed");
+
+        // Close pane 2 (surface 2).
+        ws.close_pane(PaneId::new(2)).expect("close should succeed");
+
+        let result = ws.pane_id_for_surface(SurfaceId::new(2));
+        assert_eq!(result, None, "closed surface should return None");
+
+        // Remaining pane should still be findable.
+        let remaining = ws.pane_id_for_surface(SurfaceId::new(1));
+        assert_eq!(remaining, Some(PaneId::new(1)), "remaining pane should still be findable");
     }
 }

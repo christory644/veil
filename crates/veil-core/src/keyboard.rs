@@ -153,7 +153,7 @@ impl KeybindingRegistry {
         // Logo+[ -> FocusPreviousPane
         registry.bind(
             KeyInput {
-                key: Key::Named("[".to_string()),
+                key: Key::Character('['),
                 modifiers: Modifiers { logo: true, ..Default::default() },
             },
             KeyAction::FocusPreviousPane,
@@ -162,7 +162,7 @@ impl KeybindingRegistry {
         // Logo+] -> FocusNextPane
         registry.bind(
             KeyInput {
-                key: Key::Named("]".to_string()),
+                key: Key::Character(']'),
                 modifiers: Modifiers { logo: true, ..Default::default() },
             },
             KeyAction::FocusNextPane,
@@ -473,13 +473,29 @@ mod tests {
     #[test]
     fn defaults_include_focus_previous_pane() {
         let registry = KeybindingRegistry::with_defaults();
-        assert_eq!(registry.lookup(&logo_named("[")), Some(&KeyAction::FocusPreviousPane));
+        assert_eq!(registry.lookup(&logo_key('[')), Some(&KeyAction::FocusPreviousPane));
     }
 
     #[test]
     fn defaults_include_focus_next_pane() {
         let registry = KeybindingRegistry::with_defaults();
-        assert_eq!(registry.lookup(&logo_named("]")), Some(&KeyAction::FocusNextPane));
+        assert_eq!(registry.lookup(&logo_key(']')), Some(&KeyAction::FocusNextPane));
+    }
+
+    // VEI-75 Unit 5: old named key form no longer matches
+    #[test]
+    fn old_named_bracket_bindings_no_longer_match() {
+        let registry = KeybindingRegistry::with_defaults();
+        assert_eq!(
+            registry.lookup(&logo_named("[")),
+            None,
+            "Key::Named(\"[\") should no longer match after fix"
+        );
+        assert_eq!(
+            registry.lookup(&logo_named("]")),
+            None,
+            "Key::Named(\"]\") should no longer match after fix"
+        );
     }
 
     #[test]
