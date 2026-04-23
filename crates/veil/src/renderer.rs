@@ -30,20 +30,94 @@ struct WindowUniform {
 /// Created alongside `Renderer` at startup. Owns the `egui::Context` used
 /// for headless frame execution (via [`run_frame`]) and the platform/GPU
 /// integration needed for event translation and rendering.
-#[allow(dead_code)]
+///
+/// The `egui_winit::State` and `egui_wgpu::Renderer` fields are gated
+/// behind `Option` so that headless tests can construct an `EguiIntegration`
+/// without a window or GPU.
 pub struct EguiIntegration {
     /// The egui context. Public so the event loop can call `ctx.run()`.
     pub ctx: egui::Context,
+    /// Translates winit events into egui input. `None` in headless mode.
+    #[allow(dead_code)]
+    state: Option<egui_winit::State>,
+    /// Renders egui output to wgpu textures. `None` in headless mode.
+    egui_renderer: Option<egui_wgpu::Renderer>,
 }
 
 #[allow(dead_code)]
 impl EguiIntegration {
+    /// Create an `EguiIntegration` with full windowing and GPU support.
+    pub fn new(
+        window: &winit::window::Window,
+        device: &wgpu::Device,
+        surface_format: wgpu::TextureFormat,
+    ) -> Self {
+        let ctx = egui::Context::default();
+        let state = egui_winit::State::new(
+            ctx.clone(),
+            ctx.viewport_id(),
+            window,
+            None, // native_pixels_per_point: auto-detect
+            None, // theme: auto-detect
+            None, // max_texture_side: auto-detect
+        );
+        let egui_renderer = egui_wgpu::Renderer::new(
+            device,
+            surface_format,
+            egui_wgpu::RendererOptions {
+                msaa_samples: 1,
+                depth_stencil_format: None,
+                dithering: false,
+                predictable_texture_filtering: false,
+            },
+        );
+        Self { ctx, state: Some(state), egui_renderer: Some(egui_renderer) }
+    }
+
     /// Create a headless `EguiIntegration` (no GPU, no window).
     ///
-    /// Useful for tests. The real constructor ([`EguiIntegration::new`]) will
-    /// also initialize `egui_winit::State` and `egui_wgpu::Renderer`.
+    /// Useful for tests that only need `run_frame` without rendering.
     pub fn new_headless() -> Self {
-        Self { ctx: egui::Context::default() }
+        Self { ctx: egui::Context::default(), state: None, egui_renderer: None }
+    }
+
+    /// Feed a winit event to egui. Returns whether egui consumed it.
+    ///
+    /// No-op in headless mode (returns a default response).
+    pub fn on_window_event(
+        &mut self,
+        window: &winit::window::Window,
+        event: &winit::event::WindowEvent,
+    ) -> egui_winit::EventResponse {
+        if let Some(state) = &mut self.state {
+            state.on_window_event(window, event)
+        } else {
+            egui_winit::EventResponse { consumed: false, repaint: false }
+        }
+    }
+
+    /// Begin an egui frame. Returns the raw input to pass to `ctx.run()`.
+    ///
+    /// No-op in headless mode (returns default `RawInput`).
+    pub fn take_raw_input(&mut self, window: &winit::window::Window) -> egui::RawInput {
+        if let Some(state) = &mut self.state {
+            state.take_egui_input(window)
+        } else {
+            egui::RawInput::default()
+        }
+    }
+
+    /// Process egui output after a frame (cursor changes, clipboard, etc.).
+    ///
+    /// No-op in headless mode.
+    pub fn handle_platform_output(
+        &mut self,
+        window: &winit::window::Window,
+        platform_output: egui::PlatformOutput,
+    ) {
+        if let Some(state) = &mut self.state {
+            state.handle_platform_output(window, platform_output);
+        }
     }
 
     /// Run a single egui frame with the sidebar UI.
@@ -61,12 +135,8 @@ impl EguiIntegration {
         };
 
         let mut sidebar_response = SidebarResponse::default();
-        let full_output = self.ctx.run_ui(raw_input, |_ui| {
-            // TODO(VEI-78): call render_sidebar(ui, app_state) here.
-            // For now this is a stub -- returns default SidebarResponse and
-            // an empty egui frame (no shapes).
-            let _ = &app_state;
-            let _ = &mut sidebar_response;
+        let full_output = self.ctx.run_ui(raw_input, |ui| {
+            sidebar_response = veil_ui::sidebar::render_sidebar(ui, app_state);
         });
 
         (sidebar_response, full_output)
@@ -86,6 +156,9 @@ pub struct Renderer {
     window_uniform_buffer: wgpu::Buffer,
     window_bind_group: wgpu::BindGroup,
     size: (u32, u32),
+    /// egui integration for sidebar rendering.
+    #[allow(dead_code)]
+    pub egui: EguiIntegration,
 }
 
 /// Create the render pipeline with position+color vertex layout.
@@ -129,7 +202,7 @@ fn create_render_pipeline(
             mask: !0,
             alpha_to_coverage_enabled: false,
         },
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     })
 }
@@ -171,10 +244,7 @@ impl Renderer {
     ///
     /// This is async because wgpu adapter/device requests are async.
     pub async fn new(window: Arc<Window>) -> anyhow::Result<Self> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            ..Default::default()
-        });
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
 
         let surface = instance.create_surface(window.clone())?;
 
@@ -184,11 +254,9 @@ impl Renderer {
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
             })
-            .await
-            .ok_or_else(|| anyhow::anyhow!("no suitable GPU adapter"))?;
+            .await?;
 
-        let (device, queue) =
-            adapter.request_device(&wgpu::DeviceDescriptor::default(), None).await?;
+        let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor::default()).await?;
 
         let inner_size = window.inner_size();
         let width = inner_size.width.max(1);
@@ -236,12 +304,14 @@ impl Renderer {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("veil pipeline layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
         });
 
         let render_pipeline =
             create_render_pipeline(&device, &pipeline_layout, &shader, surface_format);
+
+        let egui = EguiIntegration::new(&window, &device, surface_format);
 
         Ok(Self {
             surface,
@@ -252,6 +322,7 @@ impl Renderer {
             window_uniform_buffer,
             window_bind_group,
             size: (width, height),
+            egui,
         })
     }
 
@@ -273,41 +344,45 @@ impl Renderer {
         self.queue.write_buffer(&self.window_uniform_buffer, 0, bytemuck::cast_slice(&[uniform]));
     }
 
-    /// Render a frame.
+    /// Render a complete frame: terminal geometry + optional egui overlay.
     ///
     /// 1. Get next surface texture
-    /// 2. Create texture view
-    /// 3. Build command encoder
-    /// 4. Begin render pass with clear color
-    /// 5. Set pipeline, bind group
-    /// 6. Upload vertex/index buffers from `FrameGeometry`
-    /// 7. Draw indexed
-    /// 8. Submit and present
+    /// 2. Create texture view and command encoder
+    /// 3. Terminal render pass (clear + indexed quads)
+    /// 4. If `egui_full_output` is `Some`, tessellate and render egui
+    ///    in a second pass with `LoadOp::Load` (composite on top)
+    /// 5. Submit and present
     ///
     /// Handles surface errors:
     /// - `Lost` / `Outdated`: calls `resize()` to reconfigure
     /// - `OutOfMemory`: returns `Err` (caller should exit)
-    pub fn render(&mut self, frame_geometry: &FrameGeometry) -> anyhow::Result<()> {
-        let output = match self.surface.get_current_texture() {
-            Ok(texture) => texture,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+    pub fn render(
+        &mut self,
+        frame_geometry: &FrameGeometry,
+        egui_full_output: Option<egui::FullOutput>,
+    ) -> anyhow::Result<()> {
+        let surface_texture = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(texture)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => texture,
+            wgpu::CurrentSurfaceTexture::Timeout
+            | wgpu::CurrentSurfaceTexture::Lost
+            | wgpu::CurrentSurfaceTexture::Outdated
+            | wgpu::CurrentSurfaceTexture::Occluded => {
                 self.resize(self.size.0, self.size.1);
                 return Ok(());
             }
-            Err(wgpu::SurfaceError::OutOfMemory) => {
-                return Err(anyhow::anyhow!("GPU out of memory"));
-            }
-            Err(e) => {
-                return Err(anyhow::anyhow!("surface error: {e}"));
+            wgpu::CurrentSurfaceTexture::Validation => {
+                return Err(anyhow::anyhow!("surface validation error"));
             }
         };
 
-        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = surface_texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("veil render encoder"),
         });
 
+        // Pass 1: terminal quads
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("veil render pass"),
@@ -318,10 +393,12 @@ impl Renderer {
                         load: wgpu::LoadOp::Clear(frame_geometry.clear_color),
                         store: wgpu::StoreOp::Store,
                     },
+                    depth_slice: None,
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
 
             render_pass.set_pipeline(&self.render_pipeline);
@@ -351,10 +428,77 @@ impl Renderer {
             }
         }
 
+        // Pass 2: egui overlay (composited on top of terminal)
+        if let Some(full_output) = egui_full_output {
+            self.render_egui(&mut encoder, &view, full_output);
+        }
+
         self.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
+        surface_texture.present();
 
         Ok(())
+    }
+
+    /// Render egui output into the given texture view.
+    ///
+    /// Tessellates egui shapes, uploads textures, and renders in a second
+    /// render pass (after the terminal pass) with `LoadOp::Load` to
+    /// composite the sidebar on top of terminal quads.
+    fn render_egui(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        full_output: egui::FullOutput,
+    ) {
+        let Some(egui_renderer) = &mut self.egui.egui_renderer else {
+            return;
+        };
+
+        let pixels_per_point = self.egui.ctx.pixels_per_point();
+        let screen_descriptor = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [self.config.width, self.config.height],
+            pixels_per_point,
+        };
+
+        let clipped_primitives = self.egui.ctx.tessellate(full_output.shapes, pixels_per_point);
+
+        for (id, image_delta) in &full_output.textures_delta.set {
+            egui_renderer.update_texture(&self.device, &self.queue, *id, image_delta);
+        }
+
+        egui_renderer.update_buffers(
+            &self.device,
+            &self.queue,
+            encoder,
+            &clipped_primitives,
+            &screen_descriptor,
+        );
+
+        {
+            let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("egui render pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+
+            // egui-wgpu requires RenderPass<'static>; forget_lifetime() is the
+            // wgpu 29 escape hatch for this. Safe because the render pass is
+            // used and dropped within this block before encoder.finish().
+            let mut render_pass = render_pass.forget_lifetime();
+            egui_renderer.render(&mut render_pass, &clipped_primitives, &screen_descriptor);
+        }
+
+        for id in &full_output.textures_delta.free {
+            egui_renderer.free_texture(id);
+        }
     }
 
     /// Get the current surface size.

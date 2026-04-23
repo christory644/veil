@@ -142,7 +142,7 @@ impl ApplicationHandler for VeilApp {
                     self.window_size.1,
                 );
                 if let Some(renderer) = &mut self.renderer {
-                    match renderer.render(&frame_geometry) {
+                    match renderer.render(&frame_geometry, None) {
                         Ok(()) => {}
                         Err(e) => {
                             tracing::error!("render error: {e}");
