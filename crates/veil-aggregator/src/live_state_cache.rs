@@ -8,7 +8,7 @@ use chrono::{DateTime, Duration, Utc};
 use crate::store::StoreError;
 
 /// Cache key types for live state checks.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckType {
     /// Git branch existence check.
     Branch,
@@ -46,51 +46,109 @@ pub struct CachedCheck {
 ///
 /// Takes a reference to a `rusqlite::Connection` (shared with `SessionStore`).
 pub struct LiveStateCache<'a> {
-    #[allow(dead_code)]
     conn: &'a rusqlite::Connection,
 }
 
 impl<'a> LiveStateCache<'a> {
     /// Create a new cache handle over an existing connection.
-    pub fn new(_conn: &'a rusqlite::Connection) -> Self {
-        todo!()
+    pub fn new(conn: &'a rusqlite::Connection) -> Self {
+        Self { conn }
     }
 
     /// Run migrations (CREATE TABLE IF NOT EXISTS).
     pub fn run_migrations(&self) -> Result<(), StoreError> {
-        todo!()
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS live_state_cache (
+                check_type  TEXT NOT NULL,
+                check_key   TEXT NOT NULL,
+                state       TEXT NOT NULL,
+                checked_at  TEXT NOT NULL,
+                PRIMARY KEY (check_type, check_key)
+            );",
+        )?;
+        Ok(())
     }
 
     /// Look up a cached result. Returns None if not found or if the
     /// entry is older than `max_age`.
     pub fn get(
         &self,
-        _check_type: CheckType,
-        _key: &str,
-        _max_age: Duration,
+        check_type: CheckType,
+        key: &str,
+        max_age: Duration,
     ) -> Result<Option<CachedCheck>, StoreError> {
-        todo!()
+        let mut stmt = self.conn.prepare(
+            "SELECT check_type, check_key, state, checked_at
+             FROM live_state_cache
+             WHERE check_type = ?1 AND check_key = ?2",
+        )?;
+
+        let mut rows = stmt.query(rusqlite::params![check_type.as_str(), key])?;
+
+        match rows.next()? {
+            Some(row) => {
+                let type_str: String = row.get(0)?;
+                let check_key: String = row.get(1)?;
+                let state: String = row.get(2)?;
+                let checked_at_str: String = row.get(3)?;
+
+                let checked_at = DateTime::parse_from_rfc3339(&checked_at_str)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .map_err(|e| {
+                        StoreError::DataError(format!("invalid checked_at timestamp: {e}"))
+                    })?;
+
+                let cutoff = Utc::now() - max_age;
+                if checked_at > cutoff {
+                    let ct = match type_str.as_str() {
+                        "branch" => CheckType::Branch,
+                        "pr" => CheckType::Pr,
+                        "dir" => CheckType::Dir,
+                        other => {
+                            return Err(StoreError::DataError(format!(
+                                "unknown check_type: {other}"
+                            )));
+                        }
+                    };
+                    Ok(Some(CachedCheck { check_type: ct, check_key, state, checked_at }))
+                } else {
+                    Ok(None)
+                }
+            }
+            None => Ok(None),
+        }
     }
 
     /// Store a check result (upsert).
     pub fn put(
         &self,
-        _check_type: CheckType,
-        _key: &str,
-        _state: &str,
-        _checked_at: DateTime<Utc>,
+        check_type: CheckType,
+        key: &str,
+        state: &str,
+        checked_at: DateTime<Utc>,
     ) -> Result<(), StoreError> {
-        todo!()
+        self.conn.execute(
+            "INSERT OR REPLACE INTO live_state_cache (check_type, check_key, state, checked_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![check_type.as_str(), key, state, checked_at.to_rfc3339()],
+        )?;
+        Ok(())
     }
 
     /// Remove expired entries older than `max_age`.
-    pub fn evict_expired(&self, _max_age: Duration) -> Result<usize, StoreError> {
-        todo!()
+    pub fn evict_expired(&self, max_age: Duration) -> Result<usize, StoreError> {
+        let cutoff = Utc::now() - max_age;
+        let deleted = self.conn.execute(
+            "DELETE FROM live_state_cache WHERE checked_at <= ?1",
+            rusqlite::params![cutoff.to_rfc3339()],
+        )?;
+        Ok(deleted)
     }
 
     /// Clear all cached state (for testing or full refresh).
     pub fn clear_all(&self) -> Result<(), StoreError> {
-        todo!()
+        self.conn.execute("DELETE FROM live_state_cache", [])?;
+        Ok(())
     }
 }
 
