@@ -1,0 +1,16 @@
+{
+    "version": "0.1.0",
+    "description": "Cross-platform, GPU-accelerated terminal workspace manager for AI coding agents",
+    "homepage": "https://github.com/veil-term/veil",
+    "license": {
+        "identifier": "MIT|Apache-2.0",
+        "url": "https://github.com/veil-term/veil/blob/main/LICENSE-MIT"
+    },
+    "url": "https://github.com/veil-term/veil/releases/download/v0.1.0/veil-x86_64-pc-windows-msvc.zip",
+    "hash": "PLACEHOLDER",
+    "bin": "veil.exe",
+    "checkver": "github",
+    "autoupdate": {
+        "url": "https://github.com/veil-term/veil/releases/download/v$version/veil-x86_64-pc-windows-msvc.zip"
+    }
+}

@@ -1,0 +1,14 @@
+PackageIdentifier: VeilTerm.Veil
+PackageVersion: 0.1.0
+PackageName: Veil
+Publisher: Veil Team
+License: MIT OR Apache-2.0
+ShortDescription: Cross-platform, GPU-accelerated terminal workspace manager for AI coding agents
+PackageUrl: https://github.com/veil-term/veil
+InstallerType: portable
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/veil-term/veil/releases/download/v0.1.0/veil-x86_64-pc-windows-msvc.zip
+    InstallerSha256: PLACEHOLDER
+ManifestType: singleton
+ManifestVersion: 1.6.0

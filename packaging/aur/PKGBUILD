@@ -1,0 +1,23 @@
+# Maintainer: Veil Team <hello@veil-term.dev>
+pkgname=veil
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Cross-platform, GPU-accelerated terminal workspace manager for AI coding agents"
+arch=('x86_64' 'aarch64')
+url="https://github.com/veil-term/veil"
+license=('MIT' 'Apache-2.0')
+makedepends=('rust' 'cargo')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/veil-term/veil/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    cd "$pkgname-$pkgver"
+    cargo build --release --locked
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    install -Dm755 "target/release/veil" "$pkgdir/usr/bin/veil"
+    install -Dm644 "LICENSE-MIT" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+    install -Dm644 "LICENSE-APACHE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+}
