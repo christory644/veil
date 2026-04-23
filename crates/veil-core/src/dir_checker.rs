@@ -24,7 +24,6 @@ impl DirChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     // ================================================================
     // Happy path

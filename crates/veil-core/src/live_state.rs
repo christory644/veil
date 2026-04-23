@@ -5,6 +5,7 @@
 //! (cache/resolution) and `veil-ui` (rendering).
 
 use std::fmt;
+use std::str::FromStr;
 
 /// Live state of a git branch.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +26,19 @@ impl fmt::Display for BranchState {
             Self::Unknown => "unknown",
         };
         f.write_str(s)
+    }
+}
+
+impl FromStr for BranchState {
+    type Err = ();
+
+    /// Parse a cached branch state string. Unrecognised values map to `Unknown`.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "exists" => Self::Exists,
+            "deleted" => Self::Deleted,
+            _ => Self::Unknown,
+        })
     }
 }
 
@@ -53,6 +67,20 @@ impl fmt::Display for PrState {
     }
 }
 
+impl FromStr for PrState {
+    type Err = ();
+
+    /// Parse a cached PR state string. Unrecognised values map to `Unknown`.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "open" => Self::Open,
+            "merged" => Self::Merged,
+            "closed" => Self::Closed,
+            _ => Self::Unknown,
+        })
+    }
+}
+
 /// Live state of a working directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DirState {
@@ -60,6 +88,28 @@ pub enum DirState {
     Exists,
     /// Directory no longer exists.
     Missing,
+}
+
+impl fmt::Display for DirState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::Exists => "exists",
+            Self::Missing => "missing",
+        };
+        f.write_str(s)
+    }
+}
+
+impl FromStr for DirState {
+    type Err = ();
+
+    /// Parse a cached directory state string. Unrecognised values map to `Missing`.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "exists" => Self::Exists,
+            _ => Self::Missing,
+        })
+    }
 }
 
 /// Aggregated live state for a single conversation/session.
@@ -196,6 +246,75 @@ mod tests {
     }
 
     // ================================================================
+    // BranchState::FromStr
+    // ================================================================
+
+    #[test]
+    fn branch_state_from_str_exists() {
+        assert_eq!("exists".parse::<BranchState>(), Ok(BranchState::Exists));
+    }
+
+    #[test]
+    fn branch_state_from_str_deleted() {
+        assert_eq!("deleted".parse::<BranchState>(), Ok(BranchState::Deleted));
+    }
+
+    #[test]
+    fn branch_state_from_str_unknown() {
+        assert_eq!("unknown".parse::<BranchState>(), Ok(BranchState::Unknown));
+    }
+
+    #[test]
+    fn branch_state_from_str_unrecognised_maps_to_unknown() {
+        assert_eq!("garbage".parse::<BranchState>(), Ok(BranchState::Unknown));
+    }
+
+    #[test]
+    fn branch_state_display_roundtrips_through_from_str() {
+        for variant in [BranchState::Exists, BranchState::Deleted, BranchState::Unknown] {
+            let s = variant.to_string();
+            assert_eq!(s.parse::<BranchState>(), Ok(variant));
+        }
+    }
+
+    // ================================================================
+    // PrState::FromStr
+    // ================================================================
+
+    #[test]
+    fn pr_state_from_str_open() {
+        assert_eq!("open".parse::<PrState>(), Ok(PrState::Open));
+    }
+
+    #[test]
+    fn pr_state_from_str_merged() {
+        assert_eq!("merged".parse::<PrState>(), Ok(PrState::Merged));
+    }
+
+    #[test]
+    fn pr_state_from_str_closed() {
+        assert_eq!("closed".parse::<PrState>(), Ok(PrState::Closed));
+    }
+
+    #[test]
+    fn pr_state_from_str_unknown() {
+        assert_eq!("unknown".parse::<PrState>(), Ok(PrState::Unknown));
+    }
+
+    #[test]
+    fn pr_state_from_str_unrecognised_maps_to_unknown() {
+        assert_eq!("draft".parse::<PrState>(), Ok(PrState::Unknown));
+    }
+
+    #[test]
+    fn pr_state_display_roundtrips_through_from_str() {
+        for variant in [PrState::Open, PrState::Merged, PrState::Closed, PrState::Unknown] {
+            let s = variant.to_string();
+            assert_eq!(s.parse::<PrState>(), Ok(variant));
+        }
+    }
+
+    // ================================================================
     // DirState
     // ================================================================
 
@@ -212,6 +331,39 @@ mod tests {
     #[test]
     fn dir_state_variants_not_equal() {
         assert_ne!(DirState::Exists, DirState::Missing);
+    }
+
+    #[test]
+    fn dir_state_display_exists() {
+        assert_eq!(DirState::Exists.to_string(), "exists");
+    }
+
+    #[test]
+    fn dir_state_display_missing() {
+        assert_eq!(DirState::Missing.to_string(), "missing");
+    }
+
+    #[test]
+    fn dir_state_from_str_exists() {
+        assert_eq!("exists".parse::<DirState>(), Ok(DirState::Exists));
+    }
+
+    #[test]
+    fn dir_state_from_str_missing() {
+        assert_eq!("missing".parse::<DirState>(), Ok(DirState::Missing));
+    }
+
+    #[test]
+    fn dir_state_from_str_unrecognised_maps_to_missing() {
+        assert_eq!("garbage".parse::<DirState>(), Ok(DirState::Missing));
+    }
+
+    #[test]
+    fn dir_state_display_roundtrips_through_from_str() {
+        for variant in [DirState::Exists, DirState::Missing] {
+            let s = variant.to_string();
+            assert_eq!(s.parse::<DirState>(), Ok(variant));
+        }
     }
 
     // ================================================================

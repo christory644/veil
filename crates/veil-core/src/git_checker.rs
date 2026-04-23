@@ -3,7 +3,7 @@
 //! Shells out to `git` via `std::process::Command` to check whether branches
 //! exist in repositories. Supports batching multiple branch checks per repo.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -90,17 +90,18 @@ impl GitChecker {
                     // Parse output lines: each existing branch appears as a line,
                     // possibly prefixed with `* ` for the current branch.
                     let stdout = String::from_utf8_lossy(&output.stdout);
-                    let found_branches: Vec<String> = stdout
+                    let found_branches: HashSet<&str> = stdout
                         .lines()
                         .map(|line| {
-                            line.trim().strip_prefix("* ").unwrap_or(line.trim()).to_string()
+                            let trimmed = line.trim();
+                            trimmed.strip_prefix("* ").unwrap_or(trimmed)
                         })
                         .filter(|s| !s.is_empty())
                         .collect();
 
                     for &idx in indices {
-                        let name = &requests[idx].branch_name;
-                        if found_branches.iter().any(|b| b == name) {
+                        let name = requests[idx].branch_name.as_str();
+                        if found_branches.contains(name) {
                             results[idx] = Some(BranchState::Exists);
                         } else {
                             results[idx] = Some(BranchState::Deleted);
@@ -135,7 +136,6 @@ impl GitChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
 
     /// Helper: create a temporary git repo with an initial commit.
     fn init_git_repo(dir: &Path) {

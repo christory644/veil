@@ -92,9 +92,9 @@ impl PrChecker {
         }
     }
 
-    /// Check multiple PRs. Does NOT batch (each PR is a separate gh call)
-    /// but respects a simple rate limit: if any call returns a rate-limit
-    /// error, remaining checks return `Unknown`.
+    /// Check multiple PRs sequentially (each PR is a separate `gh` call).
+    ///
+    /// Returns results in the same order as the input requests.
     pub fn check_prs(requests: &[PrCheckRequest]) -> Vec<PrCheckResult> {
         requests
             .iter()
@@ -105,13 +105,12 @@ impl PrChecker {
             .collect()
     }
 
-    /// Check whether `gh` is available and authenticated.
+    /// Check whether `gh` is available on the system PATH.
     pub fn is_available() -> bool {
         std::process::Command::new("gh")
             .arg("--version")
             .output()
-            .map(|out| out.status.success())
-            .unwrap_or(false)
+            .is_ok_and(|out| out.status.success())
     }
 }
 

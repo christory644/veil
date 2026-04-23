@@ -104,13 +104,13 @@ impl<'a> LiveStateResolver<'a> {
         if let Some(cached) =
             self.cache.get(CheckType::Branch, &cache_key, self.config.branch_ttl)?
         {
-            return Ok(Some(parse_branch_state(&cached.state)));
+            // FromStr on BranchState maps unrecognised values to Unknown.
+            return Ok(Some(cached.state.parse().unwrap_or(BranchState::Unknown)));
         }
 
-        // Cache miss — check via git.
+        // Cache miss -- check via git.
         let state = GitChecker::check_branch(repo_path, branch_name);
-        let now = Utc::now();
-        self.cache.put(CheckType::Branch, &cache_key, &state.to_string(), now)?;
+        self.cache.put(CheckType::Branch, &cache_key, &state.to_string(), Utc::now())?;
 
         Ok(Some(state))
     }
@@ -128,13 +128,12 @@ impl<'a> LiveStateResolver<'a> {
 
         // Check cache first.
         if let Some(cached) = self.cache.get(CheckType::Pr, &cache_key, self.config.pr_ttl)? {
-            return Ok(Some(parse_pr_state(&cached.state)));
+            return Ok(Some(cached.state.parse().unwrap_or(PrState::Unknown)));
         }
 
-        // Cache miss — check via gh.
+        // Cache miss -- check via gh.
         let state = PrChecker::check_pr(repo_path, pr_number);
-        let now = Utc::now();
-        self.cache.put(CheckType::Pr, &cache_key, &state.to_string(), now)?;
+        self.cache.put(CheckType::Pr, &cache_key, &state.to_string(), Utc::now())?;
 
         Ok(Some(state))
     }
@@ -147,57 +146,20 @@ impl<'a> LiveStateResolver<'a> {
 
         // Check cache first.
         if let Some(cached) = self.cache.get(CheckType::Dir, &cache_key, self.config.dir_ttl)? {
-            return Ok(Some(parse_dir_state(&cached.state)));
+            return Ok(Some(cached.state.parse().unwrap_or(DirState::Missing)));
         }
 
-        // Cache miss — check filesystem.
+        // Cache miss -- check filesystem.
         let state = DirChecker::check(&input.working_dir);
-        let now = Utc::now();
-        let state_str = match &state {
-            DirState::Exists => "exists",
-            DirState::Missing => "missing",
-        };
-        self.cache.put(CheckType::Dir, &cache_key, state_str, now)?;
+        self.cache.put(CheckType::Dir, &cache_key, &state.to_string(), Utc::now())?;
 
         Ok(Some(state))
-    }
-}
-
-/// Parse a cached branch state string back into a `BranchState`.
-fn parse_branch_state(s: &str) -> BranchState {
-    match s {
-        "exists" => BranchState::Exists,
-        "deleted" => BranchState::Deleted,
-        _ => BranchState::Unknown,
-    }
-}
-
-/// Parse a cached PR state string back into a `PrState`.
-fn parse_pr_state(s: &str) -> PrState {
-    match s {
-        "open" => PrState::Open,
-        "merged" => PrState::Merged,
-        "closed" => PrState::Closed,
-        _ => PrState::Unknown,
-    }
-}
-
-/// Parse a cached directory state string back into a `DirState`.
-fn parse_dir_state(s: &str) -> DirState {
-    match s {
-        "exists" => DirState::Exists,
-        _ => DirState::Missing,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-    use veil_core::live_state::{BranchState, DirState};
-    use veil_core::session::SessionId;
-
-    use crate::live_state_cache::LiveStateCache;
 
     /// Helper: set up an in-memory `SQLite` connection and run cache migrations.
     fn setup() -> rusqlite::Connection {

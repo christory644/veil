@@ -78,7 +78,7 @@ impl<'a> LiveStateCache<'a> {
         max_age: Duration,
     ) -> Result<Option<CachedCheck>, StoreError> {
         let mut stmt = self.conn.prepare(
-            "SELECT check_type, check_key, state, checked_at
+            "SELECT state, checked_at
              FROM live_state_cache
              WHERE check_type = ?1 AND check_key = ?2",
         )?;
@@ -87,10 +87,8 @@ impl<'a> LiveStateCache<'a> {
 
         match rows.next()? {
             Some(row) => {
-                let type_str: String = row.get(0)?;
-                let check_key: String = row.get(1)?;
-                let state: String = row.get(2)?;
-                let checked_at_str: String = row.get(3)?;
+                let state: String = row.get(0)?;
+                let checked_at_str: String = row.get(1)?;
 
                 let checked_at = DateTime::parse_from_rfc3339(&checked_at_str)
                     .map(|dt| dt.with_timezone(&Utc))
@@ -100,17 +98,12 @@ impl<'a> LiveStateCache<'a> {
 
                 let cutoff = Utc::now() - max_age;
                 if checked_at > cutoff {
-                    let ct = match type_str.as_str() {
-                        "branch" => CheckType::Branch,
-                        "pr" => CheckType::Pr,
-                        "dir" => CheckType::Dir,
-                        other => {
-                            return Err(StoreError::DataError(format!(
-                                "unknown check_type: {other}"
-                            )));
-                        }
-                    };
-                    Ok(Some(CachedCheck { check_type: ct, check_key, state, checked_at }))
+                    Ok(Some(CachedCheck {
+                        check_type,
+                        check_key: key.to_owned(),
+                        state,
+                        checked_at,
+                    }))
                 } else {
                     Ok(None)
                 }
@@ -155,7 +148,6 @@ impl<'a> LiveStateCache<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{Duration, Utc};
 
     /// Helper: open an in-memory `SQLite` connection and run cache migrations.
     fn setup_cache() -> rusqlite::Connection {
