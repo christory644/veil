@@ -42,7 +42,7 @@ struct VeilApp {
     /// Central application state (drives frame geometry).
     app_state: AppState,
     /// Channel infrastructure for actor communication.
-    _channels: Channels,
+    channels: Channels,
     /// Shutdown coordinator.
     shutdown: ShutdownSignal,
     /// Keybinding registry with default shortcuts.
@@ -51,6 +51,8 @@ struct VeilApp {
     focus: FocusManager,
     /// Current window size in physical pixels.
     window_size: (u32, u32),
+    /// PTY manager -- owns all active PTY instances.
+    pty_manager: Option<veil_pty::PtyManager>,
 }
 
 impl VeilApp {
@@ -59,11 +61,12 @@ impl VeilApp {
             window: None,
             renderer: None,
             app_state: AppState::new(),
-            _channels: Channels::new(256),
+            channels: Channels::new(256),
             shutdown: ShutdownSignal::new(),
             _keybindings: KeybindingRegistry::with_defaults(),
             focus: FocusManager::new(),
             window_size: (1280, 800),
+            pty_manager: None,
         }
     }
 }
@@ -80,6 +83,30 @@ impl ApplicationHandler for VeilApp {
             pollster::block_on(Renderer::new(window.clone())).expect("failed to create renderer");
         self.renderer = Some(renderer);
         self.window = Some(window);
+
+        // Bootstrap default workspace and focus.
+        let surface_id = init_default_workspace(&mut self.app_state, &mut self.focus);
+
+        // Create PTY manager and spawn shell for the root pane.
+        let mut pty_manager =
+            veil_pty::PtyManager::new(self.channels.state_tx.clone(), self.shutdown.handle());
+        let cwd = self
+            .app_state
+            .active_workspace()
+            .expect("just created workspace")
+            .working_directory
+            .clone();
+        let config = veil_pty::PtyConfig {
+            command: None,
+            args: vec![],
+            working_directory: Some(cwd),
+            env: vec![],
+            size: veil_pty::PtySize::default(),
+        };
+        if let Err(e) = pty_manager.spawn(surface_id, config) {
+            tracing::error!("failed to spawn initial PTY: {e}");
+        }
+        self.pty_manager = Some(pty_manager);
     }
 
     fn window_event(
@@ -90,6 +117,9 @@ impl ApplicationHandler for VeilApp {
     ) {
         match event {
             WindowEvent::CloseRequested => {
+                if let Some(ref mut mgr) = self.pty_manager {
+                    mgr.shutdown_all();
+                }
                 self.shutdown.trigger();
                 event_loop.exit();
             }
@@ -137,8 +167,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Stub functions for VEI-74 (app bootstrap).
-// These compile but panic at runtime — the tests below are RED.
+// VEI-74: App bootstrap helpers.
 // ---------------------------------------------------------------------------
 
 use std::path::PathBuf;
@@ -146,15 +175,22 @@ use veil_core::workspace::SurfaceId;
 
 /// Bootstrap a default workspace and set focus to its root pane.
 /// Returns the `SurfaceId` of the root pane for PTY spawning.
-fn init_default_workspace(_app_state: &mut AppState, _focus: &mut FocusManager) -> SurfaceId {
-    todo!("VEI-74: implement init_default_workspace")
+fn init_default_workspace(app_state: &mut AppState, focus: &mut FocusManager) -> SurfaceId {
+    let cwd = resolve_startup_cwd();
+    let ws_id = app_state.create_workspace("default".to_string(), cwd);
+    let ws = app_state.workspace(ws_id).expect("just created workspace");
+    let surface_id = ws.layout.surface_ids()[0];
+    focus.focus_surface(surface_id);
+    surface_id
 }
 
 /// Resolve the working directory for the initial workspace.
 ///
 /// Prefers the process's current directory. Falls back to `$HOME`, then `/`.
 fn resolve_startup_cwd() -> PathBuf {
-    todo!("VEI-74: implement resolve_startup_cwd")
+    std::env::current_dir().unwrap_or_else(|_| {
+        std::env::var("HOME").map_or_else(|_| PathBuf::from("/"), PathBuf::from)
+    })
 }
 
 #[cfg(test)]
