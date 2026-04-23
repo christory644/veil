@@ -37,10 +37,10 @@ pub struct FrameGeometry {
     pub vertices: Vec<Vertex>,
     /// All indices for this frame (solid-color quads).
     pub indices: Vec<u16>,
-    /// Text vertices for textured glyph quads.
+    /// Text vertices for textured glyph quads (populated when text rendering is integrated).
     #[allow(dead_code)]
     pub text_vertices: Vec<TextVertex>,
-    /// Text indices for textured glyph quads.
+    /// Text indices for textured glyph quads (populated when text rendering is integrated).
     #[allow(dead_code)]
     pub text_indices: Vec<u16>,
     /// The clear color (window background).
@@ -50,7 +50,7 @@ pub struct FrameGeometry {
 /// Resolve a cell's foreground color to RGBA f32.
 ///
 /// Uses the cell's explicit `fg_color` if set, otherwise the default foreground.
-#[allow(dead_code)] // Wired in Unit 5 (text quad generation).
+#[allow(dead_code)] // Used by tests now; wired into frame builder when text rendering is integrated.
 pub fn cell_fg_color(cell: &veil_ghostty::CellData, default_fg: veil_ghostty::Color) -> [f32; 4] {
     let color = cell.fg_color.unwrap_or(default_fg);
     crate::quad_builder::color_to_f32(color)

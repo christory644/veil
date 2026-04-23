@@ -3,7 +3,7 @@
 
 use crate::font::atlas::{AtlasRegion, GlyphAtlas};
 use crate::font::loader::{FontConfig, FontData};
-use crate::font::rasterizer::Rasterizer;
+use crate::font::rasterizer::{RasterizedGlyph, Rasterizer};
 use crate::font::shaper::Shaper;
 
 /// Bundles all font resources needed for text rendering.
@@ -45,22 +45,18 @@ impl FontPipeline {
             return Some(*region);
         }
 
-        // Rasterize the glyph.
-        if let Some(rasterized) = self.rasterizer.rasterize(&self.font_data, glyph_id) {
-            Some(self.atlas.insert(&rasterized))
-        } else {
-            // No renderable outline (space, control char, etc.) --
-            // insert a zero-dimension synthetic entry.
-            let synthetic = crate::font::rasterizer::RasterizedGlyph {
+        // Rasterize the glyph, falling back to a zero-dimension synthetic
+        // entry for characters with no renderable outline (space, control chars).
+        let rasterized =
+            self.rasterizer.rasterize(&self.font_data, glyph_id).unwrap_or(RasterizedGlyph {
                 glyph_id,
                 bitmap: Vec::new(),
                 width: 0,
                 height: 0,
                 bearing_x: 0,
                 bearing_y: 0,
-            };
-            Some(self.atlas.insert(&synthetic))
-        }
+            });
+        Some(self.atlas.insert(&rasterized))
     }
 
     /// Cell width in pixels.

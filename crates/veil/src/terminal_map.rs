@@ -90,7 +90,7 @@ impl TerminalMap {
         self.terminals.get(&surface_id).map(AsRef::as_ref)
     }
 
-    /// Get a mutable reference to a terminal writer behind its `Box`.
+    /// Get a mutable reference to a terminal writer.
     pub fn get_mut(&mut self, surface_id: SurfaceId) -> Option<&mut Box<dyn TerminalWriter>> {
         self.terminals.get_mut(&surface_id)
     }

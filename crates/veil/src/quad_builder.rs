@@ -33,7 +33,7 @@ pub struct CellGridParams {
 }
 
 /// Convert a `Color` (u8 RGB) to `[f32; 4]` (normalized RGBA with alpha 1.0).
-#[allow(dead_code)] // Called by frame.rs cell_fg_color, which is wired in a later unit.
+#[allow(dead_code)] // Used by frame.rs cell_fg_color; wired into frame builder when text rendering is integrated.
 pub fn color_to_f32(color: veil_ghostty::Color) -> [f32; 4] {
     [f32::from(color.r) / 255.0, f32::from(color.g) / 255.0, f32::from(color.b) / 255.0, 1.0]
 }
@@ -41,8 +41,9 @@ pub fn color_to_f32(color: veil_ghostty::Color) -> [f32; 4] {
 /// Build cell background quads for a single pane.
 ///
 /// Generates one quad per cell (`cols * rows` quads total). Each cell
-/// is sized to evenly fill the pane rect. All cells use the same
-/// background color (real per-cell colors are a follow-up).
+/// is sized to evenly fill the pane rect. When `cell_bg_colors` is
+/// provided, each cell uses its per-cell color (falling back to `bg_color`
+/// for `None` entries or out-of-bounds indices).
 ///
 /// Returns (vertices, indices) ready for GPU upload.
 #[allow(clippy::cast_precision_loss)] // Grid indices (col/row) fit comfortably in f32.
