@@ -59,6 +59,7 @@ pub fn render_sidebar(ui: &mut egui::Ui, state: &AppState) -> SidebarResponse {
                 let groups = crate::conversation_list::extract_conversation_groups(
                     state,
                     chrono::Utc::now(),
+                    None,
                 );
                 if let Some(session_id) =
                     crate::conversation_list::render_conversations_tab(ui, &groups)

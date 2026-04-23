@@ -4,10 +4,11 @@
 //! renderable data and renders it using egui. Follows the same pattern
 //! as `workspace_list.rs`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use chrono::{DateTime, Utc};
 
+use veil_core::live_state::{BranchState, DirState, LiveStatus, PrState};
 use veil_core::session::{AgentKind, SessionEntry, SessionId, SessionStatus};
 use veil_core::state::AppState;
 
@@ -28,6 +29,12 @@ pub struct ConversationEntryData {
     pub relative_time: String,
     /// Whether a finalized plan exists for this session.
     pub has_plan: bool,
+    /// Live state of the associated branch, if any.
+    pub branch_state: Option<BranchState>,
+    /// Live state of the associated PR, if any.
+    pub pr_state: Option<PrState>,
+    /// Live state of the working directory.
+    pub dir_state: Option<DirState>,
 }
 
 /// A group of conversations for one agent harness.
@@ -49,7 +56,16 @@ pub struct ConversationGroup {
 /// Groups themselves are sorted by the most recent session in each group.
 ///
 /// `now` is passed explicitly for deterministic testing.
-pub fn extract_conversation_groups(state: &AppState, now: DateTime<Utc>) -> Vec<ConversationGroup> {
+///
+/// If `live_state` is provided, each session's live state is looked up and
+/// populated into the entry data. If `None` or if a session has no entry in
+/// the map, the live state fields remain `None`.
+#[allow(clippy::implicit_hasher)]
+pub fn extract_conversation_groups(
+    state: &AppState,
+    now: DateTime<Utc>,
+    live_state: Option<&HashMap<SessionId, LiveStatus>>,
+) -> Vec<ConversationGroup> {
     // AgentKind implements neither Hash nor Ord, so we group by its Display
     // string. BTreeMap gives deterministic iteration before we re-sort by recency.
     let mut groups_by_name: BTreeMap<String, (AgentKind, Vec<&SessionEntry>)> = BTreeMap::new();
@@ -83,7 +99,8 @@ pub fn extract_conversation_groups(state: &AppState, now: DateTime<Utc>) -> Vec<
         .into_iter()
         .map(|(_max_ts, agent_name, agent_kind, sessions)| {
             let session_count = sessions.len();
-            let entries = sessions.iter().map(|s| session_to_entry_data(s, now)).collect();
+            let entries =
+                sessions.iter().map(|s| session_to_entry_data(s, now, live_state)).collect();
             ConversationGroup { agent_name, agent_kind, session_count, entries }
         })
         .collect()
@@ -92,7 +109,18 @@ pub fn extract_conversation_groups(state: &AppState, now: DateTime<Utc>) -> Vec<
 /// Convert a single `SessionEntry` into a `ConversationEntryData`.
 ///
 /// `now` is used for relative timestamp formatting.
-fn session_to_entry_data(session: &SessionEntry, now: DateTime<Utc>) -> ConversationEntryData {
+/// If `live_state` is provided and contains an entry for this session,
+/// the live state fields are populated from it.
+fn session_to_entry_data(
+    session: &SessionEntry,
+    now: DateTime<Utc>,
+    live_state: Option<&HashMap<SessionId, LiveStatus>>,
+) -> ConversationEntryData {
+    let (branch_state, pr_state, dir_state) =
+        live_state.and_then(|map| map.get(&session.id)).map_or((None, None, None), |status| {
+            (status.branch.clone(), status.pr.clone(), status.dir.clone())
+        });
+
     ConversationEntryData {
         id: session.id.clone(),
         title: session.title.clone(),
@@ -100,6 +128,9 @@ fn session_to_entry_data(session: &SessionEntry, now: DateTime<Utc>) -> Conversa
         branch: session.branch.clone(),
         relative_time: format_relative(session.started_at, now),
         has_plan: session.plan_content.is_some(),
+        branch_state,
+        pr_state,
+        dir_state,
     }
 }
 
@@ -252,7 +283,7 @@ mod tests {
     #[test]
     fn empty_sessions_returns_empty_groups() {
         let state = AppState::new();
-        let groups = extract_conversation_groups(&state, now());
+        let groups = extract_conversation_groups(&state, now(), None);
         assert!(groups.is_empty(), "no sessions should produce no groups");
     }
 
@@ -288,7 +319,7 @@ mod tests {
             ),
         ];
         let state = make_state_with_sessions(sessions);
-        let groups = extract_conversation_groups(&state, now());
+        let groups = extract_conversation_groups(&state, now(), None);
 
         assert_eq!(groups.len(), 1, "all sessions from one agent should produce one group");
         assert_eq!(groups[0].session_count, 3);
@@ -319,7 +350,7 @@ mod tests {
             ),
         ];
         let state = make_state_with_sessions(sessions);
-        let groups = extract_conversation_groups(&state, now());
+        let groups = extract_conversation_groups(&state, now(), None);
 
         assert_eq!(groups.len(), 2, "sessions from two agents should produce two groups");
     }
@@ -356,7 +387,7 @@ mod tests {
             ),
         ];
         let state = make_state_with_sessions(sessions);
-        let groups = extract_conversation_groups(&state, now());
+        let groups = extract_conversation_groups(&state, now(), None);
 
         assert_eq!(groups.len(), 1);
         let entries = &groups[0].entries;
@@ -390,7 +421,7 @@ mod tests {
             ),
         ];
         let state = make_state_with_sessions(sessions);
-        let groups = extract_conversation_groups(&state, now());
+        let groups = extract_conversation_groups(&state, now(), None);
 
         assert_eq!(groups.len(), 2);
         assert_eq!(
@@ -412,7 +443,7 @@ mod tests {
             None,
         )];
         let state = make_state_with_sessions(sessions);
-        let groups = extract_conversation_groups(&state, now());
+        let groups = extract_conversation_groups(&state, now(), None);
 
         assert_eq!(groups.len(), 1);
         assert!(groups[0].entries[0].is_active, "active session should have is_active = true");
@@ -430,7 +461,7 @@ mod tests {
             None,
         )];
         let state = make_state_with_sessions(sessions);
-        let groups = extract_conversation_groups(&state, now());
+        let groups = extract_conversation_groups(&state, now(), None);
 
         assert_eq!(groups.len(), 1);
         assert!(!groups[0].entries[0].is_active, "completed session should have is_active = false");
@@ -448,7 +479,7 @@ mod tests {
             None,
         )];
         let state = make_state_with_sessions(sessions);
-        let groups = extract_conversation_groups(&state, now());
+        let groups = extract_conversation_groups(&state, now(), None);
 
         assert_eq!(groups[0].entries[0].branch, Some("feat/auth".to_string()));
     }
@@ -465,7 +496,7 @@ mod tests {
             None,
         )];
         let state = make_state_with_sessions(sessions);
-        let groups = extract_conversation_groups(&state, now());
+        let groups = extract_conversation_groups(&state, now(), None);
 
         assert_eq!(groups[0].entries[0].branch, None);
     }
@@ -482,7 +513,7 @@ mod tests {
             Some("The plan content"),
         )];
         let state = make_state_with_sessions(sessions);
-        let groups = extract_conversation_groups(&state, now());
+        let groups = extract_conversation_groups(&state, now(), None);
 
         assert!(
             groups[0].entries[0].has_plan,
@@ -502,7 +533,7 @@ mod tests {
             None,
         )];
         let state = make_state_with_sessions(sessions);
-        let groups = extract_conversation_groups(&state, now());
+        let groups = extract_conversation_groups(&state, now(), None);
 
         assert!(
             !groups[0].entries[0].has_plan,
@@ -522,7 +553,7 @@ mod tests {
             None,
         )];
         let state = make_state_with_sessions(sessions);
-        let groups = extract_conversation_groups(&state, now());
+        let groups = extract_conversation_groups(&state, now(), None);
 
         assert_eq!(
             groups[0].entries[0].relative_time, "2h ago",
@@ -542,7 +573,7 @@ mod tests {
             None,
         )];
         let state = make_state_with_sessions(sessions);
-        let groups = extract_conversation_groups(&state, now());
+        let groups = extract_conversation_groups(&state, now(), None);
 
         assert_eq!(groups[0].entries[0].title, "Fix auth middleware");
     }
@@ -559,7 +590,7 @@ mod tests {
             None,
         )];
         let state = make_state_with_sessions(sessions);
-        let groups = extract_conversation_groups(&state, now());
+        let groups = extract_conversation_groups(&state, now(), None);
 
         assert_eq!(groups[0].entries[0].id, SessionId::new("session-42"));
     }
@@ -580,7 +611,7 @@ mod tests {
             None,
         )];
         let state = make_state_with_sessions(sessions);
-        let groups = extract_conversation_groups(&state, now());
+        let groups = extract_conversation_groups(&state, now(), None);
 
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].entries.len(), 1);
@@ -619,7 +650,7 @@ mod tests {
             ),
         ];
         let state = make_state_with_sessions(sessions);
-        let groups = extract_conversation_groups(&state, now());
+        let groups = extract_conversation_groups(&state, now(), None);
 
         assert_eq!(groups.len(), 1, "all sessions from same agent should produce one group");
         assert_eq!(groups[0].agent_name, "Codex");
@@ -637,7 +668,7 @@ mod tests {
             None,
         )];
         let state = make_state_with_sessions(sessions);
-        let groups = extract_conversation_groups(&state, now());
+        let groups = extract_conversation_groups(&state, now(), None);
 
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].agent_name, "CustomBot");
@@ -668,7 +699,7 @@ mod tests {
         ];
         let state = make_state_with_sessions(sessions);
         // Should not panic even with identical timestamps
-        let groups = extract_conversation_groups(&state, now());
+        let groups = extract_conversation_groups(&state, now(), None);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].entries.len(), 2);
     }
@@ -685,7 +716,7 @@ mod tests {
             None,
         )];
         let state = make_state_with_sessions(sessions);
-        let groups = extract_conversation_groups(&state, now());
+        let groups = extract_conversation_groups(&state, now(), None);
 
         assert!(!groups[0].entries[0].is_active, "errored session should have is_active = false");
     }
@@ -702,7 +733,7 @@ mod tests {
             None,
         )];
         let state = make_state_with_sessions(sessions);
-        let groups = extract_conversation_groups(&state, now());
+        let groups = extract_conversation_groups(&state, now(), None);
 
         assert!(
             !groups[0].entries[0].is_active,
@@ -729,6 +760,9 @@ mod tests {
             branch: branch.map(String::from),
             relative_time: relative_time.to_string(),
             has_plan,
+            branch_state: None,
+            pr_state: None,
+            dir_state: None,
         }
     }
 
@@ -946,5 +980,245 @@ mod tests {
         // Since the plan indicator is inline text on the title line, height might be the
         // same. We just verify it renders without issue.
         assert!(height_with >= 0.0 && height_without >= 0.0, "both should render successfully");
+    }
+
+    // ================================================================
+    // Unit 7 (VEI-23): Live state integration
+    // ================================================================
+
+    #[test]
+    fn extract_with_live_state_populates_branch_state() {
+        let sessions = vec![make_session(
+            "s1",
+            AgentKind::ClaudeCode,
+            "Branch work",
+            SessionStatus::Completed,
+            now() - chrono::Duration::hours(1),
+            Some("feat/auth"),
+            None,
+        )];
+        let state = make_state_with_sessions(sessions);
+
+        let mut live_map = HashMap::new();
+        live_map.insert(
+            SessionId::new("s1"),
+            LiveStatus {
+                branch: Some(BranchState::Deleted),
+                pr: None,
+                dir: Some(DirState::Exists),
+            },
+        );
+
+        let groups = extract_conversation_groups(&state, now(), Some(&live_map));
+        assert_eq!(groups.len(), 1);
+        let entry = &groups[0].entries[0];
+        assert_eq!(entry.branch_state, Some(BranchState::Deleted));
+        assert_eq!(entry.pr_state, None);
+        assert_eq!(entry.dir_state, Some(DirState::Exists));
+    }
+
+    #[test]
+    fn extract_with_live_state_populates_pr_state() {
+        let sessions = vec![make_session(
+            "s1",
+            AgentKind::ClaudeCode,
+            "PR work",
+            SessionStatus::Completed,
+            now() - chrono::Duration::hours(1),
+            None,
+            None,
+        )];
+        let state = make_state_with_sessions(sessions);
+
+        let mut live_map = HashMap::new();
+        live_map.insert(
+            SessionId::new("s1"),
+            LiveStatus { branch: None, pr: Some(PrState::Merged), dir: Some(DirState::Exists) },
+        );
+
+        let groups = extract_conversation_groups(&state, now(), Some(&live_map));
+        let entry = &groups[0].entries[0];
+        assert_eq!(entry.pr_state, Some(PrState::Merged));
+    }
+
+    #[test]
+    fn extract_with_live_state_populates_all_states() {
+        let sessions = vec![make_session(
+            "s1",
+            AgentKind::ClaudeCode,
+            "Full state",
+            SessionStatus::Completed,
+            now() - chrono::Duration::hours(1),
+            Some("feat/done"),
+            None,
+        )];
+        let state = make_state_with_sessions(sessions);
+
+        let mut live_map = HashMap::new();
+        live_map.insert(
+            SessionId::new("s1"),
+            LiveStatus {
+                branch: Some(BranchState::Exists),
+                pr: Some(PrState::Open),
+                dir: Some(DirState::Exists),
+            },
+        );
+
+        let groups = extract_conversation_groups(&state, now(), Some(&live_map));
+        let entry = &groups[0].entries[0];
+        assert_eq!(entry.branch_state, Some(BranchState::Exists));
+        assert_eq!(entry.pr_state, Some(PrState::Open));
+        assert_eq!(entry.dir_state, Some(DirState::Exists));
+    }
+
+    #[test]
+    fn extract_without_live_state_leaves_fields_none() {
+        let sessions = vec![make_session(
+            "s1",
+            AgentKind::ClaudeCode,
+            "No live state",
+            SessionStatus::Completed,
+            now() - chrono::Duration::hours(1),
+            Some("feat/test"),
+            None,
+        )];
+        let state = make_state_with_sessions(sessions);
+
+        let groups = extract_conversation_groups(&state, now(), None);
+        let entry = &groups[0].entries[0];
+        assert!(entry.branch_state.is_none(), "no live state map => branch_state is None");
+        assert!(entry.pr_state.is_none(), "no live state map => pr_state is None");
+        assert!(entry.dir_state.is_none(), "no live state map => dir_state is None");
+    }
+
+    #[test]
+    fn extract_with_live_state_session_not_in_map_leaves_none() {
+        let sessions = vec![make_session(
+            "s1",
+            AgentKind::ClaudeCode,
+            "Not in map",
+            SessionStatus::Completed,
+            now() - chrono::Duration::hours(1),
+            Some("feat/branch"),
+            None,
+        )];
+        let state = make_state_with_sessions(sessions);
+
+        // Live map has a different session ID.
+        let mut live_map = HashMap::new();
+        live_map.insert(
+            SessionId::new("other-session"),
+            LiveStatus {
+                branch: Some(BranchState::Exists),
+                pr: Some(PrState::Open),
+                dir: Some(DirState::Exists),
+            },
+        );
+
+        let groups = extract_conversation_groups(&state, now(), Some(&live_map));
+        let entry = &groups[0].entries[0];
+        assert!(entry.branch_state.is_none(), "session not in map should have None, not Unknown");
+        assert!(entry.pr_state.is_none());
+        assert!(entry.dir_state.is_none());
+    }
+
+    #[test]
+    fn extract_with_empty_live_state_map_leaves_fields_none() {
+        let sessions = vec![make_session(
+            "s1",
+            AgentKind::ClaudeCode,
+            "Empty map",
+            SessionStatus::Completed,
+            now() - chrono::Duration::hours(1),
+            None,
+            None,
+        )];
+        let state = make_state_with_sessions(sessions);
+
+        let live_map: HashMap<SessionId, LiveStatus> = HashMap::new();
+        let groups = extract_conversation_groups(&state, now(), Some(&live_map));
+        let entry = &groups[0].entries[0];
+        assert!(entry.branch_state.is_none());
+        assert!(entry.pr_state.is_none());
+        assert!(entry.dir_state.is_none());
+    }
+
+    #[test]
+    fn extract_with_live_state_multiple_sessions_mixed() {
+        let sessions = vec![
+            make_session(
+                "s1",
+                AgentKind::ClaudeCode,
+                "Has live state",
+                SessionStatus::Completed,
+                now() - chrono::Duration::hours(1),
+                Some("feat/a"),
+                None,
+            ),
+            make_session(
+                "s2",
+                AgentKind::ClaudeCode,
+                "No live state",
+                SessionStatus::Completed,
+                now() - chrono::Duration::hours(2),
+                Some("feat/b"),
+                None,
+            ),
+        ];
+        let state = make_state_with_sessions(sessions);
+
+        let mut live_map = HashMap::new();
+        live_map.insert(
+            SessionId::new("s1"),
+            LiveStatus {
+                branch: Some(BranchState::Deleted),
+                pr: Some(PrState::Closed),
+                dir: Some(DirState::Missing),
+            },
+        );
+
+        let groups = extract_conversation_groups(&state, now(), Some(&live_map));
+        assert_eq!(groups.len(), 1);
+
+        // s1 is first (more recent).
+        let entry1 = &groups[0].entries[0];
+        assert_eq!(entry1.id, SessionId::new("s1"));
+        assert_eq!(entry1.branch_state, Some(BranchState::Deleted));
+        assert_eq!(entry1.pr_state, Some(PrState::Closed));
+        assert_eq!(entry1.dir_state, Some(DirState::Missing));
+
+        // s2 has no live state entry.
+        let entry2 = &groups[0].entries[1];
+        assert_eq!(entry2.id, SessionId::new("s2"));
+        assert!(entry2.branch_state.is_none());
+        assert!(entry2.pr_state.is_none());
+        assert!(entry2.dir_state.is_none());
+    }
+
+    #[test]
+    fn extract_live_state_with_partial_status() {
+        // LiveStatus has only branch set, pr and dir are None.
+        let sessions = vec![make_session(
+            "s1",
+            AgentKind::ClaudeCode,
+            "Partial",
+            SessionStatus::Completed,
+            now() - chrono::Duration::hours(1),
+            Some("feat/partial"),
+            None,
+        )];
+        let state = make_state_with_sessions(sessions);
+
+        let mut live_map = HashMap::new();
+        live_map.insert(
+            SessionId::new("s1"),
+            LiveStatus { branch: Some(BranchState::Exists), pr: None, dir: None },
+        );
+
+        let groups = extract_conversation_groups(&state, now(), Some(&live_map));
+        let entry = &groups[0].entries[0];
+        assert_eq!(entry.branch_state, Some(BranchState::Exists));
+        assert!(entry.pr_state.is_none(), "partial LiveStatus with None pr => None pr_state");
+        assert!(entry.dir_state.is_none(), "partial LiveStatus with None dir => None dir_state");
     }
 }
