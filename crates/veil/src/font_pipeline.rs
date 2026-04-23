@@ -30,12 +30,37 @@ impl FontPipeline {
     ///
     /// If the glyph is already cached, returns the existing region.
     /// Otherwise, shapes and rasterizes the character and inserts it.
-    ///
-    /// Stub: returns `None` -- real implementation will shape, rasterize,
-    /// and insert the glyph into the atlas.
-    #[allow(clippy::unused_self)]
-    pub fn ensure_glyph(&mut self, _ch: char) -> Option<AtlasRegion> {
-        None
+    /// For characters that produce no visible pixels (space, control chars),
+    /// inserts a zero-dimension entry.
+    #[allow(clippy::unnecessary_wraps)]
+    pub fn ensure_glyph(&mut self, ch: char) -> Option<AtlasRegion> {
+        // Map char to glyph_id via shaping (preferred) or charmap fallback.
+        let shaped_glyphs = self.shaper.shape(&ch.to_string());
+        let glyph_id = shaped_glyphs
+            .first()
+            .map_or_else(|| self.font_data.font_ref().charmap().map(ch), |sg| sg.glyph_id);
+
+        // Check atlas cache -- return early if already packed.
+        if let Some(region) = self.atlas.get(glyph_id) {
+            return Some(*region);
+        }
+
+        // Rasterize the glyph.
+        if let Some(rasterized) = self.rasterizer.rasterize(&self.font_data, glyph_id) {
+            Some(self.atlas.insert(&rasterized))
+        } else {
+            // No renderable outline (space, control char, etc.) --
+            // insert a zero-dimension synthetic entry.
+            let synthetic = crate::font::rasterizer::RasterizedGlyph {
+                glyph_id,
+                bitmap: Vec::new(),
+                width: 0,
+                height: 0,
+                bearing_x: 0,
+                bearing_y: 0,
+            };
+            Some(self.atlas.insert(&synthetic))
+        }
     }
 
     /// Cell width in pixels.
