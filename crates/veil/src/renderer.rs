@@ -9,6 +9,7 @@ use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 use crate::egui_integration::EguiIntegration;
+use crate::font::text_vertex::TextVertex;
 use crate::frame::FrameGeometry;
 use crate::vertex::Vertex;
 
@@ -35,6 +36,20 @@ pub struct Renderer {
     size: (u32, u32),
     /// egui integration for sidebar rendering.
     pub egui: EguiIntegration,
+    /// GPU-side glyph atlas texture (`R8Unorm`).
+    atlas_texture: wgpu::Texture,
+    /// View into the atlas texture for binding.
+    atlas_texture_view: wgpu::TextureView,
+    /// Nearest-neighbor sampler for the glyph atlas.
+    atlas_sampler: wgpu::Sampler,
+    /// Last-known atlas dimensions; used to detect atlas growth.
+    atlas_size: (u32, u32),
+    /// Bind group layout for the text pipeline (uniform + texture + sampler).
+    text_bind_group_layout: wgpu::BindGroupLayout,
+    /// Bind group for the text pipeline.
+    text_bind_group: wgpu::BindGroup,
+    /// Render pipeline for textured glyph quads.
+    text_render_pipeline: wgpu::RenderPipeline,
 }
 
 /// Create the render pipeline with position+color vertex layout.
@@ -111,6 +126,155 @@ fn create_window_bind_group(
     (layout, bind_group)
 }
 
+/// Create the glyph atlas texture, view, and sampler.
+///
+/// Format is `R8Unorm` (1 byte per pixel, grayscale). Nearest-neighbor sampling.
+fn create_atlas_texture(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+) -> (wgpu::Texture, wgpu::TextureView, wgpu::Sampler) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("glyph atlas texture"),
+        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("glyph atlas sampler"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Nearest,
+        min_filter: wgpu::FilterMode::Nearest,
+        mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+        ..Default::default()
+    });
+
+    (texture, view, sampler)
+}
+
+/// Create the bind group layout for the text pipeline.
+///
+/// Bindings: 0 = window uniform (VERTEX), 1 = atlas texture (FRAGMENT), 2 = sampler (FRAGMENT).
+fn create_text_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("text bind group layout"),
+        entries: &[
+            // binding 0: window uniform buffer (VERTEX)
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // binding 1: glyph atlas texture (FRAGMENT)
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            // binding 2: atlas sampler (FRAGMENT)
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    })
+}
+
+/// Create the bind group for the text pipeline.
+fn create_text_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    uniform_buffer: &wgpu::Buffer,
+    atlas_view: &wgpu::TextureView,
+    atlas_sampler: &wgpu::Sampler,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("text bind group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer.as_entire_binding() },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(atlas_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(atlas_sampler),
+            },
+        ],
+    })
+}
+
+/// Create the render pipeline for textured glyph quads.
+fn create_text_render_pipeline(
+    device: &wgpu::Device,
+    pipeline_layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    surface_format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("veil text render pipeline"),
+        layout: Some(pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_text"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[TextVertex::buffer_layout()],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_text"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: surface_format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            unclipped_depth: false,
+            conservative: false,
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState {
+            count: 1,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+/// Initial glyph atlas texture size (512×512 pixels).
+const INITIAL_ATLAS_SIZE: u32 = 512;
+
 impl Renderer {
     /// Initialize the renderer with a window.
     ///
@@ -119,6 +283,7 @@ impl Renderer {
     /// module, pipeline layout, render pipeline, and uniform buffer.
     ///
     /// This is async because wgpu adapter/device requests are async.
+    #[allow(clippy::too_many_lines)]
     pub async fn new(window: Arc<Window>) -> anyhow::Result<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
 
@@ -187,6 +352,38 @@ impl Renderer {
         let render_pipeline =
             create_render_pipeline(&device, &pipeline_layout, &shader, surface_format);
 
+        // Text pipeline setup.
+        let text_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("veil text shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("text_shader.wgsl").into()),
+        });
+
+        let (atlas_texture, atlas_texture_view, atlas_sampler) =
+            create_atlas_texture(&device, INITIAL_ATLAS_SIZE, INITIAL_ATLAS_SIZE);
+
+        let text_bind_group_layout = create_text_bind_group_layout(&device);
+
+        let text_bind_group = create_text_bind_group(
+            &device,
+            &text_bind_group_layout,
+            &window_uniform_buffer,
+            &atlas_texture_view,
+            &atlas_sampler,
+        );
+
+        let text_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("veil text pipeline layout"),
+            bind_group_layouts: &[Some(&text_bind_group_layout)],
+            immediate_size: 0,
+        });
+
+        let text_render_pipeline = create_text_render_pipeline(
+            &device,
+            &text_pipeline_layout,
+            &text_shader,
+            surface_format,
+        );
+
         let egui = EguiIntegration::new(&window, &device, surface_format);
 
         Ok(Self {
@@ -199,6 +396,13 @@ impl Renderer {
             window_bind_group,
             size: (width, height),
             egui,
+            atlas_texture,
+            atlas_texture_view,
+            atlas_sampler,
+            atlas_size: (INITIAL_ATLAS_SIZE, INITIAL_ATLAS_SIZE),
+            text_bind_group_layout,
+            text_bind_group,
+            text_render_pipeline,
         })
     }
 
@@ -220,6 +424,28 @@ impl Renderer {
         self.queue.write_buffer(&self.window_uniform_buffer, 0, bytemuck::cast_slice(&[uniform]));
     }
 
+    /// Upload the glyph atlas bitmap to the GPU texture.
+    ///
+    /// Called each frame when `GlyphAtlas::is_dirty()` is true.
+    fn upload_atlas(&self, atlas: &crate::font::atlas::GlyphAtlas) {
+        let (w, h) = atlas.dimensions();
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.atlas_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            atlas.bitmap(),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(w),
+                rows_per_image: Some(h),
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+    }
+
     /// Render a complete frame: terminal geometry + optional egui overlay.
     ///
     /// 1. Get next surface texture
@@ -235,6 +461,7 @@ impl Renderer {
     pub fn render(
         &mut self,
         frame_geometry: &FrameGeometry,
+        font_pipeline: Option<&mut crate::font_pipeline::FontPipeline>,
         egui_full_output: Option<egui::FullOutput>,
     ) -> anyhow::Result<()> {
         let surface_texture = match self.surface.get_current_texture() {
@@ -257,6 +484,30 @@ impl Renderer {
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("veil render encoder"),
         });
+
+        // Per-frame atlas upload: recreate texture if atlas grew, then upload if dirty.
+        if let Some(fp) = font_pipeline {
+            let current_size = fp.atlas().dimensions();
+            if current_size != self.atlas_size {
+                let (tex, view, sampler) =
+                    create_atlas_texture(&self.device, current_size.0, current_size.1);
+                self.atlas_texture = tex;
+                self.atlas_texture_view = view;
+                self.atlas_sampler = sampler;
+                self.atlas_size = current_size;
+                self.text_bind_group = create_text_bind_group(
+                    &self.device,
+                    &self.text_bind_group_layout,
+                    &self.window_uniform_buffer,
+                    &self.atlas_texture_view,
+                    &self.atlas_sampler,
+                );
+            }
+            if fp.atlas().is_dirty() {
+                self.upload_atlas(fp.atlas());
+                fp.atlas_mut().mark_clean();
+            }
+        }
 
         // Pass 1: terminal quads
         self.render_terminal_pass(&mut encoder, &view, frame_geometry);
@@ -327,10 +578,35 @@ impl Renderer {
             let index_count = frame_geometry.indices.len() as u32;
             render_pass.draw_indexed(0..index_count, 0, 0..1);
         }
+
+        // Draw 2: textured glyph quads (text on top of backgrounds)
+        if !frame_geometry.text_vertices.is_empty() {
+            let text_vertex_buffer =
+                self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("veil text vertex buffer"),
+                    contents: bytemuck::cast_slice(&frame_geometry.text_vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+            let text_index_buffer =
+                self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("veil text index buffer"),
+                    contents: bytemuck::cast_slice(&frame_geometry.text_indices),
+                    usage: wgpu::BufferUsages::INDEX,
+                });
+
+            render_pass.set_pipeline(&self.text_render_pipeline);
+            render_pass.set_bind_group(0, &self.text_bind_group, &[]);
+            render_pass.set_vertex_buffer(0, text_vertex_buffer.slice(..));
+            render_pass.set_index_buffer(text_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            #[allow(clippy::cast_possible_truncation)]
+            let text_index_count = frame_geometry.text_indices.len() as u32;
+            render_pass.draw_indexed(0..text_index_count, 0, 0..1);
+        }
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::doc_markdown)]
 mod tests {
     use super::*;
     use crate::font::text_vertex::TextVertex;
@@ -560,7 +836,7 @@ mod tests {
         let max_indices: usize = u16::MAX as usize;
         #[allow(clippy::cast_possible_truncation)]
         let as_u32 = max_indices as u32;
-        assert_eq!(as_u32, u16::MAX as u32, "u16::MAX indices must survive usize→u32 cast");
+        assert_eq!(as_u32, u32::from(u16::MAX), "u16::MAX indices must survive usize→u32 cast");
         assert!(
             u32::try_from(max_indices).is_ok(),
             "u16::MAX must convert to u32 without overflow"

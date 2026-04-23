@@ -441,7 +441,7 @@ impl VeilApp {
         let egui_output = self.run_sidebar_frame();
 
         if let Some(renderer) = &mut self.renderer {
-            match renderer.render(&frame_geometry, egui_output) {
+            match renderer.render(&frame_geometry, self.font_pipeline.as_mut(), egui_output) {
                 Ok(()) => {}
                 Err(e) => {
                     tracing::error!("render error: {e}");
