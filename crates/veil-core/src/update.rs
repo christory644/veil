@@ -157,10 +157,25 @@ impl InstallMethod {
         }
 
         // Check for Scoop (case-insensitive)
-        if path_str.to_lowercase().contains("/scoop/")
-            || path_str.to_lowercase().contains("\\scoop\\")
-        {
+        let path_lower = path_str.to_lowercase();
+        if path_lower.contains("/scoop/") || path_lower.contains("\\scoop\\") {
             return Self::Scoop;
+        }
+
+        // Check for Winget (Windows package manager installs to WindowsApps or Program Files)
+        if path_lower.contains("\\windowsapps\\")
+            || path_lower.contains("\\program files\\veil")
+            || path_lower.contains("\\program files (x86)\\veil")
+        {
+            return Self::Winget;
+        }
+
+        // Check for AUR (Arch Linux: pacman installs binaries to /usr/bin)
+        if path_str.starts_with("/usr/bin/") {
+            // Only claim AUR if pacman's local DB exists (i.e., we're on Arch-based system)
+            if Path::new("/var/lib/pacman/local").is_dir() {
+                return Self::Aur;
+            }
         }
 
         Self::Unknown
@@ -282,8 +297,9 @@ pub struct GitHubVersionFetcher {
 
 impl GitHubVersionFetcher {
     /// Create a new fetcher for the given repo.
+    /// The User-Agent header is set to `veil/{version}` using the crate version.
     pub fn new(repo: String) -> Self {
-        Self { user_agent: format!("veil/{repo}"), repo }
+        Self { user_agent: format!("veil/{}", env!("CARGO_PKG_VERSION")), repo }
     }
 }
 
@@ -726,6 +742,31 @@ mod tests {
         fn scoop_path_windows() {
             let path = PathBuf::from(r"C:\Users\user\scoop\apps\veil\current\veil.exe");
             assert_eq!(InstallMethod::detect_from_path(&path), InstallMethod::Scoop);
+        }
+
+        #[test]
+        fn winget_windows_apps_path() {
+            let path = PathBuf::from(r"C:\Users\user\AppData\Local\Microsoft\WindowsApps\veil.exe");
+            assert_eq!(InstallMethod::detect_from_path(&path), InstallMethod::Winget);
+        }
+
+        #[test]
+        fn winget_program_files_path() {
+            let path = PathBuf::from(r"C:\Program Files\veil\veil.exe");
+            assert_eq!(InstallMethod::detect_from_path(&path), InstallMethod::Winget);
+        }
+
+        #[test]
+        fn aur_detection_requires_pacman_db() {
+            // /usr/bin/ paths only return Aur if pacman's local DB directory exists.
+            // On non-Arch systems (macOS, Ubuntu, etc.), this should return Unknown.
+            let path = PathBuf::from("/usr/bin/veil");
+            let result = InstallMethod::detect_from_path(&path);
+            if Path::new("/var/lib/pacman/local").is_dir() {
+                assert_eq!(result, InstallMethod::Aur);
+            } else {
+                assert_eq!(result, InstallMethod::Unknown);
+            }
         }
 
         #[test]
