@@ -8,13 +8,33 @@ use veil_core::state::AppState;
 /// Apply a config reload to app state and keybindings.
 /// Returns `true` if a redraw is needed.
 pub fn apply_config_reload(
-    _config: &AppConfig,
-    _delta: &ConfigDelta,
-    _app_state: &mut AppState,
-    _keybindings: &mut KeybindingRegistry,
+    config: &AppConfig,
+    delta: &ConfigDelta,
+    app_state: &mut AppState,
+    keybindings: &mut KeybindingRegistry,
 ) -> bool {
-    // Stub: always returns false so tests compile but fail on assertions.
-    false
+    let mut needs_redraw = false;
+
+    if delta.sidebar_changed {
+        app_state.apply_config(config);
+        needs_redraw = true;
+    }
+
+    if delta.keybindings_changed {
+        *keybindings = KeybindingRegistry::with_defaults();
+        veil_core::keyboard::apply_keybindings_config(keybindings, &config.keybindings);
+        needs_redraw = true;
+    }
+
+    if delta.font_changed {
+        needs_redraw = true;
+    }
+
+    if delta.theme_changed {
+        needs_redraw = true;
+    }
+
+    needs_redraw
 }
 
 #[cfg(test)]
