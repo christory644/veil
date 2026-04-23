@@ -22,7 +22,11 @@ pub fn apply_config_reload(
 
     if delta.keybindings_changed {
         *keybindings = KeybindingRegistry::with_defaults();
-        veil_core::keyboard::apply_keybindings_config(keybindings, &config.keybindings);
+        let warnings =
+            veil_core::keyboard::apply_keybindings_config(keybindings, &config.keybindings);
+        for w in &warnings {
+            tracing::warn!("keybinding config warning: {w}");
+        }
         needs_redraw = true;
     }
 
