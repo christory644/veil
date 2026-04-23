@@ -287,9 +287,88 @@ impl Default for KeybindingRegistry {
 /// Keys: single characters (a-z, 0-9, symbols) or named keys (enter, tab, escape, f1-f12, etc.)
 ///
 /// Returns `None` if the string is empty or unparseable.
-pub fn parse_keybinding(_s: &str) -> Option<KeyInput> {
-    // Stub: always returns None so tests compile but fail on assertions.
-    None
+pub fn parse_keybinding(s: &str) -> Option<KeyInput> {
+    if s.is_empty() {
+        return None;
+    }
+
+    // Reject leading or trailing '+' (which produce empty parts after split).
+    if s.starts_with('+') || s.ends_with('+') {
+        return None;
+    }
+
+    let parts: Vec<&str> = s.split('+').collect();
+
+    // Every part must be non-empty (catches "a++b" style input).
+    if parts.iter().any(|p| p.is_empty()) {
+        return None;
+    }
+
+    let mut modifiers = Modifiers::default();
+    let mut key_part: Option<Key> = None;
+
+    for part in &parts {
+        let lower = part.to_ascii_lowercase();
+        match lower.as_str() {
+            // Modifiers
+            "ctrl" => modifiers.ctrl = true,
+            "shift" => modifiers.shift = true,
+            "alt" => modifiers.alt = true,
+            "cmd" | "logo" | "super" => modifiers.logo = true,
+            // Named keys
+            other => {
+                // If we already found a key, this part is unexpected —
+                // treat the last non-modifier part as the key (overwrite).
+                key_part = Some(parse_key_name(other)?);
+            }
+        }
+    }
+
+    let key = key_part?;
+    Some(KeyInput { key, modifiers })
+}
+
+/// Map a lowercase key name to a `Key`, returning `None` for unknown names.
+fn parse_key_name(name: &str) -> Option<Key> {
+    // Named keys — return canonical capitalization.
+    let named = match name {
+        "enter" => "Enter",
+        "tab" => "Tab",
+        "escape" => "Escape",
+        "space" => "Space",
+        "backspace" => "Backspace",
+        "delete" => "Delete",
+        "up" => "Up",
+        "down" => "Down",
+        "left" => "Left",
+        "right" => "Right",
+        "home" => "Home",
+        "end" => "End",
+        "pageup" => "PageUp",
+        "pagedown" => "PageDown",
+        "f1" => "F1",
+        "f2" => "F2",
+        "f3" => "F3",
+        "f4" => "F4",
+        "f5" => "F5",
+        "f6" => "F6",
+        "f7" => "F7",
+        "f8" => "F8",
+        "f9" => "F9",
+        "f10" => "F10",
+        "f11" => "F11",
+        "f12" => "F12",
+        _ => {
+            // Single character key — normalize to lowercase.
+            let chars: Vec<char> = name.chars().collect();
+            if chars.len() == 1 {
+                return Some(Key::Character(chars[0].to_ascii_lowercase()));
+            }
+            // Multi-character unknown name — not parseable.
+            return None;
+        }
+    };
+    Some(Key::Named(named.to_string()))
 }
 
 /// Apply keybindings from config to the registry.
@@ -300,11 +379,45 @@ pub fn parse_keybinding(_s: &str) -> Option<KeyInput> {
 ///
 /// Returns a list of warnings for keybinding strings that could not be parsed.
 pub fn apply_keybindings_config(
-    _registry: &mut KeybindingRegistry,
-    _config: &crate::config::KeybindingsConfig,
+    registry: &mut KeybindingRegistry,
+    config: &crate::config::KeybindingsConfig,
 ) -> Vec<String> {
-    // Stub: does nothing, returns empty vec so tests compile but fail on assertions.
-    Vec::new()
+    let mut warnings = Vec::new();
+
+    let mappings: &[(&Option<String>, KeyAction)] = &[
+        (&config.toggle_sidebar, KeyAction::ToggleSidebar),
+        (&config.workspace_tab, KeyAction::SwitchToWorkspacesTab),
+        (&config.conversations_tab, KeyAction::SwitchToConversationsTab),
+        (&config.new_workspace, KeyAction::CreateWorkspace),
+        (&config.close_workspace, KeyAction::CloseWorkspace),
+        (&config.split_horizontal, KeyAction::SplitHorizontal),
+        (&config.split_vertical, KeyAction::SplitVertical),
+        (&config.close_pane, KeyAction::ClosePane),
+        (&config.focus_next_pane, KeyAction::FocusNextPane),
+        (&config.focus_previous_pane, KeyAction::FocusPreviousPane),
+        (&config.zoom_pane, KeyAction::ZoomPane),
+        (&config.focus_pane_left, KeyAction::FocusPaneLeft),
+        (&config.focus_pane_right, KeyAction::FocusPaneRight),
+        (&config.focus_pane_up, KeyAction::FocusPaneUp),
+        (&config.focus_pane_down, KeyAction::FocusPaneDown),
+    ];
+
+    for (field, action) in mappings {
+        if let Some(ref binding_str) = field {
+            match parse_keybinding(binding_str) {
+                Some(key_input) => {
+                    registry.bind(key_input, action.clone());
+                }
+                None => {
+                    warnings.push(format!(
+                        "could not parse keybinding \"{binding_str}\" for {action:?}"
+                    ));
+                }
+            }
+        }
+    }
+
+    warnings
 }
 
 #[cfg(test)]

@@ -6,7 +6,7 @@
 use chrono::Utc;
 use std::path::PathBuf;
 
-use crate::config::AppConfig;
+use crate::config::{AppConfig, DefaultTab};
 use crate::error::{ErrorId, ErrorReport};
 use crate::notification::{Notification, NotificationId, NotificationSource, NotificationStore};
 use crate::session::SessionEntry;
@@ -106,8 +106,13 @@ impl AppState {
     ///
     /// Updates sidebar visibility, width, and default tab from the config.
     /// Called at startup (before first frame) and on config hot-reload.
-    pub fn apply_config(&mut self, _config: &AppConfig) {
-        // Stub: does nothing so tests compile but fail on assertions.
+    pub fn apply_config(&mut self, config: &AppConfig) {
+        self.sidebar.width_px = config.sidebar.width;
+        self.sidebar.visible = config.sidebar.visible;
+        self.sidebar.active_tab = match config.sidebar.default_tab {
+            DefaultTab::Workspaces => SidebarTab::Workspaces,
+            DefaultTab::Conversations => SidebarTab::Conversations,
+        };
     }
 
     /// Generate the next unique ID.
