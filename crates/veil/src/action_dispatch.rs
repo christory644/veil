@@ -29,8 +29,6 @@ pub enum ActionEffect {
     },
     /// Request a redraw (layout changed).
     Redraw,
-    /// No effect (action was a no-op or not applicable).
-    None,
 }
 
 /// Dispatch a key action against the current state.
@@ -507,10 +505,7 @@ mod tests {
 
         let pane_count_after = state.workspace(ws_id).unwrap().layout.pane_count();
         assert_eq!(pane_count_after, 1, "should not close the last pane");
-        assert!(
-            effects.is_empty() || effects.iter().all(|e| matches!(e, ActionEffect::None)),
-            "effects should be empty or None"
-        );
+        assert!(effects.is_empty(), "effects should be empty or None");
     }
 
     // ================================================================
@@ -663,10 +658,7 @@ mod tests {
 
         let effects = dispatch_action(&KeyAction::ZoomPane, &mut state, &mut focus, W, H);
 
-        assert!(
-            effects.is_empty() || effects.iter().all(|e| matches!(e, ActionEffect::None)),
-            "ZoomPane with no focus should produce no effects"
-        );
+        assert!(effects.is_empty(), "ZoomPane with no focus should produce no effects");
     }
 
     // ================================================================
@@ -740,10 +732,7 @@ mod tests {
             Some(ws1),
             "SwitchWorkspace(9) with only 2 workspaces should not change active"
         );
-        assert!(
-            effects.is_empty() || effects.iter().all(|e| matches!(e, ActionEffect::None)),
-            "out-of-range switch should produce no meaningful effects"
-        );
+        assert!(effects.is_empty(), "out-of-range switch should produce no meaningful effects");
     }
 
     // ================================================================
@@ -1014,10 +1003,7 @@ mod tests {
             name_before,
             "RenameWorkspace should not change the name (no-op for now)"
         );
-        assert!(
-            effects.is_empty() || effects.iter().all(|e| matches!(e, ActionEffect::None)),
-            "RenameWorkspace should produce no meaningful effects"
-        );
+        assert!(effects.is_empty(), "RenameWorkspace should produce no meaningful effects");
     }
 
     #[test]

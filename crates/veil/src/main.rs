@@ -7,13 +7,11 @@
 //! `FocusManager`). All real logic lives in veil-core; this file is the minimal
 //! platform glue.
 
-#[allow(dead_code)]
 mod action_dispatch;
 mod bootstrap;
 #[allow(dead_code)]
 mod font;
 mod frame;
-#[allow(dead_code)]
 mod key_translation;
 mod quad_builder;
 mod renderer;
@@ -25,16 +23,17 @@ use std::sync::Arc;
 
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::WindowEvent;
+use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
-use veil_core::focus::FocusManager;
-use veil_core::keyboard::KeybindingRegistry;
+use veil_core::focus::{route_key_event, FocusManager, KeyRoute};
+use veil_core::keyboard::{self, KeybindingRegistry};
 use veil_core::lifecycle::ShutdownSignal;
 use veil_core::message::Channels;
 use veil_core::state::AppState;
 
+use crate::action_dispatch::ActionEffect;
 use crate::bootstrap::init_default_workspace;
 use crate::frame::build_frame_geometry;
 use crate::renderer::Renderer;
@@ -52,9 +51,11 @@ struct VeilApp {
     /// Shutdown coordinator.
     shutdown: ShutdownSignal,
     /// Keybinding registry with default shortcuts.
-    _keybindings: KeybindingRegistry,
+    keybindings: KeybindingRegistry,
     /// Keyboard focus tracker.
     focus: FocusManager,
+    /// Current modifier state (updated by `ModifiersChanged` events).
+    current_modifiers: keyboard::Modifiers,
     /// Current window size in physical pixels.
     window_size: (u32, u32),
     /// PTY manager -- owns all active PTY instances.
@@ -69,8 +70,9 @@ impl VeilApp {
             app_state: AppState::new(),
             channels: Channels::new(256),
             shutdown: ShutdownSignal::new(),
-            _keybindings: KeybindingRegistry::with_defaults(),
+            keybindings: KeybindingRegistry::with_defaults(),
             focus: FocusManager::new(),
+            current_modifiers: keyboard::Modifiers::default(),
             window_size: (1280, 800),
             pty_manager: None,
         }
@@ -155,7 +157,81 @@ impl ApplicationHandler for VeilApp {
                     window.request_redraw();
                 }
             }
+            WindowEvent::ModifiersChanged(new_modifiers) => {
+                self.current_modifiers = key_translation::translate_modifiers(new_modifiers);
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                if event.state != ElementState::Pressed {
+                    return;
+                }
+                if let Some(key_input) =
+                    key_translation::translate_key_event(&event, self.current_modifiers)
+                {
+                    let route = route_key_event(&key_input, &self.keybindings, &self.focus);
+                    match route {
+                        KeyRoute::Action(action) => {
+                            let effects = action_dispatch::dispatch_action(
+                                &action,
+                                &mut self.app_state,
+                                &mut self.focus,
+                                self.window_size.0,
+                                self.window_size.1,
+                            );
+                            for effect in effects {
+                                self.execute_effect(effect);
+                            }
+                        }
+                        KeyRoute::ForwardToSurface(surface_id) => {
+                            if let Some(bytes) =
+                                key_translation::key_to_pty_bytes(&event, self.current_modifiers)
+                            {
+                                if let Some(ref mgr) = self.pty_manager {
+                                    if let Err(e) = mgr.write(surface_id, bytes) {
+                                        tracing::warn!(?surface_id, "PTY write failed: {e}");
+                                    }
+                                }
+                            }
+                        }
+                        // Sidebar key handling and unhandled keys are no-ops
+                        // until egui sidebar integration.
+                        KeyRoute::ForwardToSidebar | KeyRoute::Unhandled => {}
+                    }
+                }
+            }
             _ => {}
+        }
+    }
+}
+
+impl VeilApp {
+    fn execute_effect(&mut self, effect: ActionEffect) {
+        match effect {
+            ActionEffect::SpawnPty { surface_id, working_directory } => {
+                if let Some(ref mut mgr) = self.pty_manager {
+                    let config = veil_pty::PtyConfig {
+                        command: None,
+                        args: vec![],
+                        working_directory: Some(working_directory),
+                        env: vec![],
+                        size: veil_pty::PtySize::default(),
+                    };
+                    if let Err(e) = mgr.spawn(surface_id, config) {
+                        tracing::error!(?surface_id, "failed to spawn PTY: {e}");
+                    }
+                }
+            }
+            ActionEffect::ClosePty { surface_id } => {
+                if let Some(ref mut mgr) = self.pty_manager {
+                    if let Err(e) = mgr.close(surface_id) {
+                        tracing::warn!(?surface_id, "failed to close PTY: {e}");
+                    }
+                }
+            }
+            ActionEffect::Redraw => {
+                if let Some(ref window) = self.window {
+                    window.request_redraw();
+                }
+            }
         }
     }
 }

@@ -9,9 +9,7 @@
 //! via integration (event loop wiring in `main.rs`).
 
 use veil_core::keyboard;
-#[allow(unused_imports)]
 use winit::event::{ElementState, KeyEvent};
-#[allow(unused_imports)]
 use winit::keyboard::{Key, NamedKey};
 
 /// Convert a winit `KeyEvent` into a domain `KeyInput`.
@@ -19,11 +17,13 @@ use winit::keyboard::{Key, NamedKey};
 /// Returns `None` for key releases, modifier-only presses, or keys we cannot
 /// meaningfully translate.
 pub fn translate_key_event(
-    _event: &KeyEvent,
-    _modifiers: keyboard::Modifiers,
+    event: &KeyEvent,
+    modifiers: keyboard::Modifiers,
 ) -> Option<keyboard::KeyInput> {
-    // Stub: always returns None. Implementation will delegate to translate_logical_key.
-    None
+    if event.state == ElementState::Released {
+        return None;
+    }
+    translate_logical_key(&event.logical_key, modifiers)
 }
 
 /// Convert a winit logical key into a domain `KeyInput`.
@@ -105,9 +105,11 @@ pub fn translate_modifiers(state: winit::event::Modifiers) -> keyboard::Modifier
 /// Encode a key event as bytes to send to the PTY.
 ///
 /// Returns `None` if the key has no byte representation (e.g., modifier-only keys).
-pub fn key_to_pty_bytes(_event: &KeyEvent, _modifiers: keyboard::Modifiers) -> Option<Vec<u8>> {
-    // Stub: always returns None. Implementation will delegate to key_to_pty_bytes_from_key.
-    None
+pub fn key_to_pty_bytes(event: &KeyEvent, modifiers: keyboard::Modifiers) -> Option<Vec<u8>> {
+    if event.state == ElementState::Released {
+        return None;
+    }
+    key_to_pty_bytes_from_key(&event.logical_key, modifiers)
 }
 
 /// Encode a logical key as bytes to send to the PTY.
