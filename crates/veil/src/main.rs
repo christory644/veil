@@ -42,6 +42,7 @@ use veil_core::state::AppState;
 
 use crate::action_dispatch::ActionEffect;
 use crate::bootstrap::init_default_workspace;
+use crate::font_pipeline::FontPipeline;
 use crate::frame::build_frame_geometry;
 use crate::renderer::Renderer;
 
@@ -79,6 +80,8 @@ struct VeilApp {
     socket_handle: Option<socket_actor::SocketHandle>,
     /// Terminal emulator instances keyed by surface ID.
     terminal_map: terminal_map::TerminalMap,
+    /// Font pipeline for glyph rasterization and atlas packing (CPU-side).
+    font_pipeline: Option<FontPipeline>,
 }
 
 impl VeilApp {
@@ -117,6 +120,7 @@ impl VeilApp {
             aggregator_handle: None,
             socket_handle: None,
             terminal_map: terminal_map::TerminalMap::new(),
+            font_pipeline: None,
         }
     }
 }
@@ -133,6 +137,30 @@ impl ApplicationHandler for VeilApp {
             pollster::block_on(Renderer::new(window.clone())).expect("failed to create renderer");
         self.renderer = Some(renderer);
         self.window = Some(window);
+
+        // Initialize font pipeline for glyph rasterization (CPU-side only).
+        let font_config = crate::font::loader::FontConfig {
+            path: Some(std::path::PathBuf::from(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/test_fixtures/test_font.ttf"
+            ))),
+            size_pt: self.app_config.terminal.font_size,
+            dpi: 96.0, // TODO: query actual DPI from window
+        };
+        self.font_pipeline = match FontPipeline::new(&font_config) {
+            Ok(pipeline) => {
+                tracing::info!(
+                    cell_width = pipeline.cell_width(),
+                    cell_height = pipeline.cell_height(),
+                    "font pipeline initialized"
+                );
+                Some(pipeline)
+            }
+            Err(e) => {
+                tracing::warn!("font pipeline init failed, text rendering disabled: {e}");
+                None
+            }
+        };
 
         // Bootstrap default workspace and focus.
         let surface_id = init_default_workspace(&mut self.app_state, &mut self.focus);
@@ -406,7 +434,7 @@ impl VeilApp {
             self.window_size.0,
             self.window_size.1,
             &mut self.terminal_map,
-            None,
+            self.font_pipeline.as_mut(),
         );
 
         // Run egui sidebar frame and collect output for GPU rendering.
