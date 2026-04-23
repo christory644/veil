@@ -21,6 +21,11 @@ rust-version = "1.92.0"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/veil-term/veil"
 authors = ["Christopher Story"]
+description = "Cross-platform, GPU-accelerated terminal workspace manager for AI coding agents"
+homepage = "https://github.com/veil-term/veil"
+keywords = ["terminal", "workspace", "ai", "gpu", "multiplexer"]
+categories = ["command-line-utilities", "development-tools"]
+readme = "README.md"
 
 [workspace.dependencies]
 thiserror = "2"
