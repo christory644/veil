@@ -133,8 +133,8 @@ pub fn encode_logical_key_for_pty(key: &Key, modifiers: keyboard::Modifiers) -> 
         Key::Character(text) => {
             let first_char = text.chars().next()?;
             // Ctrl+letter (a-z) produces control codes. Logo/Cmd does NOT.
-            if modifiers.ctrl && first_char.is_ascii_lowercase() {
-                let code = (first_char as u8) - 0x60;
+            if modifiers.ctrl && first_char.is_ascii_alphabetic() {
+                let code = (first_char.to_ascii_lowercase() as u8) - 0x60;
                 Some(vec![code])
             } else {
                 // UTF-8 encode the text.
@@ -488,6 +488,26 @@ mod tests {
     fn pty_bytes_ctrl_z() {
         let result = encode_logical_key_for_pty(&char_key("z"), ctrl_mods());
         assert_eq!(result, Some(vec![0x1A]));
+    }
+
+    #[test]
+    fn pty_bytes_ctrl_uppercase_c() {
+        let result = encode_logical_key_for_pty(&char_key("C"), ctrl_mods());
+        assert_eq!(
+            result,
+            Some(vec![0x03]),
+            "Ctrl+uppercase C should produce same control code as Ctrl+c"
+        );
+    }
+
+    #[test]
+    fn pty_bytes_ctrl_uppercase_a() {
+        let result = encode_logical_key_for_pty(&char_key("A"), ctrl_mods());
+        assert_eq!(
+            result,
+            Some(vec![0x01]),
+            "Ctrl+uppercase A should produce same control code as Ctrl+a"
+        );
     }
 
     // ================================================================

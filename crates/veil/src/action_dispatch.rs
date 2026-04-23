@@ -250,7 +250,9 @@ fn dispatch_create_workspace(
     let Some(ws) = app_state.workspace(ws_id) else {
         return vec![];
     };
-    let surface_id = ws.layout.surface_ids()[0];
+    let Some(&surface_id) = ws.layout.surface_ids().first() else {
+        return vec![];
+    };
     focus.focus_surface(surface_id);
     vec![ActionEffect::SpawnPty { surface_id, working_directory: cwd }, ActionEffect::Redraw]
 }
