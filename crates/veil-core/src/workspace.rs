@@ -126,9 +126,19 @@ impl PaneNode {
     }
 
     /// Find the pane ID associated with a surface ID.
-    pub fn pane_id_for_surface(&self, _target: SurfaceId) -> Option<PaneId> {
-        // Stub: always returns None. Implementation will traverse the tree.
-        None
+    pub fn pane_id_for_surface(&self, target: SurfaceId) -> Option<PaneId> {
+        match self {
+            PaneNode::Leaf { pane_id, surface_id } => {
+                if *surface_id == target {
+                    Some(*pane_id)
+                } else {
+                    None
+                }
+            }
+            PaneNode::Split { first, second, .. } => {
+                first.pane_id_for_surface(target).or_else(|| second.pane_id_for_surface(target))
+            }
+        }
     }
 
     /// Count leaf nodes.

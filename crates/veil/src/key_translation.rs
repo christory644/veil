@@ -30,17 +30,76 @@ pub fn translate_key_event(
 ///
 /// Returns `None` for modifier-only keys or keys we cannot translate.
 pub fn translate_logical_key(
-    _key: &Key,
-    _modifiers: keyboard::Modifiers,
+    key: &Key,
+    modifiers: keyboard::Modifiers,
 ) -> Option<keyboard::KeyInput> {
-    // Stub: always returns None. Implementation will translate keys.
-    None
+    match key {
+        Key::Character(text) => {
+            let c = text.chars().next()?;
+            // Lowercase when logo or ctrl modifier is held (for keybinding matching).
+            let c = if modifiers.logo || modifiers.ctrl {
+                c.to_lowercase().next().unwrap_or(c)
+            } else {
+                c
+            };
+            Some(keyboard::KeyInput { key: keyboard::Key::Character(c), modifiers })
+        }
+        Key::Named(named) => {
+            let name = match named {
+                NamedKey::Enter => "Enter",
+                NamedKey::Tab => "Tab",
+                NamedKey::Escape => "Escape",
+                NamedKey::Backspace => "Backspace",
+                NamedKey::ArrowUp => "ArrowUp",
+                NamedKey::ArrowDown => "ArrowDown",
+                NamedKey::ArrowLeft => "ArrowLeft",
+                NamedKey::ArrowRight => "ArrowRight",
+                NamedKey::Home => "Home",
+                NamedKey::End => "End",
+                NamedKey::Delete => "Delete",
+                NamedKey::PageUp => "PageUp",
+                NamedKey::PageDown => "PageDown",
+                NamedKey::Space => "Space",
+                NamedKey::Insert => "Insert",
+                NamedKey::F1 => "F1",
+                NamedKey::F2 => "F2",
+                NamedKey::F3 => "F3",
+                NamedKey::F4 => "F4",
+                NamedKey::F5 => "F5",
+                NamedKey::F6 => "F6",
+                NamedKey::F7 => "F7",
+                NamedKey::F8 => "F8",
+                NamedKey::F9 => "F9",
+                NamedKey::F10 => "F10",
+                NamedKey::F11 => "F11",
+                NamedKey::F12 => "F12",
+                // Modifier-only keys -> None
+                NamedKey::Shift
+                | NamedKey::Control
+                | NamedKey::Alt
+                | NamedKey::Super
+                | NamedKey::Meta => {
+                    return None;
+                }
+                // Unknown/unsupported named keys -> None
+                _ => return None,
+            };
+            Some(keyboard::KeyInput { key: keyboard::Key::Named(name.to_string()), modifiers })
+        }
+        // Dead keys, unidentified, etc. -> None
+        _ => None,
+    }
 }
 
 /// Convert a winit `Modifiers` struct into our domain `Modifiers`.
-pub fn translate_modifiers(_state: winit::event::Modifiers) -> keyboard::Modifiers {
-    // Stub: always returns default (all false). Implementation will map flags.
-    keyboard::Modifiers::default()
+pub fn translate_modifiers(state: winit::event::Modifiers) -> keyboard::Modifiers {
+    let s = state.state();
+    keyboard::Modifiers {
+        logo: s.super_key(),
+        ctrl: s.control_key(),
+        shift: s.shift_key(),
+        alt: s.alt_key(),
+    }
 }
 
 /// Encode a key event as bytes to send to the PTY.
@@ -54,9 +113,53 @@ pub fn key_to_pty_bytes(_event: &KeyEvent, _modifiers: keyboard::Modifiers) -> O
 /// Encode a logical key as bytes to send to the PTY.
 ///
 /// Returns `None` if the key has no byte representation.
-pub fn key_to_pty_bytes_from_key(_key: &Key, _modifiers: keyboard::Modifiers) -> Option<Vec<u8>> {
-    // Stub: always returns None. Implementation will encode keys as PTY bytes.
-    None
+pub fn key_to_pty_bytes_from_key(key: &Key, modifiers: keyboard::Modifiers) -> Option<Vec<u8>> {
+    match key {
+        Key::Character(text) => {
+            let first_char = text.chars().next()?;
+            // Ctrl+letter (a-z) produces control codes. Logo/Cmd does NOT.
+            if modifiers.ctrl && first_char.is_ascii_lowercase() {
+                let code = (first_char as u8) - 0x60;
+                Some(vec![code])
+            } else {
+                // UTF-8 encode the text.
+                Some(text.as_bytes().to_vec())
+            }
+        }
+        Key::Named(named) => match named {
+            NamedKey::Enter => Some(vec![0x0D]),
+            NamedKey::Tab => Some(vec![0x09]),
+            NamedKey::Escape => Some(vec![0x1B]),
+            NamedKey::Backspace => Some(vec![0x7F]),
+            NamedKey::Space => Some(vec![0x20]),
+            NamedKey::ArrowUp => Some(vec![0x1B, b'[', b'A']),
+            NamedKey::ArrowDown => Some(vec![0x1B, b'[', b'B']),
+            NamedKey::ArrowRight => Some(vec![0x1B, b'[', b'C']),
+            NamedKey::ArrowLeft => Some(vec![0x1B, b'[', b'D']),
+            NamedKey::Home => Some(vec![0x1B, b'[', b'H']),
+            NamedKey::End => Some(vec![0x1B, b'[', b'F']),
+            NamedKey::Delete => Some(vec![0x1B, b'[', b'3', b'~']),
+            NamedKey::PageUp => Some(vec![0x1B, b'[', b'5', b'~']),
+            NamedKey::PageDown => Some(vec![0x1B, b'[', b'6', b'~']),
+            NamedKey::Insert => Some(vec![0x1B, b'[', b'2', b'~']),
+            NamedKey::F1 => Some(vec![0x1B, b'O', b'P']),
+            NamedKey::F2 => Some(vec![0x1B, b'O', b'Q']),
+            NamedKey::F3 => Some(vec![0x1B, b'O', b'R']),
+            NamedKey::F4 => Some(vec![0x1B, b'O', b'S']),
+            NamedKey::F5 => Some(b"\x1b[15~".to_vec()),
+            NamedKey::F6 => Some(b"\x1b[17~".to_vec()),
+            NamedKey::F7 => Some(b"\x1b[18~".to_vec()),
+            NamedKey::F8 => Some(b"\x1b[19~".to_vec()),
+            NamedKey::F9 => Some(b"\x1b[20~".to_vec()),
+            NamedKey::F10 => Some(b"\x1b[21~".to_vec()),
+            NamedKey::F11 => Some(b"\x1b[23~".to_vec()),
+            NamedKey::F12 => Some(b"\x1b[24~".to_vec()),
+            // Modifier-only or unknown -> None
+            _ => None,
+        },
+        // Dead keys, unidentified, etc.
+        _ => None,
+    }
 }
 
 #[cfg(test)]
