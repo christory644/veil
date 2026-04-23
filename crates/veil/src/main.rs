@@ -8,6 +8,8 @@
 //! platform glue.
 
 mod action_dispatch;
+#[allow(dead_code)]
+mod aggregator_actor;
 mod bootstrap;
 mod config_reload;
 mod egui_integration;
@@ -20,6 +22,8 @@ mod key_translation;
 mod quad_builder;
 mod renderer;
 mod sidebar_wiring;
+#[allow(dead_code)]
+mod socket_actor;
 #[allow(dead_code)]
 mod terminal_map;
 mod vertex;
