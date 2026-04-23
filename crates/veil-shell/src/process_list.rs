@@ -259,7 +259,6 @@ mod imp {
 /// Returns a snapshot of the process table. On macOS, uses `sysctl` with
 /// `KERN_PROC_ALL`. On Linux, reads `/proc`. On Windows, uses
 /// `CreateToolhelp32Snapshot`.
-#[cfg_attr(target_os = "macos", allow(unsafe_code))]
 pub fn list_processes() -> Result<Vec<ProcessEntry>, ProcessListError> {
     imp::list_processes()
 }
@@ -270,27 +269,8 @@ pub fn list_processes() -> Result<Vec<ProcessEntry>, ProcessListError> {
 /// descendants using the parent-child chain.
 pub fn list_descendants(root_pid: u32) -> Result<Vec<ProcessEntry>, ProcessListError> {
     let all = list_processes()?;
-
-    // BFS from root_pid to find all descendant PIDs.
-    let mut visited = Vec::new();
-
-    if all.iter().any(|p| p.pid == root_pid) {
-        visited.push(root_pid);
-    }
-
-    let mut i = 0;
-    while i < visited.len() {
-        let parent = visited[i];
-        for p in &all {
-            if p.ppid == parent && !visited.contains(&p.pid) {
-                visited.push(p.pid);
-            }
-        }
-        i += 1;
-    }
-
-    let entries = all.into_iter().filter(|p| visited.contains(&p.pid)).collect();
-
+    let descendant_set = crate::agent_detector::descendant_pids(root_pid, &all);
+    let entries = all.into_iter().filter(|p| descendant_set.contains(&p.pid)).collect();
     Ok(entries)
 }
 
@@ -323,23 +303,32 @@ mod tests {
         assert!(debug.contains("init"));
     }
 
-    // ── API shape verification ──────────────────────────────────────
+    // ── Integration tests (actual OS calls) ──────────────────────────
 
     #[test]
-    fn list_processes_returns_result_type() {
-        // Verify the function signature compiles and returns the expected type.
-        // The actual call will panic with todo!(), which is the expected RED state.
-        let result: Result<Vec<ProcessEntry>, ProcessListError> =
-            std::panic::catch_unwind(list_processes).unwrap_or(Ok(vec![]));
-        // We just need this to compile; the todo!() panic is caught above.
-        let _ = result;
+    fn list_processes_returns_non_empty() {
+        let procs = list_processes().expect("list_processes should succeed");
+        assert!(!procs.is_empty(), "should find at least one running process");
     }
 
     #[test]
-    fn list_descendants_returns_result_type() {
-        let result: Result<Vec<ProcessEntry>, ProcessListError> =
-            std::panic::catch_unwind(|| list_descendants(1)).unwrap_or(Ok(vec![]));
-        let _ = result;
+    fn list_processes_contains_current_pid() {
+        let current_pid = std::process::id();
+        let procs = list_processes().expect("list_processes should succeed");
+        assert!(
+            procs.iter().any(|p| p.pid == current_pid),
+            "current process (PID {current_pid}) should appear in process list"
+        );
+    }
+
+    #[test]
+    fn list_descendants_includes_self() {
+        let current_pid = std::process::id();
+        let descendants = list_descendants(current_pid).expect("list_descendants should succeed");
+        assert!(
+            descendants.iter().any(|p| p.pid == current_pid),
+            "descendants of current PID should include self"
+        );
     }
 
     #[test]

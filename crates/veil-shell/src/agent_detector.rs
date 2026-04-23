@@ -76,8 +76,9 @@ pub fn identify_agent(process_name: &str) -> Option<AgentKind> {
 
 /// Build the set of all PIDs that are descendants of `root_pid`.
 ///
-/// Performs a BFS/DFS from `root_pid` through parent-child relationships.
-fn descendant_pids(root_pid: u32, processes: &[ProcessEntry]) -> Vec<u32> {
+/// Performs a BFS from `root_pid` through parent-child relationships.
+/// Includes `root_pid` itself if it exists in the process list.
+pub(crate) fn descendant_pids(root_pid: u32, processes: &[ProcessEntry]) -> Vec<u32> {
     let mut visited = Vec::new();
 
     // Include root_pid itself if it exists in the process list.

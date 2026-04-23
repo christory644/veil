@@ -4,7 +4,7 @@
 //! and environment. Deduplicates redundant events (e.g., repeated OSC 7 with
 //! the same path).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use veil_core::workspace::SurfaceId;
 
@@ -33,8 +33,8 @@ impl SurfaceShellState {
     }
 
     /// Get the current working directory, if known.
-    pub fn current_dir(&self) -> Option<&PathBuf> {
-        self.current_dir.as_ref()
+    pub fn current_dir(&self) -> Option<&Path> {
+        self.current_dir.as_deref()
     }
 
     /// Get the currently active agent, if any.
@@ -228,7 +228,7 @@ mod tests {
         let mut state = SurfaceShellState::new(sid(1));
         assert!(state.current_dir().is_none());
         state.handle_osc7("7;file:///tmp/test");
-        assert_eq!(state.current_dir(), Some(&PathBuf::from("/tmp/test")));
+        assert_eq!(state.current_dir(), Some(Path::new("/tmp/test")));
     }
 
     // ── Environment cascading ───────────────────────────────────────
