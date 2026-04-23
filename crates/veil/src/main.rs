@@ -17,7 +17,6 @@ mod frame;
 mod key_translation;
 mod quad_builder;
 mod renderer;
-#[allow(dead_code)]
 mod sidebar_wiring;
 #[allow(dead_code)]
 mod terminal_map;
@@ -120,6 +119,11 @@ impl ApplicationHandler for VeilApp {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
+        // Forward events to egui for sidebar input handling.
+        if let (Some(renderer), Some(window)) = (&mut self.renderer, self.window.as_ref()) {
+            let _ = renderer.egui.on_window_event(window, &event);
+        }
+
         match event {
             WindowEvent::CloseRequested => {
                 if let Some(ref mut mgr) = self.pty_manager {
@@ -135,24 +139,7 @@ impl ApplicationHandler for VeilApp {
                 }
             }
             WindowEvent::RedrawRequested => {
-                let frame_geometry = build_frame_geometry(
-                    &self.app_state,
-                    &self.focus,
-                    self.window_size.0,
-                    self.window_size.1,
-                );
-                if let Some(renderer) = &mut self.renderer {
-                    match renderer.render(&frame_geometry, None) {
-                        Ok(()) => {}
-                        Err(e) => {
-                            tracing::error!("render error: {e}");
-                            event_loop.exit();
-                        }
-                    }
-                }
-                if let Some(window) = &self.window {
-                    window.request_redraw();
-                }
+                self.handle_redraw(event_loop);
             }
             WindowEvent::ModifiersChanged(new_modifiers) => {
                 self.current_modifiers = key_translation::translate_modifiers(new_modifiers);
@@ -189,8 +176,9 @@ impl ApplicationHandler for VeilApp {
                                 }
                             }
                         }
-                        // Sidebar key handling and unhandled keys are no-ops
-                        // until egui sidebar integration.
+                        // Sidebar keyboard navigation (j/k, arrows) is a
+                        // future enhancement. Mouse interactions are handled
+                        // by egui's event system during RedrawRequested.
                         KeyRoute::ForwardToSidebar | KeyRoute::Unhandled => {}
                     }
                 }
@@ -201,6 +189,64 @@ impl ApplicationHandler for VeilApp {
 }
 
 impl VeilApp {
+    /// Run a single frame: build geometry, execute sidebar UI, render, request next frame.
+    fn handle_redraw(&mut self, event_loop: &ActiveEventLoop) {
+        let frame_geometry = build_frame_geometry(
+            &self.app_state,
+            &self.focus,
+            self.window_size.0,
+            self.window_size.1,
+        );
+
+        // Run egui sidebar frame and collect output for GPU rendering.
+        let egui_output = self.run_sidebar_frame();
+
+        if let Some(renderer) = &mut self.renderer {
+            match renderer.render(&frame_geometry, egui_output) {
+                Ok(()) => {}
+                Err(e) => {
+                    tracing::error!("render error: {e}");
+                    event_loop.exit();
+                }
+            }
+        }
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+
+    /// Execute the egui sidebar frame and apply interactions.
+    ///
+    /// Returns `Some(FullOutput)` when the sidebar is visible (for GPU rendering),
+    /// or `None` when hidden.
+    fn run_sidebar_frame(&mut self) -> Option<egui::FullOutput> {
+        if !self.app_state.sidebar.visible {
+            return None;
+        }
+        let (Some(renderer), Some(window)) = (&mut self.renderer, self.window.as_ref()) else {
+            return None;
+        };
+
+        let raw_input = renderer.egui.take_raw_input(window);
+
+        let mut sidebar_response = veil_ui::sidebar::SidebarResponse::default();
+        let full_output = renderer.egui.ctx.run_ui(raw_input, |ui| {
+            sidebar_response = veil_ui::sidebar::render_sidebar(ui, &self.app_state);
+        });
+
+        if let Err(e) = sidebar_wiring::apply_sidebar_response(
+            &sidebar_response,
+            &mut self.app_state,
+            &mut self.focus,
+        ) {
+            tracing::warn!("sidebar response error: {e}");
+        }
+
+        renderer.egui.handle_platform_output(window, full_output.platform_output.clone());
+
+        Some(full_output)
+    }
+
     fn execute_effect(&mut self, effect: ActionEffect) {
         match effect {
             ActionEffect::SpawnPty { surface_id, working_directory } => {
