@@ -43,9 +43,9 @@ pub enum Osc7Error {
 /// The `payload` is the content between `\x1b]` and the string terminator.
 /// Expected format: `7;file://hostname/path/to/directory`
 ///
-/// The path component is percent-decoded (e.g., `%20` becomes a space).
-/// On POSIX, the path is used directly. On Windows, the path is
-/// converted from `/C:/Users/...` to `C:\Users\...` format.
+/// The path component is percent-decoded (e.g., `%20` becomes a space)
+/// and used directly via `PathBuf::from`. On Windows, `PathBuf` handles
+/// the leading slash and forward slashes in paths like `/C:/Users/...`.
 pub fn parse_osc7(payload: &str) -> Result<Osc7Report, Osc7Error> {
     // Strip the "7;" prefix.
     let Some(uri) = payload.strip_prefix("7;") else {
