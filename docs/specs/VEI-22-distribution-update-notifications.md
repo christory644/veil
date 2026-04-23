@@ -95,7 +95,13 @@ pub fn check_newer(current: &SemVer, remote: &SemVer) -> Option<SemVer>;
 - `1.0.0` is NOT newer than `1.1.0` (older)
 - `1.0.0` is newer than `1.0.0-rc.1` (release > pre-release)
 - `1.0.0-rc.2` is NOT newer than `1.0.0` (pre-release < release)
-- `1.0.0-alpha.1` is NOT newer than `1.0.0-beta.1` (pre-release comparison is lexicographic, but both are older than 1.0.0)
+- `1.0.0-alpha.1` is NOT newer than `1.0.0-beta.1` (pre-release comparison follows semver 2.0.0 §11, both are older than 1.0.0)
+- `1.0.0-beta` is newer than `1.0.0-alpha` (alphanumeric identifiers compared lexically)
+- `1.0.0-2` is newer than `1.0.0-1` (numeric identifiers compared as integers)
+- `1.0.0-11` is newer than `1.0.0-2` (numeric, not lexicographic: 11 > 2)
+- `1.0.0-alpha.2` is newer than `1.0.0-alpha.1` (numeric suffix compared as integer)
+- `1.0.0-alpha` is newer than `1.0.0-1` (alphanumeric > numeric per semver §11)
+- `1.0.0-alpha.1` is newer than `1.0.0-alpha` (more identifiers = higher precedence when shared prefix is equal)
 
 *Display:*
 - `SemVer { 1, 2, 3, None }` displays as `"1.2.3"`
@@ -172,7 +178,7 @@ impl std::fmt::Display for InstallMethod {
 |--------|---------|
 | Homebrew | `brew upgrade veil` |
 | Cargo | `cargo install veil` |
-| Aur | `paru -Syu veil` |
+| Aur | `yay -Syu veil  (or your preferred AUR helper)` |
 | Winget | `winget upgrade veil` |
 | Scoop | `scoop update veil` |
 | Nix | `nix profile upgrade veil` |

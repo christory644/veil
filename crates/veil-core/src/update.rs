@@ -62,8 +62,15 @@ impl SemVer {
     }
 
     /// Returns true if `self` is strictly newer than `other`.
+    ///
     /// Pre-release versions are considered older than the same version
-    /// without a pre-release label (1.0.0-rc.1 < 1.0.0).
+    /// without a pre-release label (1.0.0-rc.1 < 1.0.0). When both versions
+    /// have pre-release labels, comparison follows semver 2.0.0 §11:
+    /// dot-separated identifiers are compared left to right; numeric
+    /// identifiers compare as integers, alphanumeric identifiers compare
+    /// lexically (ASCII), numeric identifiers always sort before
+    /// alphanumeric identifiers, and a version with fewer identifiers has
+    /// lower precedence when all preceding identifiers are equal.
     pub fn is_newer_than(&self, other: &SemVer) -> bool {
         let self_triple = (self.major, self.minor, self.patch);
         let other_triple = (other.major, other.minor, other.patch);
@@ -77,11 +84,45 @@ impl SemVer {
                 match (&self.pre, &other.pre) {
                     (None, Some(_)) => true,         // release > pre-release
                     (Some(_) | None, None) => false, // pre-release < release, or equal
-                    (Some(a), Some(b)) => a > b,     // lexicographic comparison
+                    (Some(a), Some(b)) => compare_pre_release(a, b) == std::cmp::Ordering::Greater,
                 }
             }
         }
     }
+}
+
+/// Compare two pre-release strings per semver 2.0.0 §11.
+///
+/// Dot-separated identifiers are compared left to right. Identifiers
+/// consisting only of digits are compared numerically; otherwise they
+/// are compared lexically (ASCII byte order). A numeric identifier
+/// always has lower precedence than an alphanumeric identifier. When
+/// all preceding identifiers are equal, the version with fewer
+/// identifiers has lower precedence.
+fn compare_pre_release(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+
+    let a_parts: Vec<&str> = a.split('.').collect();
+    let b_parts: Vec<&str> = b.split('.').collect();
+
+    for (ai, bi) in a_parts.iter().zip(b_parts.iter()) {
+        let a_num = ai.parse::<u64>();
+        let b_num = bi.parse::<u64>();
+
+        let ord = match (a_num, b_num) {
+            (Ok(an), Ok(bn)) => an.cmp(&bn),      // both numeric
+            (Ok(_), Err(_)) => Ordering::Less,    // numeric < alphanumeric
+            (Err(_), Ok(_)) => Ordering::Greater, // alphanumeric > numeric
+            (Err(_), Err(_)) => ai.cmp(bi),       // both alphanumeric: lexical
+        };
+
+        if ord != Ordering::Equal {
+            return ord;
+        }
+    }
+
+    // All shared identifiers are equal; fewer identifiers = lower precedence.
+    a_parts.len().cmp(&b_parts.len())
 }
 
 impl std::fmt::Display for SemVer {
@@ -187,7 +228,7 @@ impl InstallMethod {
         match self {
             Self::Homebrew => Some("brew upgrade veil"),
             Self::Cargo => Some("cargo install veil"),
-            Self::Aur => Some("paru -Syu veil"),
+            Self::Aur => Some("yay -Syu veil  (or your preferred AUR helper)"),
             Self::Winget => Some("winget upgrade veil"),
             Self::Scoop => Some("scoop update veil"),
             Self::Nix => Some("nix profile upgrade veil"),
@@ -631,11 +672,79 @@ mod tests {
 
         #[test]
         fn pre_release_alpha_not_newer_than_beta() {
-            // Both are pre-releases of the same version; lexicographic comparison.
-            // "alpha.1" < "beta.1" lexicographically, so alpha is not newer than beta.
+            // Both are pre-releases of the same version; alphanumeric comparison.
+            // "alpha" < "beta" lexically, so alpha is not newer than beta.
             let alpha = SemVer { major: 1, minor: 0, patch: 0, pre: Some("alpha.1".to_string()) };
             let beta = SemVer { major: 1, minor: 0, patch: 0, pre: Some("beta.1".to_string()) };
             assert!(!alpha.is_newer_than(&beta));
+        }
+
+        // -- semver 2.0.0 §11 compliant pre-release ordering --
+
+        #[test]
+        fn pre_release_semver_ordering_alpha_beta_rc_release() {
+            // 1.0.0-alpha < 1.0.0-beta < 1.0.0-rc.1 < 1.0.0
+            let alpha = SemVer::parse("1.0.0-alpha").unwrap();
+            let beta = SemVer::parse("1.0.0-beta").unwrap();
+            let rc1 = SemVer::parse("1.0.0-rc.1").unwrap();
+            let release = SemVer::parse("1.0.0").unwrap();
+
+            assert!(beta.is_newer_than(&alpha));
+            assert!(rc1.is_newer_than(&beta));
+            assert!(release.is_newer_than(&rc1));
+
+            // And the reverses are false.
+            assert!(!alpha.is_newer_than(&beta));
+            assert!(!beta.is_newer_than(&rc1));
+            assert!(!rc1.is_newer_than(&release));
+        }
+
+        #[test]
+        fn pre_release_numeric_identifiers_compared_as_integers() {
+            // 1.0.0-1 < 1.0.0-2 < 1.0.0-11 (numeric, not lexicographic)
+            let v1 = SemVer::parse("1.0.0-1").unwrap();
+            let v2 = SemVer::parse("1.0.0-2").unwrap();
+            let v11 = SemVer::parse("1.0.0-11").unwrap();
+
+            assert!(v2.is_newer_than(&v1));
+            assert!(v11.is_newer_than(&v2));
+            // Key: lexicographic would say "11" < "2", but numeric says 11 > 2.
+            assert!(v11.is_newer_than(&v1));
+            assert!(!v1.is_newer_than(&v11));
+        }
+
+        #[test]
+        fn pre_release_numeric_suffix_compared_as_integers() {
+            // 1.0.0-alpha.1 < 1.0.0-alpha.2 < 1.0.0-alpha.11
+            let a1 = SemVer::parse("1.0.0-alpha.1").unwrap();
+            let a2 = SemVer::parse("1.0.0-alpha.2").unwrap();
+            let a11 = SemVer::parse("1.0.0-alpha.11").unwrap();
+
+            assert!(a2.is_newer_than(&a1));
+            assert!(a11.is_newer_than(&a2));
+            assert!(a11.is_newer_than(&a1));
+        }
+
+        #[test]
+        fn pre_release_numeric_before_alphanumeric() {
+            // Numeric identifiers always have lower precedence than alphanumeric.
+            // 1.0.0-1 < 1.0.0-alpha
+            let numeric = SemVer::parse("1.0.0-1").unwrap();
+            let alpha = SemVer::parse("1.0.0-alpha").unwrap();
+
+            assert!(alpha.is_newer_than(&numeric));
+            assert!(!numeric.is_newer_than(&alpha));
+        }
+
+        #[test]
+        fn pre_release_fewer_identifiers_lower_precedence() {
+            // 1.0.0-alpha < 1.0.0-alpha.1 (fewer identifiers = lower precedence
+            // when all preceding identifiers are equal)
+            let alpha = SemVer::parse("1.0.0-alpha").unwrap();
+            let alpha1 = SemVer::parse("1.0.0-alpha.1").unwrap();
+
+            assert!(alpha1.is_newer_than(&alpha));
+            assert!(!alpha.is_newer_than(&alpha1));
         }
     }
 
