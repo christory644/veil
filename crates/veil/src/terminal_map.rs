@@ -7,15 +7,56 @@ use std::collections::HashMap;
 
 use veil_core::workspace::SurfaceId;
 
+/// Wraps a `veil_ghostty::Terminal` to implement `TerminalWriter`.
+#[cfg(not(no_libghosty))]
+struct GhosttyTerminalWriter {
+    terminal: veil_ghostty::Terminal,
+}
+
+#[cfg(not(no_libghosty))]
+impl TerminalWriter for GhosttyTerminalWriter {
+    fn write_vt(&mut self, data: &[u8]) {
+        self.terminal.write_vt(data);
+    }
+
+    fn resize(
+        &mut self,
+        cols: u16,
+        rows: u16,
+        cell_width_px: u32,
+        cell_height_px: u32,
+    ) -> Result<(), String> {
+        self.terminal.resize(cols, rows, cell_width_px, cell_height_px).map_err(|e| e.to_string())
+    }
+
+    fn cols(&self) -> u16 {
+        self.terminal.cols().unwrap_or(80)
+    }
+
+    fn rows(&self) -> u16 {
+        self.terminal.rows().unwrap_or(24)
+    }
+
+    fn render_cells(&mut self) -> Option<veil_ghostty::CellGrid> {
+        None
+    }
+}
+
 /// Factory function to create a real terminal writer backed by libghosty.
 ///
 /// Returns `None` if terminal creation fails or if libghosty is not available.
 /// The returned writer wraps a `veil_ghostty::Terminal` instance configured with
 /// the given cell dimensions and 10,000 lines of scrollback.
 #[cfg(not(no_libghosty))]
-pub fn create_ghostty_terminal(_cols: u16, _rows: u16) -> Option<Box<dyn TerminalWriter>> {
-    // RED stub: real implementation will wrap veil_ghostty::Terminal in GhosttyTerminalWriter.
-    None
+pub fn create_ghostty_terminal(cols: u16, rows: u16) -> Option<Box<dyn TerminalWriter>> {
+    let config = veil_ghostty::TerminalConfig { cols, rows, max_scrollback: 10_000 };
+    match veil_ghostty::Terminal::new(config) {
+        Ok(terminal) => Some(Box::new(GhosttyTerminalWriter { terminal })),
+        Err(e) => {
+            tracing::error!("failed to create ghostty terminal: {e}");
+            None
+        }
+    }
 }
 
 /// Stub factory when libghosty is not available. Always returns `None`.
@@ -27,6 +68,7 @@ pub fn create_ghostty_terminal(_cols: u16, _rows: u16) -> Option<Box<dyn Termina
 
 /// Abstraction over terminal state management.
 /// Real impl wraps `veil_ghostty::Terminal`. Tests use a mock.
+#[allow(dead_code)]
 pub trait TerminalWriter {
     /// Feed VT-encoded bytes to the terminal's parser.
     fn write_vt(&mut self, data: &[u8]);
@@ -89,6 +131,7 @@ impl TerminalMap {
     }
 
     /// Resize the terminal for a surface. Returns `Err` if surface not found.
+    #[allow(dead_code)]
     pub fn resize(
         &mut self,
         surface_id: SurfaceId,
@@ -104,26 +147,31 @@ impl TerminalMap {
     }
 
     /// Get a reference to a terminal.
+    #[allow(dead_code)]
     pub fn get(&self, surface_id: SurfaceId) -> Option<&dyn TerminalWriter> {
         self.terminals.get(&surface_id).map(AsRef::as_ref)
     }
 
     /// Get a mutable reference to a terminal writer.
+    #[allow(dead_code)]
     pub fn get_mut(&mut self, surface_id: SurfaceId) -> Option<&mut Box<dyn TerminalWriter>> {
         self.terminals.get_mut(&surface_id)
     }
 
     /// Number of active terminals.
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.terminals.len()
     }
 
     /// Whether the map is empty.
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.terminals.is_empty()
     }
 
     /// Iterate over surface IDs and their mutable terminal writers.
+    #[allow(dead_code)]
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (SurfaceId, &mut Box<dyn TerminalWriter>)> {
         self.terminals.iter_mut().map(|(&k, v)| (k, v))
     }
@@ -132,7 +180,12 @@ impl TerminalMap {
 /// Compute terminal cell dimensions from a pane rect and cell pixel sizes.
 ///
 /// Returns `(cols, rows)` clamped to at least `(1, 1)`.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+#[allow(
+    dead_code,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
 pub fn compute_pane_cells(
     pane_width_px: f32,
     pane_height_px: f32,
@@ -158,6 +211,7 @@ pub fn compute_pane_cells(
 /// (`PtyOutput` or `SurfaceExited`), regardless of whether the
 /// surface was present in the map. Returns `false` for all other
 /// `StateUpdate` variants.
+#[allow(dead_code)]
 pub fn process_state_update(
     update: &veil_core::message::StateUpdate,
     terminal_map: &mut TerminalMap,
