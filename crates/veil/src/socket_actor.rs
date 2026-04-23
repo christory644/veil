@@ -35,12 +35,33 @@ impl SocketHandle {
 /// - Calls `server.run(shutdown)` inside `rt.block_on()`
 /// - Thread exits when shutdown is triggered and `server.run()` returns
 pub fn start_socket_server(
-    _app_state: Arc<Mutex<AppState>>,
-    _shutdown: ShutdownHandle,
+    app_state: Arc<Mutex<AppState>>,
+    shutdown: ShutdownHandle,
 ) -> SocketHandle {
-    let handle = std::thread::spawn(move || {
-        // TODO: implement socket server actor
-    });
+    let handle = std::thread::Builder::new()
+        .name("veil-socket".into())
+        .spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                Ok(rt) => rt,
+                Err(e) => {
+                    tracing::error!("failed to create tokio runtime for socket server: {e}");
+                    return;
+                }
+            };
+
+            let config = veil_socket::ServerConfig::default_for_platform();
+            tracing::info!("socket server binding to {:?}", config.socket_path);
+
+            let server = veil_socket::SocketServer::new(config, app_state);
+
+            if let Err(e) = rt.block_on(server.run(shutdown)) {
+                tracing::error!("socket server exited with error: {e}");
+            } else {
+                tracing::info!("socket server shut down cleanly");
+            }
+        })
+        .expect("failed to spawn socket server thread");
+
     SocketHandle { thread: handle }
 }
 
