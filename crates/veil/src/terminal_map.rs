@@ -103,13 +103,16 @@ impl TerminalMap {
 /// Compute terminal cell dimensions from a pane rect and cell pixel sizes.
 ///
 /// Returns `(cols, rows)` clamped to at least `(1, 1)`.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
 pub fn compute_pane_cells(
-    _pane_width_px: f32,
-    _pane_height_px: f32,
-    _cell_width_px: u32,
-    _cell_height_px: u32,
+    pane_width_px: f32,
+    pane_height_px: f32,
+    cell_width_px: u32,
+    cell_height_px: u32,
 ) -> (u16, u16) {
-    todo!()
+    let cols = (pane_width_px / cell_width_px as f32).floor() as u16;
+    let rows = (pane_height_px / cell_height_px as f32).floor() as u16;
+    (cols.max(1), rows.max(1))
 }
 
 /// Process a single `StateUpdate` against the `TerminalMap`.
@@ -118,21 +121,72 @@ pub fn compute_pane_cells(
 /// For `SurfaceExited`, removes the terminal from the map.
 /// Returns `true` if the update was handled (recognized variant).
 pub fn process_state_update(
-    _update: &veil_core::message::StateUpdate,
-    _terminal_map: &mut TerminalMap,
+    update: &veil_core::message::StateUpdate,
+    terminal_map: &mut TerminalMap,
 ) -> bool {
-    todo!()
+    match update {
+        veil_core::message::StateUpdate::PtyOutput { surface_id, data } => {
+            terminal_map.write_vt(*surface_id, data);
+            true
+        }
+        veil_core::message::StateUpdate::SurfaceExited { surface_id, .. } => {
+            terminal_map.remove(*surface_id);
+            true
+        }
+        _ => false,
+    }
 }
 
 /// Handle surface exit in `AppState`: close the pane if the workspace has more
 /// than one, otherwise leave it.  Returns the `SurfaceId` that should receive
 /// focus after the close, if any.
 pub fn handle_surface_exit(
-    _surface_id: SurfaceId,
-    _app_state: &mut veil_core::state::AppState,
-    _focus: &mut veil_core::focus::FocusManager,
+    surface_id: SurfaceId,
+    app_state: &mut veil_core::state::AppState,
+    focus: &mut veil_core::focus::FocusManager,
 ) -> Option<SurfaceId> {
-    todo!()
+    // Find the workspace containing this surface.
+    let ws_id = app_state
+        .workspaces
+        .iter()
+        .find(|ws| ws.layout.surface_ids().contains(&surface_id))
+        .map(|ws| ws.id)?;
+
+    let ws = app_state.workspace(ws_id)?;
+    let pane_count = ws.layout.pane_count();
+
+    // If this is the only pane, leave the workspace intact.
+    if pane_count <= 1 {
+        return None;
+    }
+
+    // Find the pane_id for this surface.
+    let pane_id = app_state.workspace(ws_id)?.pane_id_for_surface(surface_id)?;
+
+    // Gather surfaces before closing so we can pick a new focus target.
+    let surfaces_before = app_state.workspace(ws_id)?.layout.surface_ids();
+
+    // Close the pane.
+    app_state.close_pane(ws_id, pane_id).ok()?;
+
+    // Pick a new focus target from the remaining surfaces.
+    let surfaces_after = app_state.workspace(ws_id)?.layout.surface_ids();
+
+    let was_focused = focus.focused_surface() == Some(surface_id);
+
+    if was_focused {
+        // Pick the surface that occupied the same position, or the last one.
+        let pos = surfaces_before.iter().position(|s| *s == surface_id).unwrap_or(0);
+        let idx = pos.min(surfaces_after.len().saturating_sub(1));
+        let new_focus = surfaces_after[idx];
+        focus.focus_surface(new_focus);
+        Some(new_focus)
+    } else {
+        // Focus wasn't on the exited surface; return the remaining surface
+        // that still has focus (no change needed), but still return Some
+        // to indicate a pane was closed.
+        Some(surfaces_after[0])
+    }
 }
 
 #[cfg(test)]
