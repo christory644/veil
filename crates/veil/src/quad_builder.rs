@@ -27,19 +27,15 @@ pub struct CellGridParams {
     pub rows: u16,
     /// Background color as RGBA.
     pub bg_color: [f32; 4],
-    /// Per-cell background colors. If provided, must be `cols * rows` in length.
+    /// Per-cell background colors. If provided, indexed as `row * cols + col`.
     /// Each entry is `None` (use `bg_color` default) or `Some(color)`.
-    #[allow(dead_code)]
     pub cell_bg_colors: Option<Vec<Option<[f32; 4]>>>,
 }
 
 /// Convert a `Color` (u8 RGB) to `[f32; 4]` (normalized RGBA with alpha 1.0).
-///
-/// Stub: returns `[0.0, 0.0, 0.0, 1.0]` -- real implementation will normalize
-/// the color components.
-#[allow(dead_code)]
-pub fn color_to_f32(_color: veil_ghostty::Color) -> [f32; 4] {
-    [0.0, 0.0, 0.0, 1.0]
+#[allow(dead_code)] // Called by frame.rs cell_fg_color, which is wired in a later unit.
+pub fn color_to_f32(color: veil_ghostty::Color) -> [f32; 4] {
+    [f32::from(color.r) / 255.0, f32::from(color.g) / 255.0, f32::from(color.b) / 255.0, 1.0]
 }
 
 /// Build cell background quads for a single pane.
@@ -68,15 +64,14 @@ pub fn build_cell_background_quads(params: &CellGridParams) -> (Vec<Vertex>, Vec
         for col in 0..cols {
             let x = params.rect.x + col as f32 * cell_width;
             let y = params.rect.y + row as f32 * cell_height;
-            let quad_count = row * cols + col;
-            vertices.extend_from_slice(&quad_vertices(
-                x,
-                y,
-                cell_width,
-                cell_height,
-                params.bg_color,
-            ));
-            indices.extend_from_slice(&quad_indices(vertex_base(quad_count)));
+            let idx = row * cols + col;
+            let color = params
+                .cell_bg_colors
+                .as_ref()
+                .and_then(|colors| colors.get(idx).copied().flatten())
+                .unwrap_or(params.bg_color);
+            vertices.extend_from_slice(&quad_vertices(x, y, cell_width, cell_height, color));
+            indices.extend_from_slice(&quad_indices(vertex_base(idx)));
         }
     }
 
