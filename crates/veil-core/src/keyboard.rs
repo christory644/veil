@@ -403,7 +403,7 @@ pub fn apply_keybindings_config(
     ];
 
     for (field, action) in mappings {
-        if let Some(ref binding_str) = field {
+        if let Some(binding_str) = field {
             match parse_keybinding(binding_str) {
                 Some(key_input) => {
                     registry.bind(key_input, action.clone());

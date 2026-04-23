@@ -141,45 +141,7 @@ impl ApplicationHandler for VeilApp {
         }
         self.pty_manager = Some(pty_manager);
 
-        // Start config file watcher if a config path was discovered.
-        if let Some(ref config_path) = self.config_path {
-            let (config_event_tx, mut config_event_rx) =
-                tokio::sync::mpsc::channel::<ConfigEvent>(16);
-
-            match ConfigWatcher::new(config_path.clone(), self.app_config.clone(), config_event_tx)
-            {
-                Ok(mut watcher) => {
-                    if let Err(e) = watcher.start(self.shutdown.handle()) {
-                        tracing::warn!("failed to start config watcher: {e}");
-                    } else {
-                        tracing::info!("config watcher started for {}", config_path.display());
-                        self.config_watcher = Some(watcher);
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("failed to create config watcher: {e}");
-                }
-            }
-
-            // Bridge: forward ConfigEvents to state_tx as StateUpdate::ConfigReloaded.
-            let state_tx = self.channels.state_tx.clone();
-            std::thread::spawn(move || {
-                while let Some(event) = config_event_rx.blocking_recv() {
-                    let update = match event {
-                        ConfigEvent::Reloaded { config, delta, warnings } => {
-                            StateUpdate::ConfigReloaded { config, delta, warnings }
-                        }
-                        ConfigEvent::Error(e) => {
-                            tracing::warn!("config reload error: {e}");
-                            continue;
-                        }
-                    };
-                    if state_tx.blocking_send(update).is_err() {
-                        break; // receiver dropped
-                    }
-                }
-            });
-        }
+        self.start_config_watcher();
     }
 
     fn window_event(
@@ -258,6 +220,51 @@ impl ApplicationHandler for VeilApp {
 }
 
 impl VeilApp {
+    /// Start the config file watcher if a config path was discovered at startup.
+    ///
+    /// Spawns a bridge thread that converts `ConfigEvent`s from the watcher into
+    /// `StateUpdate::ConfigReloaded` messages on `Channels.state_tx`.
+    fn start_config_watcher(&mut self) {
+        let Some(ref config_path) = self.config_path else {
+            return;
+        };
+
+        let (config_event_tx, mut config_event_rx) = tokio::sync::mpsc::channel::<ConfigEvent>(16);
+
+        match ConfigWatcher::new(config_path.clone(), self.app_config.clone(), config_event_tx) {
+            Ok(mut watcher) => {
+                if let Err(e) = watcher.start(self.shutdown.handle()) {
+                    tracing::warn!("failed to start config watcher: {e}");
+                } else {
+                    tracing::info!("config watcher started for {}", config_path.display());
+                    self.config_watcher = Some(watcher);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("failed to create config watcher: {e}");
+            }
+        }
+
+        // Bridge: forward ConfigEvents to state_tx as StateUpdate::ConfigReloaded.
+        let state_tx = self.channels.state_tx.clone();
+        std::thread::spawn(move || {
+            while let Some(event) = config_event_rx.blocking_recv() {
+                let update = match event {
+                    ConfigEvent::Reloaded { config, delta, warnings } => {
+                        StateUpdate::ConfigReloaded { config, delta, warnings }
+                    }
+                    ConfigEvent::Error(e) => {
+                        tracing::warn!("config reload error: {e}");
+                        continue;
+                    }
+                };
+                if state_tx.blocking_send(update).is_err() {
+                    break; // receiver dropped
+                }
+            }
+        });
+    }
+
     /// Drain pending state updates from the channel and apply them.
     fn drain_state_updates(&mut self) {
         while let Ok(update) = self.channels.state_rx.try_recv() {
