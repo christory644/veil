@@ -104,14 +104,7 @@ impl ApplicationHandler for VeilApp {
             .expect("just created workspace")
             .working_directory
             .clone();
-        let config = veil_pty::PtyConfig {
-            command: None,
-            args: vec![],
-            working_directory: Some(cwd),
-            env: vec![],
-            size: veil_pty::PtySize::default(),
-        };
-        if let Err(e) = pty_manager.spawn(surface_id, config) {
+        if let Err(e) = pty_manager.spawn(surface_id, default_pty_config(cwd)) {
             tracing::error!("failed to spawn initial PTY: {e}");
         }
         self.pty_manager = Some(pty_manager);
@@ -183,7 +176,7 @@ impl ApplicationHandler for VeilApp {
                         }
                         KeyRoute::ForwardToSurface(surface_id) => {
                             if let Some(bytes) =
-                                key_translation::key_to_pty_bytes(&event, self.current_modifiers)
+                                key_translation::encode_key_for_pty(&event, self.current_modifiers)
                             {
                                 if let Some(ref mgr) = self.pty_manager {
                                     if let Err(e) = mgr.write(surface_id, bytes) {
@@ -208,14 +201,7 @@ impl VeilApp {
         match effect {
             ActionEffect::SpawnPty { surface_id, working_directory } => {
                 if let Some(ref mut mgr) = self.pty_manager {
-                    let config = veil_pty::PtyConfig {
-                        command: None,
-                        args: vec![],
-                        working_directory: Some(working_directory),
-                        env: vec![],
-                        size: veil_pty::PtySize::default(),
-                    };
-                    if let Err(e) = mgr.spawn(surface_id, config) {
+                    if let Err(e) = mgr.spawn(surface_id, default_pty_config(working_directory)) {
                         tracing::error!(?surface_id, "failed to spawn PTY: {e}");
                     }
                 }
@@ -233,6 +219,17 @@ impl VeilApp {
                 }
             }
         }
+    }
+}
+
+/// Build a `PtyConfig` with the default shell and the given working directory.
+fn default_pty_config(working_directory: std::path::PathBuf) -> veil_pty::PtyConfig {
+    veil_pty::PtyConfig {
+        command: None,
+        args: vec![],
+        working_directory: Some(working_directory),
+        env: vec![],
+        size: veil_pty::PtySize::default(),
     }
 }
 

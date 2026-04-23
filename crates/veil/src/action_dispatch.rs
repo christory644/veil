@@ -87,31 +87,37 @@ pub fn dispatch_action(
     }
 }
 
-fn focused_pane_context(
-    app_state: &AppState,
-    focus: &FocusManager,
-) -> Option<(WorkspaceId, SurfaceId)> {
-    let ws_id = app_state.active_workspace_id?;
-    let surface_id = focus.focused_surface()?;
-    Some((ws_id, surface_id))
+/// Active workspace + focused surface + its pane. Most actions need all three;
+/// bundling them avoids repeating the lookup-and-bail pattern.
+struct FocusedPane {
+    workspace: WorkspaceId,
+    surface: SurfaceId,
+    pane: veil_core::workspace::PaneId,
+}
+
+/// Try to resolve the full focused-pane context. Returns `None` when there is
+/// no active workspace, no focused surface, or the surface isn't in the layout.
+fn resolve_focused_pane(app_state: &AppState, focus: &FocusManager) -> Option<FocusedPane> {
+    let workspace = app_state.active_workspace_id?;
+    let surface = focus.focused_surface()?;
+    let pane = app_state.workspace(workspace)?.pane_id_for_surface(surface)?;
+    Some(FocusedPane { workspace, surface, pane })
 }
 
 fn dispatch_split(
     app_state: &mut AppState,
-    focus: &FocusManager,
+    focus: &mut FocusManager,
     direction: SplitDirection,
 ) -> Vec<ActionEffect> {
-    let Some((ws_id, surface_id)) = focused_pane_context(app_state, focus) else {
+    let Some(ctx) = resolve_focused_pane(app_state, focus) else {
         return vec![];
     };
-    let Some(pane_id) =
-        app_state.workspace(ws_id).and_then(|ws| ws.pane_id_for_surface(surface_id))
-    else {
-        return vec![];
-    };
-    let cwd = app_state.workspace(ws_id).map_or(PathBuf::new(), |ws| ws.working_directory.clone());
-    match app_state.split_pane(ws_id, pane_id, direction) {
+    let cwd = app_state
+        .workspace(ctx.workspace)
+        .map_or(PathBuf::new(), |ws| ws.working_directory.clone());
+    match app_state.split_pane(ctx.workspace, ctx.pane, direction) {
         Ok((_new_pane_id, new_surface_id)) => {
+            focus.focus_surface(new_surface_id);
             vec![
                 ActionEffect::SpawnPty { surface_id: new_surface_id, working_directory: cwd },
                 ActionEffect::Redraw,
@@ -122,15 +128,10 @@ fn dispatch_split(
 }
 
 fn dispatch_close_pane(app_state: &mut AppState, focus: &mut FocusManager) -> Vec<ActionEffect> {
-    let Some((ws_id, surface_id)) = focused_pane_context(app_state, focus) else {
+    let Some(ctx) = resolve_focused_pane(app_state, focus) else {
         return vec![];
     };
-    let Some(pane_id) =
-        app_state.workspace(ws_id).and_then(|ws| ws.pane_id_for_surface(surface_id))
-    else {
-        return vec![];
-    };
-    let pane_count = app_state.workspace(ws_id).map_or(0, |ws| ws.layout.pane_count());
+    let pane_count = app_state.workspace(ctx.workspace).map_or(0, |ws| ws.layout.pane_count());
     if pane_count <= 1 {
         if app_state.workspaces.len() > 1 {
             return dispatch_close_workspace(app_state, focus);
@@ -138,27 +139,34 @@ fn dispatch_close_pane(app_state: &mut AppState, focus: &mut FocusManager) -> Ve
         return vec![];
     }
     let surfaces_before =
-        app_state.workspace(ws_id).map_or(Vec::new(), |ws| ws.layout.surface_ids());
-    match app_state.close_pane(ws_id, pane_id) {
+        app_state.workspace(ctx.workspace).map_or(Vec::new(), |ws| ws.layout.surface_ids());
+    match app_state.close_pane(ctx.workspace, ctx.pane) {
         Ok(_) => {
             let surfaces_after =
-                app_state.workspace(ws_id).map_or(Vec::new(), |ws| ws.layout.surface_ids());
-            if let Some(pos) = surfaces_before.iter().position(|s| *s == surface_id) {
-                let idx = if pos < surfaces_after.len() {
-                    pos
-                } else {
-                    surfaces_after.len().saturating_sub(1)
-                };
-                if let Some(&new_surface) = surfaces_after.get(idx) {
-                    focus.focus_surface(new_surface);
-                }
-            } else if let Some(&first) = surfaces_after.first() {
-                focus.focus_surface(first);
+                app_state.workspace(ctx.workspace).map_or(Vec::new(), |ws| ws.layout.surface_ids());
+            let new_focus = pick_focus_after_close(&surfaces_before, &surfaces_after, ctx.surface);
+            if let Some(s) = new_focus {
+                focus.focus_surface(s);
             }
-            vec![ActionEffect::ClosePty { surface_id }, ActionEffect::Redraw]
+            vec![ActionEffect::ClosePty { surface_id: ctx.surface }, ActionEffect::Redraw]
         }
         Err(_) => vec![],
     }
+}
+
+/// After closing a pane, pick the surface to focus. Prefers the surface that
+/// occupied the same position in the layout order; falls back to the last.
+fn pick_focus_after_close(
+    before: &[SurfaceId],
+    after: &[SurfaceId],
+    closed: SurfaceId,
+) -> Option<SurfaceId> {
+    if after.is_empty() {
+        return None;
+    }
+    let pos = before.iter().position(|s| *s == closed).unwrap_or(0);
+    let idx = pos.min(after.len().saturating_sub(1));
+    Some(after[idx])
 }
 
 fn dispatch_focus_cycle(
@@ -166,7 +174,10 @@ fn dispatch_focus_cycle(
     focus: &mut FocusManager,
     forward: bool,
 ) -> Vec<ActionEffect> {
-    let Some((ws_id, current_surface)) = focused_pane_context(app_state, focus) else {
+    let Some(ws_id) = app_state.active_workspace_id else {
+        return vec![];
+    };
+    let Some(current_surface) = focus.focused_surface() else {
         return vec![];
     };
     let Some(ws) = app_state.workspace(ws_id) else {
@@ -195,44 +206,33 @@ fn dispatch_focus_direction(
     window_width: u32,
     window_height: u32,
 ) -> Vec<ActionEffect> {
-    let Some((ws_id, current_surface)) = focused_pane_context(app_state, focus) else {
+    let Some(ctx) = resolve_focused_pane(app_state, focus) else {
         return vec![];
     };
-    let Some(ws) = app_state.workspace(ws_id) else {
-        return vec![];
-    };
-    let Some(focused_pane) = ws.pane_id_for_surface(current_surface) else {
+    let Some(ws) = app_state.workspace(ctx.workspace) else {
         return vec![];
     };
     #[allow(clippy::cast_precision_loss)] // window dimensions fit comfortably in f32
     let available =
         Rect { x: 0.0, y: 0.0, width: window_width as f32, height: window_height as f32 };
     let layouts = compute_layout(&ws.layout, available, ws.zoomed_pane);
-    match find_pane_in_direction(&layouts, focused_pane, direction) {
-        Some(target_pane) => {
-            if let Some(target_surface) =
-                layouts.iter().find(|l| l.pane_id == target_pane).map(|l| l.surface_id)
-            {
-                focus.focus_surface(target_surface);
-                vec![ActionEffect::Redraw]
-            } else {
-                vec![]
-            }
-        }
-        None => vec![],
+    let Some(target_pane) = find_pane_in_direction(&layouts, ctx.pane, direction) else {
+        return vec![];
+    };
+    let target_surface = layouts.iter().find(|l| l.pane_id == target_pane).map(|l| l.surface_id);
+    if let Some(surface) = target_surface {
+        focus.focus_surface(surface);
+        vec![ActionEffect::Redraw]
+    } else {
+        vec![]
     }
 }
 
 fn dispatch_zoom(app_state: &mut AppState, focus: &FocusManager) -> Vec<ActionEffect> {
-    let Some((ws_id, surface_id)) = focused_pane_context(app_state, focus) else {
+    let Some(ctx) = resolve_focused_pane(app_state, focus) else {
         return vec![];
     };
-    let Some(pane_id) =
-        app_state.workspace(ws_id).and_then(|ws| ws.pane_id_for_surface(surface_id))
-    else {
-        return vec![];
-    };
-    match app_state.toggle_zoom(ws_id, pane_id) {
+    match app_state.toggle_zoom(ctx.workspace, ctx.pane) {
         Ok(_) => vec![ActionEffect::Redraw],
         Err(_) => vec![],
     }

@@ -1,5 +1,11 @@
-//! winit key event translation -- converts winit key types into veil-core
-//! domain types and PTY byte sequences.
+//! winit key event translation and PTY byte encoding.
+//!
+//! Two responsibilities, tightly coupled by their shared input types:
+//!
+//! 1. **Key translation** -- converts winit's `KeyEvent` / `Key` / `Modifiers`
+//!    into the veil-core domain `KeyInput` type for keybinding lookup.
+//! 2. **PTY encoding** -- converts the same winit key types into the byte
+//!    sequences terminals expect (UTF-8, control codes, ANSI escapes).
 //!
 //! The public API takes `winit::event::KeyEvent` references, but since
 //! `KeyEvent` cannot be constructed outside the winit crate (due to
@@ -11,6 +17,8 @@
 use veil_core::keyboard;
 use winit::event::{ElementState, KeyEvent};
 use winit::keyboard::{Key, NamedKey};
+
+// ---- Key translation (winit -> domain KeyInput) --------------------------
 
 /// Convert a winit `KeyEvent` into a domain `KeyInput`.
 ///
@@ -102,20 +110,25 @@ pub fn translate_modifiers(state: winit::event::Modifiers) -> keyboard::Modifier
     }
 }
 
-/// Encode a key event as bytes to send to the PTY.
+// ---- PTY byte encoding -----------------------------------------------
+
+/// Encode a winit `KeyEvent` as bytes to send to the PTY.
 ///
-/// Returns `None` if the key has no byte representation (e.g., modifier-only keys).
-pub fn key_to_pty_bytes(event: &KeyEvent, modifiers: keyboard::Modifiers) -> Option<Vec<u8>> {
+/// Returns `None` for key releases or keys with no byte representation
+/// (e.g., modifier-only keys).
+pub fn encode_key_for_pty(event: &KeyEvent, modifiers: keyboard::Modifiers) -> Option<Vec<u8>> {
     if event.state == ElementState::Released {
         return None;
     }
-    key_to_pty_bytes_from_key(&event.logical_key, modifiers)
+    encode_logical_key_for_pty(&event.logical_key, modifiers)
 }
 
-/// Encode a logical key as bytes to send to the PTY.
+/// Encode a winit logical key as bytes to send to the PTY.
 ///
-/// Returns `None` if the key has no byte representation.
-pub fn key_to_pty_bytes_from_key(key: &Key, modifiers: keyboard::Modifiers) -> Option<Vec<u8>> {
+/// Handles printable characters (UTF-8), Ctrl+letter control codes, named
+/// keys (Enter, arrows, function keys, etc.), and ANSI escape sequences.
+/// Returns `None` for modifier-only or unrecognized keys.
+pub fn encode_logical_key_for_pty(key: &Key, modifiers: keyboard::Modifiers) -> Option<Vec<u8>> {
     match key {
         Key::Character(text) => {
             let first_char = text.chars().next()?;
@@ -325,7 +338,7 @@ mod tests {
 
     #[test]
     fn pty_bytes_character_a() {
-        let result = key_to_pty_bytes_from_key(&char_key("a"), no_mods());
+        let result = encode_logical_key_for_pty(&char_key("a"), no_mods());
         assert_eq!(result, Some(vec![0x61]));
     }
 
@@ -335,7 +348,7 @@ mod tests {
 
     #[test]
     fn pty_bytes_enter() {
-        let result = key_to_pty_bytes_from_key(&named_key(NamedKey::Enter), no_mods());
+        let result = encode_logical_key_for_pty(&named_key(NamedKey::Enter), no_mods());
         assert_eq!(result, Some(vec![0x0D]));
     }
 
@@ -345,7 +358,7 @@ mod tests {
 
     #[test]
     fn pty_bytes_backspace() {
-        let result = key_to_pty_bytes_from_key(&named_key(NamedKey::Backspace), no_mods());
+        let result = encode_logical_key_for_pty(&named_key(NamedKey::Backspace), no_mods());
         assert_eq!(result, Some(vec![0x7F]));
     }
 
@@ -355,25 +368,25 @@ mod tests {
 
     #[test]
     fn pty_bytes_arrow_up() {
-        let result = key_to_pty_bytes_from_key(&named_key(NamedKey::ArrowUp), no_mods());
+        let result = encode_logical_key_for_pty(&named_key(NamedKey::ArrowUp), no_mods());
         assert_eq!(result, Some(vec![0x1B, 0x5B, 0x41]));
     }
 
     #[test]
     fn pty_bytes_arrow_down() {
-        let result = key_to_pty_bytes_from_key(&named_key(NamedKey::ArrowDown), no_mods());
+        let result = encode_logical_key_for_pty(&named_key(NamedKey::ArrowDown), no_mods());
         assert_eq!(result, Some(vec![0x1B, 0x5B, 0x42]));
     }
 
     #[test]
     fn pty_bytes_arrow_right() {
-        let result = key_to_pty_bytes_from_key(&named_key(NamedKey::ArrowRight), no_mods());
+        let result = encode_logical_key_for_pty(&named_key(NamedKey::ArrowRight), no_mods());
         assert_eq!(result, Some(vec![0x1B, 0x5B, 0x43]));
     }
 
     #[test]
     fn pty_bytes_arrow_left() {
-        let result = key_to_pty_bytes_from_key(&named_key(NamedKey::ArrowLeft), no_mods());
+        let result = encode_logical_key_for_pty(&named_key(NamedKey::ArrowLeft), no_mods());
         assert_eq!(result, Some(vec![0x1B, 0x5B, 0x44]));
     }
 
@@ -383,7 +396,7 @@ mod tests {
 
     #[test]
     fn pty_bytes_ctrl_c() {
-        let result = key_to_pty_bytes_from_key(&char_key("c"), ctrl_mods());
+        let result = encode_logical_key_for_pty(&char_key("c"), ctrl_mods());
         assert_eq!(result, Some(vec![0x03]));
     }
 
@@ -393,7 +406,7 @@ mod tests {
 
     #[test]
     fn pty_bytes_tab() {
-        let result = key_to_pty_bytes_from_key(&named_key(NamedKey::Tab), no_mods());
+        let result = encode_logical_key_for_pty(&named_key(NamedKey::Tab), no_mods());
         assert_eq!(result, Some(vec![0x09]));
     }
 
@@ -403,7 +416,7 @@ mod tests {
 
     #[test]
     fn pty_bytes_escape() {
-        let result = key_to_pty_bytes_from_key(&named_key(NamedKey::Escape), no_mods());
+        let result = encode_logical_key_for_pty(&named_key(NamedKey::Escape), no_mods());
         assert_eq!(result, Some(vec![0x1B]));
     }
 
@@ -413,7 +426,7 @@ mod tests {
 
     #[test]
     fn pty_bytes_multibyte_utf8() {
-        let result = key_to_pty_bytes_from_key(&char_key("\u{00e9}"), no_mods());
+        let result = encode_logical_key_for_pty(&char_key("\u{00e9}"), no_mods());
         assert_eq!(result, Some(vec![0xC3, 0xA9]));
     }
 
@@ -423,7 +436,7 @@ mod tests {
 
     #[test]
     fn pty_bytes_logo_modifier_alone_returns_none() {
-        let result = key_to_pty_bytes_from_key(&named_key(NamedKey::Super), logo_mods());
+        let result = encode_logical_key_for_pty(&named_key(NamedKey::Super), logo_mods());
         assert_eq!(result, None);
     }
 
@@ -433,31 +446,31 @@ mod tests {
 
     #[test]
     fn pty_bytes_home() {
-        let result = key_to_pty_bytes_from_key(&named_key(NamedKey::Home), no_mods());
+        let result = encode_logical_key_for_pty(&named_key(NamedKey::Home), no_mods());
         assert_eq!(result, Some(vec![0x1B, b'[', b'H']));
     }
 
     #[test]
     fn pty_bytes_end() {
-        let result = key_to_pty_bytes_from_key(&named_key(NamedKey::End), no_mods());
+        let result = encode_logical_key_for_pty(&named_key(NamedKey::End), no_mods());
         assert_eq!(result, Some(vec![0x1B, b'[', b'F']));
     }
 
     #[test]
     fn pty_bytes_delete() {
-        let result = key_to_pty_bytes_from_key(&named_key(NamedKey::Delete), no_mods());
+        let result = encode_logical_key_for_pty(&named_key(NamedKey::Delete), no_mods());
         assert_eq!(result, Some(vec![0x1B, b'[', b'3', b'~']));
     }
 
     #[test]
     fn pty_bytes_page_up() {
-        let result = key_to_pty_bytes_from_key(&named_key(NamedKey::PageUp), no_mods());
+        let result = encode_logical_key_for_pty(&named_key(NamedKey::PageUp), no_mods());
         assert_eq!(result, Some(vec![0x1B, b'[', b'5', b'~']));
     }
 
     #[test]
     fn pty_bytes_page_down() {
-        let result = key_to_pty_bytes_from_key(&named_key(NamedKey::PageDown), no_mods());
+        let result = encode_logical_key_for_pty(&named_key(NamedKey::PageDown), no_mods());
         assert_eq!(result, Some(vec![0x1B, b'[', b'6', b'~']));
     }
 
@@ -467,13 +480,13 @@ mod tests {
 
     #[test]
     fn pty_bytes_ctrl_a() {
-        let result = key_to_pty_bytes_from_key(&char_key("a"), ctrl_mods());
+        let result = encode_logical_key_for_pty(&char_key("a"), ctrl_mods());
         assert_eq!(result, Some(vec![0x01]));
     }
 
     #[test]
     fn pty_bytes_ctrl_z() {
-        let result = key_to_pty_bytes_from_key(&char_key("z"), ctrl_mods());
+        let result = encode_logical_key_for_pty(&char_key("z"), ctrl_mods());
         assert_eq!(result, Some(vec![0x1A]));
     }
 
@@ -483,7 +496,7 @@ mod tests {
 
     #[test]
     fn pty_bytes_space() {
-        let result = key_to_pty_bytes_from_key(&named_key(NamedKey::Space), no_mods());
+        let result = encode_logical_key_for_pty(&named_key(NamedKey::Space), no_mods());
         assert_eq!(result, Some(vec![0x20]));
     }
 
