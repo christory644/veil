@@ -158,7 +158,13 @@ impl ApplicationHandler for VeilApp {
             self.shutdown.handle(),
         ));
 
-        // Start socket server actor with its own AppState snapshot.
+        // Start socket server actor with its own isolated AppState.
+        //
+        // This is intentionally separate from `self.app_state` to avoid locking
+        // the main thread's state on every frame (60fps render loop). Workspace
+        // mutations via the socket API only affect this copy. Bidirectional
+        // sync between the socket's AppState and the main thread's AppState is
+        // deferred to a follow-up task (see VEI-80 spec, Unit 7 / AC #9).
         let socket_state = Arc::new(tokio::sync::Mutex::new(AppState::new()));
         {
             let mut ss = socket_state.blocking_lock();
