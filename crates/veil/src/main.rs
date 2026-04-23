@@ -294,50 +294,63 @@ impl VeilApp {
         while let Ok(update) = self.channels.state_rx.try_recv() {
             match update {
                 StateUpdate::ConfigReloaded { config, delta, warnings } => {
-                    for w in &warnings {
-                        tracing::warn!("config validation: {}: {}", w.field, w.message);
-                    }
-
-                    let needs_redraw = config_reload::apply_config_reload(
-                        &config,
-                        &delta,
-                        &mut self.app_state,
-                        &mut self.keybindings,
-                    );
-
-                    if delta.font_changed {
-                        tracing::info!(
-                            "font config changed (family={:?}, size={}) -- \
-                             font re-init will apply when font pipeline is wired",
-                            config.terminal.font_family,
-                            config.terminal.font_size,
-                        );
-                    }
-
-                    if delta.theme_changed {
-                        tracing::info!("theme changed to {:?}", config.general.theme);
-                    }
-
-                    self.app_config = *config;
-
-                    if needs_redraw {
-                        if let Some(ref window) = self.window {
-                            window.request_redraw();
-                        }
-                    }
+                    self.handle_config_reloaded(config, &delta, &warnings);
                 }
                 StateUpdate::ConversationsUpdated(sessions) => {
                     tracing::info!(count = sessions.len(), "conversations updated");
                     self.app_state.update_conversations(sessions);
-                    if let Some(ref window) = self.window {
-                        window.request_redraw();
-                    }
+                    self.request_redraw();
                 }
                 _ => {
                     // Other StateUpdate variants (PtyOutput, SurfaceExited, etc.)
                     // will be handled in future wiring tasks.
                 }
             }
+        }
+    }
+
+    /// Apply a config reload: update state, keybindings, and log notable changes.
+    fn handle_config_reloaded(
+        &mut self,
+        config: Box<veil_core::config::AppConfig>,
+        delta: &veil_core::config::ConfigDelta,
+        warnings: &[veil_core::config::ConfigWarning],
+    ) {
+        for w in warnings {
+            tracing::warn!("config validation: {}: {}", w.field, w.message);
+        }
+
+        let needs_redraw = config_reload::apply_config_reload(
+            &config,
+            delta,
+            &mut self.app_state,
+            &mut self.keybindings,
+        );
+
+        if delta.font_changed {
+            tracing::info!(
+                "font config changed (family={:?}, size={}) -- \
+                 font re-init will apply when font pipeline is wired",
+                config.terminal.font_family,
+                config.terminal.font_size,
+            );
+        }
+
+        if delta.theme_changed {
+            tracing::info!("theme changed to {:?}", config.general.theme);
+        }
+
+        self.app_config = *config;
+
+        if needs_redraw {
+            self.request_redraw();
+        }
+    }
+
+    /// Request a window redraw if the window exists.
+    fn request_redraw(&self) {
+        if let Some(ref window) = self.window {
+            window.request_redraw();
         }
     }
 
@@ -364,9 +377,7 @@ impl VeilApp {
                 }
             }
         }
-        if let Some(window) = &self.window {
-            window.request_redraw();
-        }
+        self.request_redraw();
     }
 
     /// Execute the egui sidebar frame and apply interactions.
@@ -418,9 +429,7 @@ impl VeilApp {
                 }
             }
             ActionEffect::Redraw => {
-                if let Some(ref window) = self.window {
-                    window.request_redraw();
-                }
+                self.request_redraw();
             }
         }
     }

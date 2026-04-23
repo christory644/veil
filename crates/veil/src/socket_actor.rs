@@ -52,14 +52,13 @@ pub fn start_socket_server(
             };
 
             let config = veil_socket::ServerConfig::default_for_platform();
-            tracing::info!("socket server binding to {:?}", config.socket_path);
+            tracing::info!(path = ?config.socket_path, "socket server binding");
 
             let server = veil_socket::SocketServer::new(config, app_state);
 
-            if let Err(e) = rt.block_on(server.run(shutdown)) {
-                tracing::error!("socket server exited with error: {e}");
-            } else {
-                tracing::info!("socket server shut down cleanly");
+            match rt.block_on(server.run(shutdown)) {
+                Ok(()) => tracing::info!("socket server shut down cleanly"),
+                Err(err) => tracing::error!(%err, "socket server exited with error"),
             }
         })
         .expect("failed to spawn socket server thread");

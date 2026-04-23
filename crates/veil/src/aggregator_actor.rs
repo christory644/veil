@@ -5,15 +5,20 @@
 //! initial discovery, watches for file-system changes, and responds to
 //! `AppCommand::RefreshConversations`.
 
+use std::sync::mpsc::{Receiver, TryRecvError as StdTryRecvError};
 use std::time::Duration;
 
-use tokio::sync::broadcast::error::TryRecvError;
+use tokio::sync::broadcast::error::TryRecvError as BroadcastTryRecvError;
 use tracing::{error, info, warn};
 use veil_aggregator::claude_code::ClaudeCodeAdapter;
 use veil_aggregator::registry::AdapterRegistry;
 use veil_aggregator::store::SessionStore;
 use veil_core::lifecycle::ShutdownHandle;
 use veil_core::message::{AppCommand, StateUpdate};
+use veil_core::session::SessionEntry;
+
+/// Channel receiver for background discovery results.
+type DiscoveryReceiver = Receiver<Vec<SessionEntry>>;
 
 /// Handle to the aggregator background thread.
 ///
@@ -79,11 +84,16 @@ pub fn start_aggregator(
             // --- Run initial discovery in background ---
             // Discovery can be slow with many session files. We run it on
             // a separate thread so the command loop stays responsive.
-            let discovery_tx = spawn_discovery(registry);
+            let discovery_rx = spawn_discovery(registry);
 
             // --- Poll loop ---
-            let mut pending_discovery: Option<std::sync::mpsc::Receiver<Vec<veil_core::session::SessionEntry>>> =
-                Some(discovery_tx);
+            //
+            // The aggregator uses a 100ms sleep-based poll loop rather than
+            // blocking on a channel. This keeps the design simple: we need to
+            // multiplex three sources (discovery results, broadcast commands,
+            // shutdown signal) on a `!Send` thread without a tokio runtime.
+            // 100ms gives responsive command handling without busy-spinning.
+            let mut pending_discovery: Option<DiscoveryReceiver> = Some(discovery_rx);
 
             loop {
                 if shutdown.is_triggered() {
@@ -91,43 +101,28 @@ pub fn start_aggregator(
                     break;
                 }
 
-                // Check for discovery results from background thread.
-                if let Some(ref rx) = pending_discovery {
-                    match rx.try_recv() {
-                        Ok(entries) => {
-                            info!(count = entries.len(), "background discovery completed");
-                            if let Err(err) = store.upsert_sessions(&entries) {
-                                warn!(%err, "failed to upsert discovered sessions");
-                            }
-                            send_sessions(&store, &state_tx);
-                            pending_discovery = None;
-                        }
-                        Err(std::sync::mpsc::TryRecvError::Empty) => { /* still running */ }
-                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                            warn!("discovery thread disconnected without sending results");
-                            pending_discovery = None;
-                        }
+                if let Some(finished) =
+                    drain_discovery_results(&mut pending_discovery, &store, &state_tx)
+                {
+                    if finished {
+                        pending_discovery = None;
                     }
                 }
 
-                // Check for commands.
                 match command_rx.try_recv() {
                     Ok(AppCommand::RefreshConversations) => {
                         info!("received RefreshConversations command");
-                        // If a discovery is already running, wait for it to finish,
-                        // otherwise start a new one. Either way, send current state
-                        // immediately for responsiveness.
                         if pending_discovery.is_none() {
                             let registry = build_adapter_registry();
                             pending_discovery = Some(spawn_discovery(registry));
                         }
                         send_sessions(&store, &state_tx);
                     }
-                    Ok(_) | Err(TryRecvError::Empty) => { /* no actionable message */ }
-                    Err(TryRecvError::Lagged(n)) => {
-                        warn!(skipped = n, "aggregator command receiver lagged, skipped messages");
+                    Ok(_) | Err(BroadcastTryRecvError::Empty) => {}
+                    Err(BroadcastTryRecvError::Lagged(n)) => {
+                        warn!(skipped = n, "command receiver lagged");
                     }
-                    Err(TryRecvError::Closed) => {
+                    Err(BroadcastTryRecvError::Closed) => {
                         info!("command channel closed, aggregator exiting");
                         break;
                     }
@@ -139,6 +134,34 @@ pub fn start_aggregator(
         .expect("failed to spawn aggregator thread");
 
     AggregatorHandle { thread: handle }
+}
+
+/// Check for completed discovery results from the background thread.
+///
+/// Returns `None` if no discovery is pending, `Some(false)` if the discovery
+/// is still running, or `Some(true)` if it completed (successfully or via
+/// disconnect) and the caller should clear the pending receiver.
+fn drain_discovery_results(
+    pending: &mut Option<DiscoveryReceiver>,
+    store: &SessionStore,
+    state_tx: &tokio::sync::mpsc::Sender<StateUpdate>,
+) -> Option<bool> {
+    let rx = pending.as_ref()?;
+    match rx.try_recv() {
+        Ok(entries) => {
+            info!(count = entries.len(), "background discovery completed");
+            if let Err(err) = store.upsert_sessions(&entries) {
+                warn!(%err, "failed to upsert discovered sessions");
+            }
+            send_sessions(store, state_tx);
+            Some(true)
+        }
+        Err(StdTryRecvError::Empty) => Some(false),
+        Err(StdTryRecvError::Disconnected) => {
+            warn!("discovery thread disconnected without sending results");
+            Some(true)
+        }
+    }
 }
 
 /// Open the session store at the platform data directory, or return an error.
@@ -180,9 +203,7 @@ fn build_adapter_registry() -> AdapterRegistry {
 ///
 /// Discovery can be slow on machines with many session files, so it runs on
 /// a separate thread to avoid blocking the command loop.
-fn spawn_discovery(
-    registry: AdapterRegistry,
-) -> std::sync::mpsc::Receiver<Vec<veil_core::session::SessionEntry>> {
+fn spawn_discovery(registry: AdapterRegistry) -> DiscoveryReceiver {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("aggregator-discover".into())
