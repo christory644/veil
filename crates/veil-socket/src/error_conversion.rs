@@ -22,7 +22,6 @@ impl From<SocketError> for ErrorReport {
 }
 
 #[cfg(test)]
-#[allow(clippy::io_other_error)]
 mod tests {
     use super::*;
 
@@ -49,7 +48,7 @@ mod tests {
 
     #[test]
     fn socket_error_report_has_recovery_actions() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "test");
+        let io_err = std::io::Error::other("test");
         let io_report: ErrorReport = SocketError::Io(io_err).into();
         assert!(
             !io_report.recovery_actions.is_empty(),
@@ -65,7 +64,7 @@ mod tests {
 
     #[test]
     fn socket_error_into_report_preserves_message() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "connection refused");
+        let io_err = std::io::Error::other("connection refused");
         let socket_err = SocketError::Io(io_err);
         let display_str = socket_err.to_string();
         let report: ErrorReport = socket_err.into();

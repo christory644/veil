@@ -3,6 +3,7 @@
 //! Modeled after Rust compiler errors: severity, component, primary message,
 //! optional detail/suggestion, and recovery actions.
 
+use crate::config::ConfigError;
 use crate::workspace::PaneId;
 
 /// How severe the error is.
@@ -181,26 +182,29 @@ impl ErrorReport {
     /// For warnings, the prefix is `warning[component]`.
     /// For fatal errors, the prefix is `fatal[component]`.
     pub fn format_display(&self) -> String {
-        use std::fmt::Write;
-        let mut output = format!("{}[{}]: {}", self.severity, self.component, self.message);
-        if let Some(detail) = &self.detail {
-            let _ = write!(output, "\n  --> detail: {detail}");
-        }
-        if let Some(suggestion) = &self.suggestion {
-            let _ = write!(output, "\n  = help: {suggestion}");
-        }
-        if !self.recovery_actions.is_empty() {
-            let actions: Vec<String> =
-                self.recovery_actions.iter().map(std::string::ToString::to_string).collect();
-            let _ = write!(output, "\n  = actions: {}", actions.join(", "));
-        }
-        output
+        self.to_string()
     }
 }
 
 impl std::fmt::Display for ErrorReport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.format_display())
+        write!(f, "{}[{}]: {}", self.severity, self.component, self.message)?;
+        if let Some(detail) = &self.detail {
+            write!(f, "\n  --> detail: {detail}")?;
+        }
+        if let Some(suggestion) = &self.suggestion {
+            write!(f, "\n  = help: {suggestion}")?;
+        }
+        if !self.recovery_actions.is_empty() {
+            write!(f, "\n  = actions: ")?;
+            for (i, action) in self.recovery_actions.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{action}")?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -239,28 +243,28 @@ pub enum PersistenceError {
     },
 }
 
-impl From<crate::config::ConfigError> for ErrorReport {
-    fn from(err: crate::config::ConfigError) -> Self {
+impl From<ConfigError> for ErrorReport {
+    fn from(err: ConfigError) -> Self {
         match &err {
-            crate::config::ConfigError::ReadError { path, .. } => {
+            ConfigError::ReadError { path, .. } => {
                 ErrorReport::new(ErrorSeverity::Error, ErrorComponent::Config, err.to_string())
                     .with_detail(format!("could not read {}", path.display()))
                     .with_suggestion("check that the file exists and is readable")
                     .with_recovery_actions(vec![RecoveryAction::Retry, RecoveryAction::Dismiss])
             }
-            crate::config::ConfigError::ParseError { path, .. } => {
+            ConfigError::ParseError { path, .. } => {
                 ErrorReport::new(ErrorSeverity::Error, ErrorComponent::Config, err.to_string())
                     .with_detail(format!("syntax error in {}", path.display()))
                     .with_suggestion("check your TOML syntax")
                     .with_recovery_actions(vec![RecoveryAction::Retry, RecoveryAction::Dismiss])
             }
-            crate::config::ConfigError::ParseErrorWithLocation { path, line, column, .. } => {
+            ConfigError::ParseErrorWithLocation { path, line, column, .. } => {
                 ErrorReport::new(ErrorSeverity::Error, ErrorComponent::Config, err.to_string())
                     .with_detail(format!("at {}:{}:{}", path.display(), line, column))
                     .with_suggestion("check your TOML syntax at the indicated location")
                     .with_recovery_actions(vec![RecoveryAction::Retry, RecoveryAction::Dismiss])
             }
-            crate::config::ConfigError::NoConfigDir => {
+            ConfigError::NoConfigDir => {
                 ErrorReport::new(ErrorSeverity::Warning, ErrorComponent::Config, err.to_string())
                     .with_suggestion("using default configuration")
                     .with_recovery_actions(vec![RecoveryAction::Dismiss])
@@ -311,7 +315,6 @@ impl From<PersistenceError> for ErrorReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ConfigError;
     use std::path::PathBuf;
 
     // ============================================================
