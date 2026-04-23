@@ -241,4 +241,67 @@ mod tests {
         // Should return Some (notdef glyph) rather than None.
         assert!(region.is_some(), "missing character should return notdef glyph, not None");
     }
+
+    // ============================================================
+    // VEI-83 Unit 6: FontPipeline atlas accessors
+    // ============================================================
+
+    /// atlas() returns a reference to the internal GlyphAtlas.
+    /// Verifies the immutable accessor used for GPU upload works correctly.
+    #[test]
+    fn font_pipeline_atlas_accessor_returns_atlas() {
+        let pipeline = test_pipeline();
+        let atlas = pipeline.atlas();
+        // Fresh atlas starts at 512x512 per FontPipeline::new().
+        assert_eq!(
+            atlas.dimensions(),
+            (512, 512),
+            "atlas() must return the internal atlas with initial 512x512 dimensions"
+        );
+        assert!(!atlas.is_dirty(), "freshly created pipeline atlas must not be dirty");
+    }
+
+    /// atlas_mut() returns a mutable reference; mark_clean() via atlas_mut() works.
+    /// Verifies the mutable accessor used for mark_clean() after GPU upload works.
+    #[test]
+    fn font_pipeline_atlas_mut_accessor_allows_mark_clean() {
+        let mut pipeline = test_pipeline();
+        // Ensure a glyph to dirty the atlas.
+        pipeline.ensure_glyph('A');
+        assert!(pipeline.atlas().is_dirty(), "atlas should be dirty after ensure_glyph");
+
+        // Use atlas_mut() to call mark_clean(), as render() would after upload.
+        pipeline.atlas_mut().mark_clean();
+        assert!(
+            !pipeline.atlas().is_dirty(),
+            "atlas must be clean after mark_clean() via atlas_mut()"
+        );
+    }
+
+    /// atlas() and atlas_mut() refer to the same atlas: mutations via atlas_mut()
+    /// are visible via atlas().
+    #[test]
+    fn font_pipeline_atlas_accessors_work() {
+        let mut pipeline = test_pipeline();
+
+        // Initially clean.
+        assert!(!pipeline.atlas().is_dirty(), "atlas should start clean");
+
+        // Insert glyph (dirtys atlas).
+        pipeline.ensure_glyph('Z');
+        assert!(pipeline.atlas().is_dirty(), "atlas() must see dirty state after ensure_glyph");
+
+        // Mark clean via atlas_mut().
+        pipeline.atlas_mut().mark_clean();
+
+        // atlas() must now reflect the clean state.
+        assert!(
+            !pipeline.atlas().is_dirty(),
+            "atlas() must see clean state after atlas_mut().mark_clean()"
+        );
+
+        // Dimensions visible via both accessors are consistent.
+        let dims = pipeline.atlas().dimensions();
+        assert!(dims.0 > 0 && dims.1 > 0, "atlas dimensions must be positive via atlas()");
+    }
 }

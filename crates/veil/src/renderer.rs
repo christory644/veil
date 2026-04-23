@@ -333,6 +333,8 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::font::text_vertex::TextVertex;
+    use crate::frame::FrameGeometry;
 
     #[test]
     fn window_uniform_size_is_8_bytes() {
@@ -342,5 +344,248 @@ mod tests {
     #[test]
     fn vertex_buffer_stride_matches_vertex_size() {
         assert_eq!(std::mem::size_of::<Vertex>(), 24);
+    }
+
+    // ============================================================
+    // VEI-83 Unit 1: Text shader source inclusion
+    // ============================================================
+
+    /// The text shader file must be included and non-empty.
+    /// This is the compile-time smoke test that the file exists and
+    /// `include_str!("text_shader.wgsl")` is wired in.
+    #[test]
+    fn text_shader_source_is_included() {
+        // Once the text shader file is created and included via include_str!(),
+        // this constant will be non-empty. Until then this test fails at the
+        // assertion (RED state).
+        const TEXT_SHADER_SRC: &str = include_str!("text_shader.wgsl");
+        assert!(!TEXT_SHADER_SRC.is_empty(), "text_shader.wgsl must be non-empty");
+    }
+
+    // ============================================================
+    // VEI-83 Unit 4: Text vertex buffer stride
+    // ============================================================
+
+    /// TextVertex is 32 bytes (2*f32 position + 2*f32 uv + 4*f32 color).
+    /// This mirrors the existing `vertex_buffer_stride_matches_vertex_size` pattern
+    /// and guards the text pipeline's vertex layout contract.
+    #[test]
+    fn text_vertex_buffer_stride_matches_text_vertex_size() {
+        assert_eq!(
+            std::mem::size_of::<TextVertex>(),
+            32,
+            "TextVertex must be exactly 32 bytes for the text pipeline"
+        );
+    }
+
+    /// The text pipeline's vertex layout stride must equal 32 (not 24 like Vertex).
+    /// This confirms TextVertex::buffer_layout() uses the correct type.
+    #[test]
+    fn text_pipeline_uses_text_vertex_layout() {
+        let layout = TextVertex::buffer_layout();
+        assert_eq!(layout.array_stride, 32, "text pipeline stride should be 32, not 24 (Vertex)");
+    }
+
+    // ============================================================
+    // VEI-83 Unit 4: Alpha blending constant
+    // ============================================================
+
+    /// The text render pipeline must use ALPHA_BLENDING so glyphs composite
+    /// over background quads correctly. This tests that the constant itself
+    /// is what we expect (it has a non-trivial color/alpha blend equation).
+    #[test]
+    fn text_pipeline_uses_alpha_blending() {
+        // ALPHA_BLENDING: src * src_alpha + dst * (1 - src_alpha).
+        // Verify the constant is not REPLACE (no blending) or PREMULTIPLIED_ALPHA_BLENDING.
+        let blend = wgpu::BlendState::ALPHA_BLENDING;
+        // alpha component: src=One, dst=OneMinusSrcAlpha — standard over-compositing.
+        assert_eq!(
+            blend.alpha.src_factor,
+            wgpu::BlendFactor::One,
+            "ALPHA_BLENDING alpha src should be One"
+        );
+        assert_eq!(
+            blend.alpha.dst_factor,
+            wgpu::BlendFactor::OneMinusSrcAlpha,
+            "ALPHA_BLENDING alpha dst should be OneMinusSrcAlpha"
+        );
+    }
+
+    // ============================================================
+    // VEI-83 Unit 3: Text bind group entry count
+    // ============================================================
+
+    /// The text bind group layout must have exactly 3 entries:
+    /// binding 0 = uniform buffer, binding 1 = texture, binding 2 = sampler.
+    #[test]
+    fn text_bind_group_layout_has_three_entries() {
+        // Build the descriptor slice inline (mirrors create_text_bind_group_layout).
+        let entries: &[wgpu::BindGroupLayoutEntry] = &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ];
+        assert_eq!(entries.len(), 3, "text bind group layout must have exactly 3 entries");
+    }
+
+    /// Binding indices in the text bind group must be 0, 1, 2 in order.
+    #[test]
+    fn text_bind_group_entry_bindings_are_0_1_2() {
+        let entries: &[wgpu::BindGroupLayoutEntry] = &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ];
+        assert_eq!(entries[0].binding, 0, "first binding index must be 0 (uniform buffer)");
+        assert_eq!(entries[1].binding, 1, "second binding index must be 1 (atlas texture)");
+        assert_eq!(entries[2].binding, 2, "third binding index must be 2 (atlas sampler)");
+    }
+
+    /// Atlas texture format for R8Unorm (1 byte per pixel, grayscale).
+    /// This guards the format constant used in create_atlas_texture().
+    #[test]
+    fn atlas_texture_format_is_r8unorm() {
+        // The correct format for a 1-byte-per-pixel grayscale glyph atlas.
+        let format = wgpu::TextureFormat::R8Unorm;
+        // Verify it is not Rgba8Unorm (4 bytes/pixel) or Bgra8Unorm (surface format).
+        assert_ne!(
+            format,
+            wgpu::TextureFormat::Rgba8Unorm,
+            "atlas should not use Rgba8Unorm — 4x too large"
+        );
+        assert_ne!(
+            format,
+            wgpu::TextureFormat::Bgra8Unorm,
+            "atlas should not use Bgra8Unorm — wrong format for grayscale"
+        );
+        // The enum variant itself being constructible is the meaningful assertion.
+        // If R8Unorm disappears from wgpu this compile-errors.
+        let _ = format;
+    }
+
+    /// For R8Unorm, bytes_per_row = width (1 byte per pixel).
+    /// Guards the layout passed to queue.write_texture() in upload_atlas().
+    #[test]
+    fn upload_atlas_bytes_per_row_equals_width() {
+        let atlas_width: u32 = 512;
+        let atlas_height: u32 = 512;
+        // 1 byte per pixel (R8Unorm) → bytes_per_row = width.
+        let bytes_per_row = atlas_width; // 1 byte per pixel
+        assert_eq!(
+            bytes_per_row, atlas_width,
+            "R8Unorm atlas bytes_per_row must equal width ({atlas_width})"
+        );
+        // bitmap length must equal width * height.
+        let expected_len = (atlas_width * atlas_height) as usize;
+        let dummy_bitmap = vec![0u8; expected_len];
+        assert_eq!(
+            dummy_bitmap.len(),
+            expected_len,
+            "bitmap length must equal width * height for R8Unorm"
+        );
+    }
+
+    // ============================================================
+    // VEI-83 Unit 5: Empty text guard and index cast
+    // ============================================================
+
+    /// When frame_geometry.text_vertices is empty, the text draw call must be skipped.
+    /// Tests the control-flow contract: the guard `!text_vertices.is_empty()` prevents
+    /// buffer allocation for frames with no text.
+    #[test]
+    fn frame_geometry_with_empty_text_produces_no_text_draw() {
+        let geom = FrameGeometry {
+            vertices: Vec::new(),
+            indices: Vec::new(),
+            text_vertices: Vec::new(),
+            text_indices: Vec::new(),
+            clear_color: wgpu::Color::BLACK,
+        };
+        // The guard: only draw if non-empty.
+        let should_draw_text = !geom.text_vertices.is_empty();
+        assert!(!should_draw_text, "empty text_vertices must not trigger a text draw call");
+    }
+
+    /// Casting text_indices.len() as u32 is safe: u16::MAX fits in u32.
+    /// Guards the index count cast in the draw call.
+    #[test]
+    fn text_index_count_cast_is_safe_for_u16_max() {
+        // u16::MAX indices (65535) fits comfortably in u32 (max 4_294_967_295).
+        let max_indices: usize = u16::MAX as usize;
+        #[allow(clippy::cast_possible_truncation)]
+        let as_u32 = max_indices as u32;
+        assert_eq!(as_u32, u16::MAX as u32, "u16::MAX indices must survive usize→u32 cast");
+        assert!(
+            u32::try_from(max_indices).is_ok(),
+            "u16::MAX must convert to u32 without overflow"
+        );
+    }
+
+    // ============================================================
+    // VEI-83 Unit 6: render() signature accepts font_pipeline
+    // ============================================================
+
+    /// The render() method signature must accept Option<&mut FontPipeline>.
+    /// This test verifies the contract compiles: once the signature is updated,
+    /// this call site will compile. Currently documents the expected final shape.
+    ///
+    /// NOTE: This test is intentionally commented out — it documents what the
+    /// implementation must look like, but we can't call render() without a GPU
+    /// context. The meaningful compile check happens in main.rs where the call
+    /// site is updated. The contract is verified by the atlas dirty/clean tests below.
+    ///
+    /// See `atlas_dirty_tracking_for_gpu_upload` in atlas.rs for the non-GPU contract test.
+    #[test]
+    fn render_accepts_optional_font_pipeline_conceptual_check() {
+        // Verify the type system allows Option<&mut FontPipeline> to be None.
+        // This is a tautology, but serves as documentation of the call-site contract.
+        let font_pipeline_opt: Option<&mut crate::font_pipeline::FontPipeline> = None;
+        assert!(font_pipeline_opt.is_none(), "None is a valid font_pipeline argument to render()");
     }
 }

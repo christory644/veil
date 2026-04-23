@@ -571,6 +571,96 @@ mod tests {
         assert!(atlas.dimensions().1 > 32, "atlas should have grown to fit two 30x30 glyphs");
     }
 
+    // ============================================================
+    // VEI-83 Unit 6: Atlas dirty/clean tracking (GPU upload contract)
+    // ============================================================
+
+    /// Inserting a glyph marks the atlas dirty; mark_clean() clears it.
+    /// This validates the full dirty→upload→clean cycle used in render().
+    #[test]
+    fn atlas_dirty_tracking_for_gpu_upload() {
+        let mut atlas = GlyphAtlas::new(512, 512);
+        assert!(!atlas.is_dirty(), "fresh atlas must not be dirty");
+
+        let glyph = test_glyph(42, 8, 14);
+        atlas.insert(&glyph);
+        assert!(atlas.is_dirty(), "atlas must be dirty after insert (upload needed)");
+
+        atlas.mark_clean();
+        assert!(!atlas.is_dirty(), "atlas must be clean after mark_clean (no re-upload needed)");
+    }
+
+    /// After mark_clean(), a second insert re-dirtys the atlas.
+    /// Guards that mark_clean() does not permanently suppress dirty tracking.
+    #[test]
+    fn atlas_not_reuploaded_when_clean() {
+        let mut atlas = GlyphAtlas::new(512, 512);
+        let glyph = test_glyph(42, 8, 14);
+        atlas.insert(&glyph);
+        atlas.mark_clean();
+
+        // A second different glyph should re-dirty the atlas.
+        let glyph2 = test_glyph(99, 6, 10);
+        atlas.insert(&glyph2);
+        assert!(
+            atlas.is_dirty(),
+            "atlas should be dirty again after a second insert following mark_clean"
+        );
+    }
+
+    // ============================================================
+    // VEI-83 Unit 2: bitmap bytes_per_row for R8Unorm upload
+    // ============================================================
+
+    /// For R8Unorm (1 byte per pixel), bytes_per_row = atlas width.
+    /// This validates the layout parameter passed to queue.write_texture().
+    #[test]
+    fn atlas_bitmap_bytes_per_row_equals_width() {
+        let width = 512u32;
+        let height = 512u32;
+        let atlas = GlyphAtlas::new(width, height);
+        let bitmap = atlas.bitmap();
+        // R8Unorm: 1 byte per pixel. Total bytes = width * height.
+        assert_eq!(
+            bitmap.len(),
+            (width * height) as usize,
+            "bitmap length must equal width * height for R8Unorm"
+        );
+        // bytes_per_row for a contiguous row-major layout = width.
+        let bytes_per_row = width; // 1 byte per pixel
+        assert_eq!(
+            bitmap.len() / height as usize,
+            bytes_per_row as usize,
+            "bitmap bytes_per_row must equal atlas width for R8Unorm"
+        );
+    }
+
+    // ============================================================
+    // VEI-83 Unit 7: Atlas grows and dimensions() reflects new size
+    // ============================================================
+
+    /// When the atlas grows due to overflow, dimensions() returns the new larger size.
+    /// This validates the resize-detection logic in render(): if dimensions change,
+    /// the GPU texture must be recreated.
+    #[test]
+    fn atlas_texture_recreated_on_size_change() {
+        let mut atlas = GlyphAtlas::new(32, 32);
+        let initial_dims = atlas.dimensions();
+        assert_eq!(initial_dims, (32, 32), "initial atlas dimensions should be (32, 32)");
+
+        // Insert enough glyphs to force growth.
+        for id in 1..=20_u16 {
+            let glyph = test_glyph(id, 10, 14);
+            atlas.insert(&glyph);
+        }
+
+        let new_dims = atlas.dimensions();
+        assert!(
+            new_dims.0 > initial_dims.0 || new_dims.1 > initial_dims.1,
+            "atlas dimensions must grow after overflow: initial={initial_dims:?}, new={new_dims:?}"
+        );
+    }
+
     #[test]
     fn shelf_full_starts_new_shelf() {
         let mut atlas = GlyphAtlas::new(64, 64);
