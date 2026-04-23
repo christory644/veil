@@ -12,8 +12,12 @@ pub struct DirChecker;
 
 impl DirChecker {
     /// Check if a directory exists.
-    pub fn check(_path: &Path) -> DirState {
-        todo!()
+    pub fn check(path: &Path) -> DirState {
+        if path.exists() {
+            DirState::Exists
+        } else {
+            DirState::Missing
+        }
     }
 }
 

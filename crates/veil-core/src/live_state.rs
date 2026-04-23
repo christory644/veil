@@ -18,8 +18,13 @@ pub enum BranchState {
 }
 
 impl fmt::Display for BranchState {
-    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::Exists => "exists",
+            Self::Deleted => "deleted",
+            Self::Unknown => "unknown",
+        };
+        f.write_str(s)
     }
 }
 
@@ -37,8 +42,14 @@ pub enum PrState {
 }
 
 impl fmt::Display for PrState {
-    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::Open => "open",
+            Self::Merged => "merged",
+            Self::Closed => "closed",
+            Self::Unknown => "unknown",
+        };
+        f.write_str(s)
     }
 }
 
