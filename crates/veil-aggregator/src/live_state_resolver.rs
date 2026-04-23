@@ -7,11 +7,14 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use chrono::Duration;
-use veil_core::live_state::LiveStatus;
+use chrono::{Duration, Utc};
+use veil_core::dir_checker::DirChecker;
+use veil_core::git_checker::GitChecker;
+use veil_core::live_state::{BranchState, DirState, LiveStatus, PrState};
+use veil_core::pr_checker::PrChecker;
 use veil_core::session::SessionId;
 
-use crate::live_state_cache::LiveStateCache;
+use crate::live_state_cache::{CheckType, LiveStateCache};
 use crate::store::StoreError;
 
 /// Configuration for the resolver.
@@ -53,16 +56,14 @@ pub struct SessionCheckInput {
 /// Resolves live state for sessions by checking cache, then shelling out
 /// for stale/missing entries.
 pub struct LiveStateResolver<'a> {
-    #[allow(dead_code)]
     cache: LiveStateCache<'a>,
-    #[allow(dead_code)]
     config: ResolverConfig,
 }
 
 impl<'a> LiveStateResolver<'a> {
     /// Create a new resolver with the given cache and configuration.
-    pub fn new(_cache: LiveStateCache<'a>, _config: ResolverConfig) -> Self {
-        todo!()
+    pub fn new(cache: LiveStateCache<'a>, config: ResolverConfig) -> Self {
+        Self { cache, config }
     }
 
     /// Resolve live state for a batch of sessions.
@@ -71,9 +72,121 @@ impl<'a> LiveStateResolver<'a> {
     /// branch/PR/dir metadata will have an empty (default) `LiveStatus`.
     pub fn resolve(
         &self,
-        _inputs: &[SessionCheckInput],
+        inputs: &[SessionCheckInput],
     ) -> Result<HashMap<SessionId, LiveStatus>, StoreError> {
-        todo!()
+        let mut results = HashMap::with_capacity(inputs.len());
+
+        for input in inputs {
+            let branch = self.resolve_branch(input)?;
+            let pr = self.resolve_pr(input)?;
+            let dir = self.resolve_dir(input)?;
+
+            results.insert(input.session_id.clone(), LiveStatus { branch, pr, dir });
+        }
+
+        Ok(results)
+    }
+
+    /// Resolve branch state for a single session input.
+    ///
+    /// Returns `None` if the session has no branch metadata (no `branch_name`
+    /// or no `repo_path`). Returns `Some(BranchState)` otherwise.
+    fn resolve_branch(&self, input: &SessionCheckInput) -> Result<Option<BranchState>, StoreError> {
+        let (Some(repo_path), Some(branch_name)) =
+            (input.repo_path.as_ref(), input.branch_name.as_ref())
+        else {
+            return Ok(None);
+        };
+
+        let cache_key = format!("{}::{}", repo_path.display(), branch_name);
+
+        // Check cache first.
+        if let Some(cached) =
+            self.cache.get(CheckType::Branch, &cache_key, self.config.branch_ttl)?
+        {
+            return Ok(Some(parse_branch_state(&cached.state)));
+        }
+
+        // Cache miss — check via git.
+        let state = GitChecker::check_branch(repo_path, branch_name);
+        let now = Utc::now();
+        self.cache.put(CheckType::Branch, &cache_key, &state.to_string(), now)?;
+
+        Ok(Some(state))
+    }
+
+    /// Resolve PR state for a single session input.
+    ///
+    /// Returns `None` if the session has no PR metadata (no `pr_number`
+    /// or no `repo_path`). Returns `Some(PrState)` otherwise.
+    fn resolve_pr(&self, input: &SessionCheckInput) -> Result<Option<PrState>, StoreError> {
+        let (Some(repo_path), Some(pr_number)) = (input.repo_path.as_ref(), input.pr_number) else {
+            return Ok(None);
+        };
+
+        let cache_key = format!("{}::{}", repo_path.display(), pr_number);
+
+        // Check cache first.
+        if let Some(cached) = self.cache.get(CheckType::Pr, &cache_key, self.config.pr_ttl)? {
+            return Ok(Some(parse_pr_state(&cached.state)));
+        }
+
+        // Cache miss — check via gh.
+        let state = PrChecker::check_pr(repo_path, pr_number);
+        let now = Utc::now();
+        self.cache.put(CheckType::Pr, &cache_key, &state.to_string(), now)?;
+
+        Ok(Some(state))
+    }
+
+    /// Resolve directory state for a single session input.
+    ///
+    /// Always returns `Some(DirState)` because every session has a working dir.
+    fn resolve_dir(&self, input: &SessionCheckInput) -> Result<Option<DirState>, StoreError> {
+        let cache_key = input.working_dir.display().to_string();
+
+        // Check cache first.
+        if let Some(cached) = self.cache.get(CheckType::Dir, &cache_key, self.config.dir_ttl)? {
+            return Ok(Some(parse_dir_state(&cached.state)));
+        }
+
+        // Cache miss — check filesystem.
+        let state = DirChecker::check(&input.working_dir);
+        let now = Utc::now();
+        let state_str = match &state {
+            DirState::Exists => "exists",
+            DirState::Missing => "missing",
+        };
+        self.cache.put(CheckType::Dir, &cache_key, state_str, now)?;
+
+        Ok(Some(state))
+    }
+}
+
+/// Parse a cached branch state string back into a `BranchState`.
+fn parse_branch_state(s: &str) -> BranchState {
+    match s {
+        "exists" => BranchState::Exists,
+        "deleted" => BranchState::Deleted,
+        _ => BranchState::Unknown,
+    }
+}
+
+/// Parse a cached PR state string back into a `PrState`.
+fn parse_pr_state(s: &str) -> PrState {
+    match s {
+        "open" => PrState::Open,
+        "merged" => PrState::Merged,
+        "closed" => PrState::Closed,
+        _ => PrState::Unknown,
+    }
+}
+
+/// Parse a cached directory state string back into a `DirState`.
+fn parse_dir_state(s: &str) -> DirState {
+    match s {
+        "exists" => DirState::Exists,
+        _ => DirState::Missing,
     }
 }
 
