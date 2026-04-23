@@ -1,16 +1,28 @@
 //! Conversion from `SocketError` to `ErrorReport` for user-facing error display.
 
 use crate::transport::SocketError;
-use veil_core::error::{ErrorComponent, ErrorReport, ErrorSeverity};
+use veil_core::error::{ErrorComponent, ErrorReport, ErrorSeverity, RecoveryAction};
 
-// Stub: returns a default ErrorReport so tests will fail.
 impl From<SocketError> for ErrorReport {
-    fn from(_err: SocketError) -> Self {
-        ErrorReport::new(ErrorSeverity::Warning, ErrorComponent::System, "")
+    fn from(err: SocketError) -> Self {
+        match &err {
+            SocketError::Io(io_err) => {
+                ErrorReport::new(ErrorSeverity::Error, ErrorComponent::Socket, err.to_string())
+                    .with_detail(format!("I/O error: {io_err}"))
+                    .with_suggestion("check that no other Veil instance is running")
+                    .with_recovery_actions(vec![RecoveryAction::Retry, RecoveryAction::Dismiss])
+            }
+            SocketError::UnsupportedPlatform => {
+                ErrorReport::new(ErrorSeverity::Warning, ErrorComponent::Socket, err.to_string())
+                    .with_suggestion("the socket API is not available on this platform")
+                    .with_recovery_actions(vec![RecoveryAction::Dismiss])
+            }
+        }
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::io_other_error)]
 mod tests {
     use super::*;
 

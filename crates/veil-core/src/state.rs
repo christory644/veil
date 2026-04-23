@@ -11,7 +11,7 @@ use crate::notification::{Notification, NotificationId, NotificationSource, Noti
 use crate::session::SessionEntry;
 use crate::workspace::{PaneId, SplitDirection, SurfaceId, Workspace, WorkspaceError, WorkspaceId};
 
-/// An error tracked in AppState, with an assigned ID.
+/// An error tracked in `AppState`, with an assigned ID.
 #[derive(Debug, Clone)]
 pub struct TrackedError {
     /// Unique identifier for this error.
@@ -338,16 +338,18 @@ impl AppState {
         self.notifications.latest_for_workspace(workspace_id)
     }
 
-    /// Track a new error. Returns the assigned ErrorId.
-    pub fn add_error(&mut self, _report: ErrorReport) -> ErrorId {
-        // Stub: returns a dummy ID and does not actually store the error.
-        ErrorId::new(0)
+    /// Track a new error. Returns the assigned `ErrorId`.
+    pub fn add_error(&mut self, report: ErrorReport) -> ErrorId {
+        let id = ErrorId::new(self.next_id());
+        self.errors.push(TrackedError { id, report });
+        id
     }
 
     /// Dismiss (remove) an error by its ID. Returns true if found.
-    pub fn dismiss_error(&mut self, _id: ErrorId) -> bool {
-        // Stub: always returns false.
-        false
+    pub fn dismiss_error(&mut self, id: ErrorId) -> bool {
+        let len_before = self.errors.len();
+        self.errors.retain(|e| e.id != id);
+        self.errors.len() < len_before
     }
 
     /// Get all active errors.
@@ -356,15 +358,13 @@ impl AppState {
     }
 
     /// Get errors associated with a specific pane.
-    pub fn errors_for_pane(&self, _pane_id: PaneId) -> Vec<&TrackedError> {
-        // Stub: returns empty vec.
-        Vec::new()
+    pub fn errors_for_pane(&self, pane_id: PaneId) -> Vec<&TrackedError> {
+        self.errors.iter().filter(|e| e.report.pane_id == Some(pane_id)).collect()
     }
 
     /// Get errors not associated with any pane (global errors).
     pub fn global_errors(&self) -> Vec<&TrackedError> {
-        // Stub: returns empty vec.
-        Vec::new()
+        self.errors.iter().filter(|e| e.report.pane_id.is_none()).collect()
     }
 }
 

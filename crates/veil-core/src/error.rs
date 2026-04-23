@@ -18,7 +18,11 @@ pub enum ErrorSeverity {
 
 impl std::fmt::Display for ErrorSeverity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "")
+        match self {
+            ErrorSeverity::Warning => write!(f, "warning"),
+            ErrorSeverity::Error => write!(f, "error"),
+            ErrorSeverity::Fatal => write!(f, "fatal"),
+        }
     }
 }
 
@@ -43,7 +47,15 @@ pub enum ErrorComponent {
 
 impl std::fmt::Display for ErrorComponent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "")
+        match self {
+            ErrorComponent::Config => write!(f, "config"),
+            ErrorComponent::Persistence => write!(f, "persistence"),
+            ErrorComponent::Terminal => write!(f, "terminal"),
+            ErrorComponent::Pty => write!(f, "pty"),
+            ErrorComponent::Socket => write!(f, "socket"),
+            ErrorComponent::Aggregator => write!(f, "aggregator"),
+            ErrorComponent::System => write!(f, "system"),
+        }
     }
 }
 
@@ -62,11 +74,16 @@ pub enum RecoveryAction {
 
 impl std::fmt::Display for RecoveryAction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "")
+        match self {
+            RecoveryAction::Retry => write!(f, "Retry"),
+            RecoveryAction::Close => write!(f, "Close"),
+            RecoveryAction::Dismiss => write!(f, "Dismiss"),
+            RecoveryAction::Report => write!(f, "Report"),
+        }
     }
 }
 
-/// Unique identifier for a tracked error in AppState.
+/// Unique identifier for a tracked error in `AppState`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ErrorId(u64);
 
@@ -106,17 +123,16 @@ pub struct ErrorReport {
 }
 
 impl ErrorReport {
-    /// Create a new ErrorReport with the required fields.
+    /// Create a new `ErrorReport` with the required fields.
     pub fn new(
-        _severity: ErrorSeverity,
-        _component: ErrorComponent,
-        _message: impl Into<String>,
+        severity: ErrorSeverity,
+        component: ErrorComponent,
+        message: impl Into<String>,
     ) -> Self {
-        // Stub: returns defaults so tests that check field values will fail.
         Self {
-            severity: ErrorSeverity::Warning,
-            component: ErrorComponent::System,
-            message: String::new(),
+            severity,
+            component,
+            message: message.into(),
             detail: None,
             suggestion: None,
             recovery_actions: Vec::new(),
@@ -125,26 +141,30 @@ impl ErrorReport {
     }
 
     /// Add extended detail.
-    pub fn with_detail(self, _detail: impl Into<String>) -> Self {
-        // Stub: does not set the detail field.
+    #[must_use]
+    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
         self
     }
 
     /// Add a suggestion.
-    pub fn with_suggestion(self, _suggestion: impl Into<String>) -> Self {
-        // Stub: does not set the suggestion field.
+    #[must_use]
+    pub fn with_suggestion(mut self, suggestion: impl Into<String>) -> Self {
+        self.suggestion = Some(suggestion.into());
         self
     }
 
     /// Set recovery actions.
-    pub fn with_recovery_actions(self, _actions: Vec<RecoveryAction>) -> Self {
-        // Stub: does not set recovery_actions.
+    #[must_use]
+    pub fn with_recovery_actions(mut self, actions: Vec<RecoveryAction>) -> Self {
+        self.recovery_actions = actions;
         self
     }
 
     /// Associate with a specific pane.
-    pub fn with_pane_id(self, _pane_id: PaneId) -> Self {
-        // Stub: does not set pane_id.
+    #[must_use]
+    pub fn with_pane_id(mut self, pane_id: PaneId) -> Self {
+        self.pane_id = Some(pane_id);
         self
     }
 
@@ -161,8 +181,20 @@ impl ErrorReport {
     /// For warnings, the prefix is `warning[component]`.
     /// For fatal errors, the prefix is `fatal[component]`.
     pub fn format_display(&self) -> String {
-        // Stub: returns empty string.
-        String::new()
+        use std::fmt::Write;
+        let mut output = format!("{}[{}]: {}", self.severity, self.component, self.message);
+        if let Some(detail) = &self.detail {
+            let _ = write!(output, "\n  --> detail: {detail}");
+        }
+        if let Some(suggestion) = &self.suggestion {
+            let _ = write!(output, "\n  = help: {suggestion}");
+        }
+        if !self.recovery_actions.is_empty() {
+            let actions: Vec<String> =
+                self.recovery_actions.iter().map(std::string::ToString::to_string).collect();
+            let _ = write!(output, "\n  = actions: {}", actions.join(", "));
+        }
+        output
     }
 }
 
@@ -207,17 +239,68 @@ pub enum PersistenceError {
     },
 }
 
-// Stub From<ConfigError>: returns a default ErrorReport (tests will fail).
 impl From<crate::config::ConfigError> for ErrorReport {
-    fn from(_err: crate::config::ConfigError) -> Self {
-        ErrorReport::new(ErrorSeverity::Warning, ErrorComponent::System, "")
+    fn from(err: crate::config::ConfigError) -> Self {
+        match &err {
+            crate::config::ConfigError::ReadError { path, .. } => {
+                ErrorReport::new(ErrorSeverity::Error, ErrorComponent::Config, err.to_string())
+                    .with_detail(format!("could not read {}", path.display()))
+                    .with_suggestion("check that the file exists and is readable")
+                    .with_recovery_actions(vec![RecoveryAction::Retry, RecoveryAction::Dismiss])
+            }
+            crate::config::ConfigError::ParseError { path, .. } => {
+                ErrorReport::new(ErrorSeverity::Error, ErrorComponent::Config, err.to_string())
+                    .with_detail(format!("syntax error in {}", path.display()))
+                    .with_suggestion("check your TOML syntax")
+                    .with_recovery_actions(vec![RecoveryAction::Retry, RecoveryAction::Dismiss])
+            }
+            crate::config::ConfigError::ParseErrorWithLocation { path, line, column, .. } => {
+                ErrorReport::new(ErrorSeverity::Error, ErrorComponent::Config, err.to_string())
+                    .with_detail(format!("at {}:{}:{}", path.display(), line, column))
+                    .with_suggestion("check your TOML syntax at the indicated location")
+                    .with_recovery_actions(vec![RecoveryAction::Retry, RecoveryAction::Dismiss])
+            }
+            crate::config::ConfigError::NoConfigDir => {
+                ErrorReport::new(ErrorSeverity::Warning, ErrorComponent::Config, err.to_string())
+                    .with_suggestion("using default configuration")
+                    .with_recovery_actions(vec![RecoveryAction::Dismiss])
+            }
+        }
     }
 }
 
-// Stub From<PersistenceError>: returns a default ErrorReport (tests will fail).
 impl From<PersistenceError> for ErrorReport {
-    fn from(_err: PersistenceError) -> Self {
-        ErrorReport::new(ErrorSeverity::Warning, ErrorComponent::System, "")
+    fn from(err: PersistenceError) -> Self {
+        match &err {
+            PersistenceError::ReadError { path, .. } => {
+                ErrorReport::new(ErrorSeverity::Error, ErrorComponent::Persistence, err.to_string())
+                    .with_detail(format!("could not read {}", path.display()))
+                    .with_suggestion("starting with empty workspace state")
+                    .with_recovery_actions(vec![RecoveryAction::Retry, RecoveryAction::Dismiss])
+            }
+            PersistenceError::WriteError { path, .. } => ErrorReport::new(
+                ErrorSeverity::Warning,
+                ErrorComponent::Persistence,
+                err.to_string(),
+            )
+            .with_detail(format!("could not write {}", path.display()))
+            .with_suggestion("check disk space and file permissions")
+            .with_recovery_actions(vec![RecoveryAction::Retry, RecoveryAction::Dismiss]),
+            PersistenceError::ParseError { path, .. } => {
+                ErrorReport::new(ErrorSeverity::Error, ErrorComponent::Persistence, err.to_string())
+                    .with_detail(format!("corrupt state file at {}", path.display()))
+                    .with_suggestion("the file may be corrupted; starting fresh")
+                    .with_recovery_actions(vec![RecoveryAction::Dismiss])
+            }
+            PersistenceError::UnsupportedVersion { version } => {
+                ErrorReport::new(ErrorSeverity::Error, ErrorComponent::Persistence, err.to_string())
+                    .with_detail(format!(
+                        "state file version {version} is not supported by this version of Veil"
+                    ))
+                    .with_suggestion("upgrade Veil or delete the state file to start fresh")
+                    .with_recovery_actions(vec![RecoveryAction::Dismiss])
+            }
+        }
     }
 }
 
@@ -475,11 +558,7 @@ mod tests {
         .with_recovery_actions(vec![RecoveryAction::Retry, RecoveryAction::Dismiss]);
 
         let output = report.format_display();
-        let expected = "\
-error[config]: failed to parse config file\n\
-  --> detail: unexpected character at line 5, column 12\n\
-  = help: check your TOML syntax\n\
-  = actions: Retry, Dismiss";
+        let expected = "error[config]: failed to parse config file\n  --> detail: unexpected character at line 5, column 12\n  = help: check your TOML syntax\n  = actions: Retry, Dismiss";
         assert_eq!(output, expected);
     }
 
@@ -488,7 +567,7 @@ error[config]: failed to parse config file\n\
         let report = ErrorReport::new(ErrorSeverity::Error, ErrorComponent::Config, "test message")
             .with_detail("detail here")
             .with_suggestion("suggestion here");
-        let display_output = format!("{}", report);
+        let display_output = format!("{report}");
         let format_output = report.format_display();
         assert!(!format_output.is_empty(), "format_display should produce non-empty output");
         assert_eq!(display_output, format_output);
@@ -512,7 +591,7 @@ error[config]: failed to parse config file\n\
             report
                 .detail
                 .as_ref()
-                .map_or(false, |d| d.contains("/home/user/.config/veil/config.toml")),
+                .is_some_and(|d| d.contains("/home/user/.config/veil/config.toml")),
             "detail should mention the path, got: {:?}",
             report.detail
         );
@@ -528,7 +607,7 @@ error[config]: failed to parse config file\n\
         assert_eq!(report.severity, ErrorSeverity::Error);
         assert_eq!(report.component, ErrorComponent::Config);
         assert!(
-            report.suggestion.as_ref().map_or(false, |s| s.contains("TOML")),
+            report.suggestion.as_ref().is_some_and(|s| s.contains("TOML")),
             "suggestion should mention TOML syntax, got: {:?}",
             report.suggestion
         );
@@ -547,7 +626,7 @@ error[config]: failed to parse config file\n\
         assert_eq!(report.component, ErrorComponent::Config);
         let detail = report.detail.as_ref().expect("should have detail");
         assert!(
-            detail.contains("5") && detail.contains("12"),
+            detail.contains('5') && detail.contains("12"),
             "detail should contain line and column, got: {detail}"
         );
     }
@@ -628,7 +707,7 @@ error[config]: failed to parse config file\n\
 
     #[test]
     fn from_persistence_write_error() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "disk full");
+        let io_err = std::io::Error::other("disk full");
         let err = PersistenceError::WriteError {
             path: PathBuf::from("/data/state.json"),
             source: io_err,
@@ -656,7 +735,7 @@ error[config]: failed to parse config file\n\
         let report: ErrorReport = err.into();
         assert_eq!(report.severity, ErrorSeverity::Error);
         assert!(
-            report.suggestion.as_ref().map_or(false, |s| s.contains("fresh")),
+            report.suggestion.as_ref().is_some_and(|s| s.contains("fresh")),
             "suggestion should mention starting fresh, got: {:?}",
             report.suggestion
         );
@@ -687,7 +766,7 @@ error[config]: failed to parse config file\n\
 
         let write_err = PersistenceError::WriteError {
             path: PathBuf::from("/state.json"),
-            source: std::io::Error::new(std::io::ErrorKind::Other, "disk full"),
+            source: std::io::Error::other("disk full"),
         };
         assert!(
             write_err.to_string().contains("/state.json"),
@@ -705,7 +784,7 @@ error[config]: failed to parse config file\n\
 
         let version_err = PersistenceError::UnsupportedVersion { version: 5 };
         assert!(
-            version_err.to_string().contains("5"),
+            version_err.to_string().contains('5'),
             "UnsupportedVersion display should contain version"
         );
     }
