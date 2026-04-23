@@ -7,6 +7,46 @@ use std::collections::HashMap;
 
 use veil_core::workspace::SurfaceId;
 
+// -- TerminalWriter trait -------------------------------------------------------
+
+/// Abstraction over terminal state management.
+///
+/// The real implementation (`GhosttyTerminalWriter`) wraps `veil_ghostty::Terminal`.
+/// Tests use lightweight mocks.
+///
+/// Several methods in this trait (and corresponding `TerminalMap` accessors) are
+/// not yet called from the binary target but are exercised by tests and will be
+/// wired in by upcoming tasks (resize propagation, cell rendering). The
+/// `#[allow(dead_code)]` annotations on those call-sites are intentional.
+#[allow(dead_code)] // trait is only used via cfg-gated impls + test mocks
+pub trait TerminalWriter {
+    /// Feed VT-encoded bytes to the terminal's parser.
+    fn write_vt(&mut self, data: &[u8]);
+
+    /// Resize the terminal to new cell dimensions and pixel sizes.
+    fn resize(
+        &mut self,
+        cols: u16,
+        rows: u16,
+        cell_width_px: u32,
+        cell_height_px: u32,
+    ) -> Result<(), String>;
+
+    /// Query the terminal's current column count.
+    fn cols(&self) -> u16;
+
+    /// Query the terminal's current row count.
+    fn rows(&self) -> u16;
+
+    /// Extract a snapshot of cell data for rendering.
+    /// Returns `None` if the terminal has no render state available.
+    fn render_cells(&mut self) -> Option<veil_ghostty::CellGrid> {
+        None
+    }
+}
+
+// -- GhosttyTerminalWriter (real FFI-backed impl) -------------------------------
+
 /// Wraps a `veil_ghostty::Terminal` to implement `TerminalWriter`.
 #[cfg(not(no_libghosty))]
 struct GhosttyTerminalWriter {
@@ -38,15 +78,16 @@ impl TerminalWriter for GhosttyTerminalWriter {
     }
 
     fn render_cells(&mut self) -> Option<veil_ghostty::CellGrid> {
+        // MVP: returns None until cell-iteration FFI is wired (VEI-77).
         None
     }
 }
 
-/// Factory function to create a real terminal writer backed by libghosty.
+/// Create a real terminal writer backed by libghosty.
 ///
 /// Returns `None` if terminal creation fails or if libghosty is not available.
-/// The returned writer wraps a `veil_ghostty::Terminal` instance configured with
-/// the given cell dimensions and 10,000 lines of scrollback.
+/// The returned writer wraps a `veil_ghostty::Terminal` configured with the
+/// given cell dimensions and 10,000 lines of scrollback.
 #[cfg(not(no_libghosty))]
 pub fn create_ghostty_terminal(cols: u16, rows: u16) -> Option<Box<dyn TerminalWriter>> {
     let config = veil_ghostty::TerminalConfig { cols, rows, max_scrollback: 10_000 };
@@ -66,36 +107,9 @@ pub fn create_ghostty_terminal(_cols: u16, _rows: u16) -> Option<Box<dyn Termina
     None
 }
 
-/// Abstraction over terminal state management.
-/// Real impl wraps `veil_ghostty::Terminal`. Tests use a mock.
-#[allow(dead_code)]
-pub trait TerminalWriter {
-    /// Feed VT-encoded bytes to the terminal's parser.
-    fn write_vt(&mut self, data: &[u8]);
+// -- TerminalMap ----------------------------------------------------------------
 
-    /// Resize the terminal to new cell dimensions and pixel sizes.
-    fn resize(
-        &mut self,
-        cols: u16,
-        rows: u16,
-        cell_width_px: u32,
-        cell_height_px: u32,
-    ) -> Result<(), String>;
-
-    /// Query the terminal's current column count.
-    fn cols(&self) -> u16;
-
-    /// Query the terminal's current row count.
-    fn rows(&self) -> u16;
-
-    /// Extract a snapshot of cell data for rendering.
-    /// Returns None if the terminal has no render state available.
-    fn render_cells(&mut self) -> Option<veil_ghostty::CellGrid> {
-        None
-    }
-}
-
-/// Manages Terminal instances keyed by `SurfaceId`.
+/// Manages `TerminalWriter` instances keyed by `SurfaceId`.
 pub struct TerminalMap {
     terminals: HashMap<SurfaceId, Box<dyn TerminalWriter>>,
 }
@@ -177,6 +191,8 @@ impl TerminalMap {
     }
 }
 
+// -- Free functions -------------------------------------------------------------
+
 /// Compute terminal cell dimensions from a pane rect and cell pixel sizes.
 ///
 /// Returns `(cols, rows)` clamped to at least `(1, 1)`.
@@ -232,6 +248,8 @@ pub fn process_state_update(
         _ => false,
     }
 }
+
+// -- Surface exit handling ------------------------------------------------------
 
 /// Outcome of handling a surface exit in the workspace layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

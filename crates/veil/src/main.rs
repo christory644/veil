@@ -151,13 +151,7 @@ impl ApplicationHandler for VeilApp {
         }
         self.pty_manager = Some(pty_manager);
 
-        if let Some(writer) =
-            terminal_map::create_ghostty_terminal(frame::DEFAULT_COLS, frame::DEFAULT_ROWS)
-        {
-            self.terminal_map.insert(surface_id, writer);
-        } else {
-            tracing::warn!(?surface_id, "no terminal created for root pane");
-        }
+        self.register_terminal(surface_id);
 
         self.start_config_watcher();
 
@@ -460,17 +454,28 @@ impl VeilApp {
         Some(full_output)
     }
 
+    /// Create a terminal writer for a surface and insert it into the map.
+    ///
+    /// Uses the default grid dimensions from `frame.rs`. Logs a warning if
+    /// terminal creation fails (e.g. libghosty unavailable).
+    fn register_terminal(&mut self, surface_id: veil_core::workspace::SurfaceId) {
+        if let Some(writer) =
+            terminal_map::create_ghostty_terminal(frame::DEFAULT_COLS, frame::DEFAULT_ROWS)
+        {
+            self.terminal_map.insert(surface_id, writer);
+        } else {
+            tracing::warn!(?surface_id, "no terminal created (libghosty unavailable)");
+        }
+    }
+
     fn execute_effect(&mut self, effect: ActionEffect) {
         match effect {
             ActionEffect::SpawnPty { surface_id, working_directory } => {
                 if let Some(ref mut mgr) = self.pty_manager {
                     if let Err(e) = mgr.spawn(surface_id, default_pty_config(working_directory)) {
                         tracing::error!(?surface_id, "failed to spawn PTY: {e}");
-                    } else if let Some(writer) = terminal_map::create_ghostty_terminal(
-                        frame::DEFAULT_COLS,
-                        frame::DEFAULT_ROWS,
-                    ) {
-                        self.terminal_map.insert(surface_id, writer);
+                    } else {
+                        self.register_terminal(surface_id);
                     }
                 }
             }
