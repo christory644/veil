@@ -34,29 +34,82 @@ pub enum VersionError {
 
 impl SemVer {
     /// Parse a version string. Accepts "v1.2.3", "1.2.3", "1.2.3-rc.1".
-    pub fn parse(_s: &str) -> Result<Self, VersionError> {
-        todo!()
+    pub fn parse(s: &str) -> Result<Self, VersionError> {
+        let s = s.strip_prefix('v').unwrap_or(s);
+        if s.is_empty() {
+            return Err(VersionError::InvalidFormat(s.to_string()));
+        }
+
+        // Split off pre-release label at the first '-'
+        let (version_part, pre) = match s.split_once('-') {
+            Some((v, p)) => (v, Some(p.to_string())),
+            None => (s, None),
+        };
+
+        let parts: Vec<&str> = version_part.split('.').collect();
+        if parts.len() != 3 {
+            return Err(VersionError::InvalidFormat(s.to_string()));
+        }
+
+        let major =
+            parts[0].parse::<u32>().map_err(|_| VersionError::InvalidFormat(s.to_string()))?;
+        let minor =
+            parts[1].parse::<u32>().map_err(|_| VersionError::InvalidFormat(s.to_string()))?;
+        let patch =
+            parts[2].parse::<u32>().map_err(|_| VersionError::InvalidFormat(s.to_string()))?;
+
+        Ok(Self { major, minor, patch, pre })
     }
 
     /// Returns true if `self` is strictly newer than `other`.
     /// Pre-release versions are considered older than the same version
     /// without a pre-release label (1.0.0-rc.1 < 1.0.0).
-    pub fn is_newer_than(&self, _other: &SemVer) -> bool {
-        todo!()
+    pub fn is_newer_than(&self, other: &SemVer) -> bool {
+        // Compare major.minor.patch first
+        match self.major.cmp(&other.major) {
+            std::cmp::Ordering::Greater => return true,
+            std::cmp::Ordering::Less => return false,
+            std::cmp::Ordering::Equal => {}
+        }
+        match self.minor.cmp(&other.minor) {
+            std::cmp::Ordering::Greater => return true,
+            std::cmp::Ordering::Less => return false,
+            std::cmp::Ordering::Equal => {}
+        }
+        match self.patch.cmp(&other.patch) {
+            std::cmp::Ordering::Greater => return true,
+            std::cmp::Ordering::Less => return false,
+            std::cmp::Ordering::Equal => {}
+        }
+
+        // Same major.minor.patch — compare pre-release labels.
+        // No pre-release (release) is newer than any pre-release.
+        match (&self.pre, &other.pre) {
+            (None, Some(_)) => true,         // release > pre-release
+            (Some(_) | None, None) => false, // pre-release < release, or equal
+            (Some(a), Some(b)) => a > b,     // lexicographic comparison
+        }
     }
 }
 
 impl std::fmt::Display for SemVer {
     /// Formats as "X.Y.Z" (no leading "v"), or "X.Y.Z-pre" if pre-release.
-    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        todo!()
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.pre {
+            Some(pre) => write!(f, "{}.{}.{}-{}", self.major, self.minor, self.patch, pre),
+            None => write!(f, "{}.{}.{}", self.major, self.minor, self.patch),
+        }
     }
 }
 
 /// Compare the running version against a remote version.
 /// Returns `Some(remote)` if remote is strictly newer, `None` otherwise.
-pub fn check_newer(_current: &SemVer, _remote: &SemVer) -> Option<SemVer> {
-    todo!()
+pub fn check_newer(current: &SemVer, remote: &SemVer) -> Option<SemVer> {
+    if remote.is_newer_than(current) {
+        Some(remote.clone())
+    } else {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -86,25 +139,68 @@ impl InstallMethod {
     /// Detect the install method by examining the current binary's path
     /// and environment.
     pub fn detect() -> Self {
-        todo!()
+        match std::env::current_exe() {
+            Ok(path) => Self::detect_from_path(&path),
+            Err(_) => Self::Unknown,
+        }
     }
 
     /// Detect from a given binary path (testable without `current_exe()`).
-    pub fn detect_from_path(_path: &Path) -> Self {
-        todo!()
+    pub fn detect_from_path(path: &Path) -> Self {
+        let path_str = path.to_string_lossy();
+
+        // Check for Homebrew (Cellar or homebrew in path)
+        if path_str.contains("/Cellar/") || path_str.contains("/homebrew/") {
+            return Self::Homebrew;
+        }
+
+        // Check for Cargo
+        if path_str.contains("/.cargo/bin/") {
+            return Self::Cargo;
+        }
+
+        // Check for Nix
+        if path_str.contains("/nix/store/") {
+            return Self::Nix;
+        }
+
+        // Check for Scoop (case-insensitive)
+        if path_str.to_lowercase().contains("/scoop/")
+            || path_str.to_lowercase().contains("\\scoop\\")
+        {
+            return Self::Scoop;
+        }
+
+        Self::Unknown
     }
 
     /// Return the upgrade command for this install method.
     /// Returns `None` for `Unknown` (we don't know how to upgrade).
     pub fn upgrade_command(&self) -> Option<&'static str> {
-        todo!()
+        match self {
+            Self::Homebrew => Some("brew upgrade veil"),
+            Self::Cargo => Some("cargo install veil"),
+            Self::Aur => Some("paru -Syu veil"),
+            Self::Winget => Some("winget upgrade veil"),
+            Self::Scoop => Some("scoop update veil"),
+            Self::Nix => Some("nix profile upgrade veil"),
+            Self::Unknown => None,
+        }
     }
 }
 
 impl std::fmt::Display for InstallMethod {
     /// Human-readable name: "Homebrew", "cargo", "AUR", etc.
-    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        todo!()
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Homebrew => write!(f, "Homebrew"),
+            Self::Cargo => write!(f, "cargo"),
+            Self::Aur => write!(f, "AUR"),
+            Self::Winget => write!(f, "winget"),
+            Self::Scoop => write!(f, "scoop"),
+            Self::Nix => write!(f, "Nix"),
+            Self::Unknown => write!(f, "unknown"),
+        }
     }
 }
 
@@ -166,11 +262,22 @@ pub trait VersionFetcher: Send + Sync {
 /// Check for updates using the provided fetcher.
 /// This is the pure logic function -- no I/O, fully testable.
 pub fn check_for_update(
-    _current: &SemVer,
-    _fetcher: &dyn VersionFetcher,
-    _install_method: &InstallMethod,
+    current: &SemVer,
+    fetcher: &dyn VersionFetcher,
+    install_method: &InstallMethod,
 ) -> Result<UpdateStatus, UpdateError> {
-    todo!()
+    let tag = fetcher.fetch_latest_tag()?;
+    let latest = SemVer::parse(&tag)?;
+
+    if latest.is_newer_than(current) {
+        Ok(UpdateStatus::Available {
+            latest,
+            current: current.clone(),
+            install_method: install_method.clone(),
+        })
+    } else {
+        Ok(UpdateStatus::UpToDate { version: current.clone() })
+    }
 }
 
 /// Production implementation that calls the GitHub Releases API.
@@ -184,14 +291,39 @@ pub struct GitHubVersionFetcher {
 
 impl GitHubVersionFetcher {
     /// Create a new fetcher for the given repo.
-    pub fn new(_repo: String) -> Self {
-        todo!()
+    pub fn new(repo: String) -> Self {
+        Self { user_agent: format!("veil/{repo}"), repo }
     }
 }
 
 impl VersionFetcher for GitHubVersionFetcher {
     fn fetch_latest_tag(&self) -> Result<String, UpdateError> {
-        todo!()
+        let url = format!("https://api.github.com/repos/{}/releases/latest", self.repo);
+
+        let agent = ureq::Agent::new_with_config(
+            ureq::config::Config::builder()
+                .timeout_global(Some(std::time::Duration::from_secs(5)))
+                .build(),
+        );
+
+        let mut response = agent
+            .get(&url)
+            .header("User-Agent", &self.user_agent)
+            .header("Accept", "application/vnd.github.v3+json")
+            .call()
+            .map_err(|e: ureq::Error| UpdateError::FetchFailed(e.to_string()))?;
+
+        let body_str = response
+            .body_mut()
+            .read_to_string()
+            .map_err(|e: ureq::Error| UpdateError::ParseFailed(e.to_string()))?;
+
+        let body: serde_json::Value =
+            serde_json::from_str(&body_str).map_err(|e| UpdateError::ParseFailed(e.to_string()))?;
+
+        body["tag_name"].as_str().map(|s: &str| s.to_string()).ok_or_else(|| {
+            UpdateError::ParseFailed("missing tag_name field in response".to_string())
+        })
     }
 }
 
@@ -218,33 +350,55 @@ impl Default for UpdateState {
 impl UpdateState {
     /// Load state from the default path, or return a default (never checked).
     pub fn load() -> Self {
-        todo!()
+        match Self::default_path() {
+            Some(path) => Self::load_from(&path),
+            None => Self::default(),
+        }
     }
 
     /// Load state from a specific path (for testing).
-    pub fn load_from(_path: &Path) -> Self {
-        todo!()
+    pub fn load_from(path: &Path) -> Self {
+        let Ok(contents) = std::fs::read_to_string(path) else {
+            return Self::default();
+        };
+        serde_json::from_str(&contents).unwrap_or_default()
     }
 
     /// Save state to the default path.
     pub fn save(&self) -> Result<(), std::io::Error> {
-        todo!()
+        match Self::default_path() {
+            Some(path) => self.save_to(&path),
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "could not determine default state path",
+            )),
+        }
     }
 
     /// Save state to a specific path (for testing).
-    pub fn save_to(&self, _path: &Path) -> Result<(), std::io::Error> {
-        todo!()
+    pub fn save_to(&self, path: &Path) -> Result<(), std::io::Error> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
+        std::fs::write(path, json)
     }
 
     /// Check if enough time has elapsed since the last check.
-    pub fn should_check(&self, _interval_hours: u32) -> bool {
-        todo!()
+    pub fn should_check(&self, interval_hours: u32) -> bool {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .cast_signed();
+        let interval_secs = i64::from(interval_hours) * 3600;
+        now - self.last_check_epoch >= interval_secs
     }
 
     /// Default path: `~/.local/share/veil/update-state.json`
     /// (or platform equivalent via `dirs::data_local_dir()`).
     pub fn default_path() -> Option<PathBuf> {
-        todo!()
+        dirs::data_local_dir().map(|d| d.join("veil").join("update-state.json"))
     }
 }
 
@@ -271,7 +425,12 @@ impl UpdateNotification {
     /// Example: "Veil 0.2.0 available -- run `brew upgrade veil`"
     /// If install method is Unknown: "Veil 0.2.0 available"
     pub fn message(&self) -> String {
-        todo!()
+        match &self.upgrade_instruction {
+            Some(instruction) => {
+                format!("Veil {} available -- {}", self.latest_version, instruction)
+            }
+            None => format!("Veil {} available", self.latest_version),
+        }
     }
 }
 
@@ -286,13 +445,54 @@ impl UpdateNotification {
 /// 6. Update and save `UpdateState`.
 /// 7. Return `UpdateNotification` if newer version available.
 pub fn run_update_check(
-    _current_version: &SemVer,
-    _config: &UpdatesConfig,
-    _fetcher: &dyn VersionFetcher,
-    _install_method: &InstallMethod,
-    _state_path: &Path,
+    current_version: &SemVer,
+    config: &UpdatesConfig,
+    fetcher: &dyn VersionFetcher,
+    install_method: &InstallMethod,
+    state_path: &Path,
 ) -> Result<Option<UpdateNotification>, UpdateError> {
-    todo!()
+    // Step 1: If check_on_startup is false, return early.
+    if !config.check_on_startup {
+        return Ok(None);
+    }
+
+    // Step 2: Read UpdateState from state_path.
+    let state = UpdateState::load_from(state_path);
+
+    // Step 3: If should_check is false, return early.
+    if !state.should_check(config.check_interval_hours) {
+        return Ok(None);
+    }
+
+    // Step 4: Call fetcher to get latest tag.
+    let tag = fetcher.fetch_latest_tag()?;
+
+    // Step 5: Parse and compare against current version.
+    let latest = SemVer::parse(&tag)?;
+
+    // Step 6: Update and save UpdateState.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .cast_signed();
+    let new_state = UpdateState { last_check_epoch: now, latest_version: Some(latest.to_string()) };
+    // Best effort save — don't fail the check if save fails.
+    let _ = new_state.save_to(state_path);
+
+    // Step 7: Return UpdateNotification if newer version available.
+    if latest.is_newer_than(current_version) {
+        let upgrade_instruction =
+            install_method.upgrade_command().map(|cmd| format!("run `{cmd}`"));
+        Ok(Some(UpdateNotification {
+            latest_version: latest,
+            current_version: current_version.clone(),
+            upgrade_instruction,
+            install_method: install_method.clone(),
+        }))
+    } else {
+        Ok(None)
+    }
 }
 
 // ===========================================================================

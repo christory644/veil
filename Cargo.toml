@@ -50,6 +50,7 @@ egui-wgpu = "0.34"
 egui-winit = { version = "0.34", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt", "std"] }
 tracing-appender = "0.2"
+ureq = { version = "3", features = ["json"] }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

@@ -17,6 +17,7 @@ tokio = { workspace = true, features = ["sync"] }
 toml.workspace = true
 notify.workspace = true
 dirs.workspace = true
+ureq.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["sync", "macros", "rt", "time"] }
