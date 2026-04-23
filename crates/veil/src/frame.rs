@@ -50,12 +50,10 @@ pub struct FrameGeometry {
 /// Resolve a cell's foreground color to RGBA f32.
 ///
 /// Uses the cell's explicit `fg_color` if set, otherwise the default foreground.
-///
-/// Stub: returns `[0.0, 0.0, 0.0, 1.0]` -- real implementation will convert
-/// the color.
-#[allow(dead_code)]
-pub fn cell_fg_color(_cell: &veil_ghostty::CellData, _default_fg: veil_ghostty::Color) -> [f32; 4] {
-    [0.0, 0.0, 0.0, 1.0]
+#[allow(dead_code)] // Wired in Unit 5 (text quad generation).
+pub fn cell_fg_color(cell: &veil_ghostty::CellData, default_fg: veil_ghostty::Color) -> [f32; 4] {
+    let color = cell.fg_color.unwrap_or(default_fg);
+    crate::quad_builder::color_to_f32(color)
 }
 
 /// Build all geometry for the current frame.
