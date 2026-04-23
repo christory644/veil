@@ -11,6 +11,7 @@ members = [
     "crates/veil-scaffold-tests",
     "crates/veil-e2e",
     "crates/veil-tracing",
+    "crates/veil-shell",
 ]
 
 [workspace.package]
