@@ -8,46 +8,43 @@ use std::path::PathBuf;
 
 use veil_core::workspace::SurfaceId;
 
-use crate::agent_detector::{DetectedAgent, ProcessEntry};
-use crate::env_detector::EnvReport;
+use crate::agent_detector::{detect_agents, DetectedAgent, ProcessEntry};
+use crate::env_detector::{detect_env, EnvReport};
 use crate::event::ShellEvent;
+use crate::osc7::parse_osc7;
 
 /// Tracked state for a single terminal surface.
 #[derive(Debug)]
 pub struct SurfaceShellState {
     /// Which surface this tracks.
-    #[allow(dead_code)]
     surface_id: SurfaceId,
     /// Current working directory (last OSC 7 value).
-    #[allow(dead_code)]
     current_dir: Option<PathBuf>,
     /// Currently detected agent (most recently detected).
-    #[allow(dead_code)]
     active_agent: Option<DetectedAgent>,
     /// Current environment report.
-    #[allow(dead_code)]
     current_env: Option<EnvReport>,
 }
 
 impl SurfaceShellState {
     /// Create a new tracker for a surface.
-    pub fn new(_surface_id: SurfaceId) -> Self {
-        todo!()
+    pub fn new(surface_id: SurfaceId) -> Self {
+        Self { surface_id, current_dir: None, active_agent: None, current_env: None }
     }
 
     /// Get the current working directory, if known.
     pub fn current_dir(&self) -> Option<&PathBuf> {
-        todo!()
+        self.current_dir.as_ref()
     }
 
     /// Get the currently active agent, if any.
     pub fn active_agent(&self) -> Option<&DetectedAgent> {
-        todo!()
+        self.active_agent.as_ref()
     }
 
     /// Get the current environment report, if any.
     pub fn current_env(&self) -> Option<&EnvReport> {
-        todo!()
+        self.current_env.as_ref()
     }
 
     /// Process an OSC 7 payload. Returns a `ShellEvent::DirectoryChanged`
@@ -56,8 +53,34 @@ impl SurfaceShellState {
     /// directory change.
     ///
     /// Returns up to 2 events: `DirectoryChanged` and `EnvironmentChanged`.
-    pub fn handle_osc7(&mut self, _payload: &str) -> Vec<ShellEvent> {
-        todo!()
+    pub fn handle_osc7(&mut self, payload: &str) -> Vec<ShellEvent> {
+        let Ok(report) = parse_osc7(payload) else {
+            return vec![];
+        };
+
+        let new_path = report.path;
+
+        // Dedup: if the path is the same as the current one, no events.
+        if self.current_dir.as_ref() == Some(&new_path) {
+            return vec![];
+        }
+
+        // Path changed (or first time).
+        self.current_dir = Some(new_path.clone());
+        let mut events = vec![ShellEvent::DirectoryChanged {
+            surface_id: self.surface_id,
+            path: new_path.clone(),
+        }];
+
+        // Cascade: detect environment for the new directory.
+        let new_env = detect_env(&new_path);
+        if self.current_env.as_ref() != Some(&new_env) {
+            self.current_env = Some(new_env.clone());
+            events
+                .push(ShellEvent::EnvironmentChanged { surface_id: self.surface_id, env: new_env });
+        }
+
+        events
     }
 
     /// Update agent detection from a process list snapshot.
@@ -65,24 +88,74 @@ impl SurfaceShellState {
     /// Compares the current process tree against the previously detected
     /// agent. Emits `AgentStarted` if a new agent is found, `AgentStopped`
     /// if the previous agent is gone, or both if the agent changed.
-    pub fn update_agents(
-        &mut self,
-        _root_pid: u32,
-        _processes: &[ProcessEntry],
-    ) -> Vec<ShellEvent> {
-        todo!()
+    pub fn update_agents(&mut self, root_pid: u32, processes: &[ProcessEntry]) -> Vec<ShellEvent> {
+        let detected = detect_agents(root_pid, processes);
+        let primary = detected.into_iter().next();
+
+        let mut events = Vec::new();
+
+        match (&self.active_agent, &primary) {
+            // No previous, no current -> nothing.
+            (None, None) => {}
+            // No previous, agent detected -> AgentStarted.
+            (None, Some(agent)) => {
+                events.push(ShellEvent::AgentStarted {
+                    surface_id: self.surface_id,
+                    agent: agent.clone(),
+                });
+                self.active_agent = Some(agent.clone());
+            }
+            // Previous agent, same agent still running -> dedup.
+            (Some(prev), Some(curr)) if prev.kind == curr.kind && prev.pid == curr.pid => {}
+            // Previous agent, different agent detected -> stop old, start new.
+            (Some(prev), Some(curr)) => {
+                events.push(ShellEvent::AgentStopped {
+                    surface_id: self.surface_id,
+                    agent_kind: prev.kind.clone(),
+                    pid: prev.pid,
+                });
+                events.push(ShellEvent::AgentStarted {
+                    surface_id: self.surface_id,
+                    agent: curr.clone(),
+                });
+                self.active_agent = Some(curr.clone());
+            }
+            // Previous agent, no longer detected -> AgentStopped.
+            (Some(prev), None) => {
+                events.push(ShellEvent::AgentStopped {
+                    surface_id: self.surface_id,
+                    agent_kind: prev.kind.clone(),
+                    pid: prev.pid,
+                });
+                self.active_agent = None;
+            }
+        }
+
+        events
     }
 
     /// Force re-detection of the environment for the current directory.
     /// Returns `EnvironmentChanged` if the environment differs from the
     /// previously reported one, or an empty vec if unchanged.
     pub fn refresh_env(&mut self) -> Vec<ShellEvent> {
-        todo!()
+        let Some(dir) = &self.current_dir else {
+            return vec![];
+        };
+
+        let new_env = detect_env(dir);
+        if self.current_env.as_ref() == Some(&new_env) {
+            vec![]
+        } else {
+            self.current_env = Some(new_env.clone());
+            vec![ShellEvent::EnvironmentChanged { surface_id: self.surface_id, env: new_env }]
+        }
     }
 
     /// Reset all tracked state (e.g., when the surface's process exits).
     pub fn reset(&mut self) {
-        todo!()
+        self.current_dir = None;
+        self.active_agent = None;
+        self.current_env = None;
     }
 }
 
