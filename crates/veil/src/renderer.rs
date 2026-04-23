@@ -52,7 +52,29 @@ pub struct Renderer {
     text_render_pipeline: wgpu::RenderPipeline,
 }
 
-/// Create the render pipeline with position+color vertex layout.
+/// Shared primitive state for all Veil render pipelines.
+///
+/// All pipelines use `TriangleList` with `Ccw` winding and no culling.
+fn pipeline_primitive_state() -> wgpu::PrimitiveState {
+    wgpu::PrimitiveState {
+        topology: wgpu::PrimitiveTopology::TriangleList,
+        strip_index_format: None,
+        front_face: wgpu::FrontFace::Ccw,
+        cull_mode: None,
+        polygon_mode: wgpu::PolygonMode::Fill,
+        unclipped_depth: false,
+        conservative: false,
+    }
+}
+
+/// Shared multisample state for all Veil render pipelines (no MSAA).
+fn pipeline_multisample_state() -> wgpu::MultisampleState {
+    wgpu::MultisampleState { count: 1, mask: !0, alpha_to_coverage_enabled: false }
+}
+
+/// Create the solid-color render pipeline (position + color vertices).
+///
+/// Used for background quads, cursor, dividers, and focus borders.
 fn create_render_pipeline(
     device: &wgpu::Device,
     pipeline_layout: &wgpu::PipelineLayout,
@@ -78,21 +100,9 @@ fn create_render_pipeline(
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            strip_index_format: None,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: None,
-            polygon_mode: wgpu::PolygonMode::Fill,
-            unclipped_depth: false,
-            conservative: false,
-        },
+        primitive: pipeline_primitive_state(),
         depth_stencil: None,
-        multisample: wgpu::MultisampleState {
-            count: 1,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        },
+        multisample: pipeline_multisample_state(),
         multiview_mask: None,
         cache: None,
     })
@@ -226,7 +236,10 @@ fn create_text_bind_group(
     })
 }
 
-/// Create the render pipeline for textured glyph quads.
+/// Create the text render pipeline for alpha-blended glyph quads.
+///
+/// Uses `TextVertex::buffer_layout()` (position + UV + color) and the
+/// `vs_text`/`fs_text` entry points from `text_shader.wgsl`.
 fn create_text_render_pipeline(
     device: &wgpu::Device,
     pipeline_layout: &wgpu::PipelineLayout,
@@ -252,28 +265,74 @@ fn create_text_render_pipeline(
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            strip_index_format: None,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: None,
-            polygon_mode: wgpu::PolygonMode::Fill,
-            unclipped_depth: false,
-            conservative: false,
-        },
+        primitive: pipeline_primitive_state(),
         depth_stencil: None,
-        multisample: wgpu::MultisampleState {
-            count: 1,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        },
+        multisample: pipeline_multisample_state(),
         multiview_mask: None,
         cache: None,
     })
 }
 
 /// Initial glyph atlas texture size (512×512 pixels).
+///
+/// Matches `FontPipeline::new()` which also initializes its atlas at 512×512.
 const INITIAL_ATLAS_SIZE: u32 = 512;
+
+/// All GPU resources for the text rendering pipeline, created together.
+struct TextPipelineBundle {
+    atlas_texture: wgpu::Texture,
+    atlas_texture_view: wgpu::TextureView,
+    atlas_sampler: wgpu::Sampler,
+    bind_group_layout: wgpu::BindGroupLayout,
+    bind_group: wgpu::BindGroup,
+    render_pipeline: wgpu::RenderPipeline,
+}
+
+/// Create all GPU resources needed for the text (glyph atlas) pipeline.
+///
+/// Separated from `Renderer::new()` to keep that constructor focused on
+/// surface/adapter/device setup and solid-color pipeline creation.
+fn create_text_pipeline_bundle(
+    device: &wgpu::Device,
+    uniform_buffer: &wgpu::Buffer,
+    surface_format: wgpu::TextureFormat,
+) -> TextPipelineBundle {
+    let text_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("veil text shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("text_shader.wgsl").into()),
+    });
+
+    let (atlas_texture, atlas_texture_view, atlas_sampler) =
+        create_atlas_texture(device, INITIAL_ATLAS_SIZE, INITIAL_ATLAS_SIZE);
+
+    let bind_group_layout = create_text_bind_group_layout(device);
+
+    let bind_group = create_text_bind_group(
+        device,
+        &bind_group_layout,
+        uniform_buffer,
+        &atlas_texture_view,
+        &atlas_sampler,
+    );
+
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("veil text pipeline layout"),
+        bind_group_layouts: &[Some(&bind_group_layout)],
+        immediate_size: 0,
+    });
+
+    let render_pipeline =
+        create_text_render_pipeline(device, &pipeline_layout, &text_shader, surface_format);
+
+    TextPipelineBundle {
+        atlas_texture,
+        atlas_texture_view,
+        atlas_sampler,
+        bind_group_layout,
+        bind_group,
+        render_pipeline,
+    }
+}
 
 impl Renderer {
     /// Initialize the renderer with a window.
@@ -283,7 +342,6 @@ impl Renderer {
     /// module, pipeline layout, render pipeline, and uniform buffer.
     ///
     /// This is async because wgpu adapter/device requests are async.
-    #[allow(clippy::too_many_lines)]
     pub async fn new(window: Arc<Window>) -> anyhow::Result<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
 
@@ -331,7 +389,7 @@ impl Renderer {
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
 
-        // Uniform buffer for window dimensions (8 bytes).
+        // Uniform buffer for window dimensions (8 bytes, written on every resize).
         #[allow(clippy::cast_precision_loss)]
         let uniform = WindowUniform { width: width as f32, height: height as f32 };
         let window_uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -352,37 +410,7 @@ impl Renderer {
         let render_pipeline =
             create_render_pipeline(&device, &pipeline_layout, &shader, surface_format);
 
-        // Text pipeline setup.
-        let text_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("veil text shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("text_shader.wgsl").into()),
-        });
-
-        let (atlas_texture, atlas_texture_view, atlas_sampler) =
-            create_atlas_texture(&device, INITIAL_ATLAS_SIZE, INITIAL_ATLAS_SIZE);
-
-        let text_bind_group_layout = create_text_bind_group_layout(&device);
-
-        let text_bind_group = create_text_bind_group(
-            &device,
-            &text_bind_group_layout,
-            &window_uniform_buffer,
-            &atlas_texture_view,
-            &atlas_sampler,
-        );
-
-        let text_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("veil text pipeline layout"),
-            bind_group_layouts: &[Some(&text_bind_group_layout)],
-            immediate_size: 0,
-        });
-
-        let text_render_pipeline = create_text_render_pipeline(
-            &device,
-            &text_pipeline_layout,
-            &text_shader,
-            surface_format,
-        );
+        let text = create_text_pipeline_bundle(&device, &window_uniform_buffer, surface_format);
 
         let egui = EguiIntegration::new(&window, &device, surface_format);
 
@@ -396,13 +424,13 @@ impl Renderer {
             window_bind_group,
             size: (width, height),
             egui,
-            atlas_texture,
-            atlas_texture_view,
-            atlas_sampler,
+            atlas_texture: text.atlas_texture,
+            atlas_texture_view: text.atlas_texture_view,
+            atlas_sampler: text.atlas_sampler,
             atlas_size: (INITIAL_ATLAS_SIZE, INITIAL_ATLAS_SIZE),
-            text_bind_group_layout,
-            text_bind_group,
-            text_render_pipeline,
+            text_bind_group_layout: text.bind_group_layout,
+            text_bind_group: text.bind_group,
+            text_render_pipeline: text.render_pipeline,
         })
     }
 
@@ -426,7 +454,8 @@ impl Renderer {
 
     /// Upload the glyph atlas bitmap to the GPU texture.
     ///
-    /// Called each frame when `GlyphAtlas::is_dirty()` is true.
+    /// The atlas is `R8Unorm` (1 byte per pixel), so `bytes_per_row = width`.
+    /// Called by `sync_atlas()` when `GlyphAtlas::is_dirty()` is true.
     fn upload_atlas(&self, atlas: &crate::font::atlas::GlyphAtlas) {
         let (w, h) = atlas.dimensions();
         self.queue.write_texture(
@@ -439,24 +468,54 @@ impl Renderer {
             atlas.bitmap(),
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(w),
+                bytes_per_row: Some(w), // R8Unorm: 1 byte/pixel → bytes_per_row = width
                 rows_per_image: Some(h),
             },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
     }
 
+    /// Synchronize the GPU atlas texture with the CPU `FontPipeline` atlas.
+    ///
+    /// If the atlas has grown since the last frame, recreates the `wgpu::Texture`
+    /// at the new dimensions and rebuilds the text bind group. Then, if the atlas
+    /// data is dirty (glyphs were inserted this frame), uploads the bitmap.
+    fn sync_atlas(&mut self, font_pipeline: &mut crate::font_pipeline::FontPipeline) {
+        let current_size = font_pipeline.atlas().dimensions();
+        if current_size != self.atlas_size {
+            // Atlas grew — recreate the GPU texture at the new dimensions and
+            // rebuild the bind group to reference the new texture view.
+            let (tex, view, sampler) =
+                create_atlas_texture(&self.device, current_size.0, current_size.1);
+            self.atlas_texture = tex;
+            self.atlas_texture_view = view;
+            self.atlas_sampler = sampler;
+            self.atlas_size = current_size;
+            self.text_bind_group = create_text_bind_group(
+                &self.device,
+                &self.text_bind_group_layout,
+                &self.window_uniform_buffer,
+                &self.atlas_texture_view,
+                &self.atlas_sampler,
+            );
+        }
+        if font_pipeline.atlas().is_dirty() {
+            self.upload_atlas(font_pipeline.atlas());
+            font_pipeline.atlas_mut().mark_clean();
+        }
+    }
+
     /// Render a complete frame: terminal geometry + optional egui overlay.
     ///
     /// 1. Get next surface texture
     /// 2. Create texture view and command encoder
-    /// 3. Terminal render pass (clear + indexed quads)
-    /// 4. If `egui_full_output` is `Some`, render egui in a second pass
-    ///    with `LoadOp::Load` (composite on top)
-    /// 5. Submit and present
+    /// 3. Sync glyph atlas to GPU (recreate if grown, upload if dirty)
+    /// 4. Terminal render pass: background quads then text quads (same pass)
+    /// 5. If `egui_full_output` is `Some`, egui pass composited on top
+    /// 6. Submit and present
     ///
     /// Handles surface errors:
-    /// - `Lost` / `Outdated`: calls `resize()` to reconfigure
+    /// - `Lost` / `Outdated` / `Timeout` / `Occluded`: reconfigures surface
     /// - `Validation`: returns `Err` (caller should exit)
     pub fn render(
         &mut self,
@@ -485,28 +544,8 @@ impl Renderer {
             label: Some("veil render encoder"),
         });
 
-        // Per-frame atlas upload: recreate texture if atlas grew, then upload if dirty.
         if let Some(fp) = font_pipeline {
-            let current_size = fp.atlas().dimensions();
-            if current_size != self.atlas_size {
-                let (tex, view, sampler) =
-                    create_atlas_texture(&self.device, current_size.0, current_size.1);
-                self.atlas_texture = tex;
-                self.atlas_texture_view = view;
-                self.atlas_sampler = sampler;
-                self.atlas_size = current_size;
-                self.text_bind_group = create_text_bind_group(
-                    &self.device,
-                    &self.text_bind_group_layout,
-                    &self.window_uniform_buffer,
-                    &self.atlas_texture_view,
-                    &self.atlas_sampler,
-                );
-            }
-            if fp.atlas().is_dirty() {
-                self.upload_atlas(fp.atlas());
-                fp.atlas_mut().mark_clean();
-            }
+            self.sync_atlas(fp);
         }
 
         // Pass 1: terminal quads
@@ -555,10 +594,11 @@ impl Renderer {
             multiview_mask: None,
         });
 
-        render_pass.set_pipeline(&self.render_pipeline);
-        render_pass.set_bind_group(0, &self.window_bind_group, &[]);
-
+        // Draw 1: solid-color quads (cell backgrounds, cursor, dividers, focus border)
         if !frame_geometry.vertices.is_empty() {
+            render_pass.set_pipeline(&self.render_pipeline);
+            render_pass.set_bind_group(0, &self.window_bind_group, &[]);
+
             let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("veil vertex buffer"),
                 contents: bytemuck::cast_slice(&frame_geometry.vertices),
@@ -579,7 +619,7 @@ impl Renderer {
             render_pass.draw_indexed(0..index_count, 0, 0..1);
         }
 
-        // Draw 2: textured glyph quads (text on top of backgrounds)
+        // Draw 2: textured glyph quads (text composited on top of backgrounds)
         if !frame_geometry.text_vertices.is_empty() {
             let text_vertex_buffer =
                 self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
