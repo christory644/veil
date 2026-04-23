@@ -17,6 +17,7 @@ mod quad_builder;
 mod renderer;
 #[allow(dead_code)]
 mod sidebar_wiring;
+mod terminal_map;
 mod vertex;
 
 use std::sync::Arc;

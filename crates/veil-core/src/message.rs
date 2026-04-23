@@ -23,6 +23,13 @@ pub enum StateUpdate {
         /// Notification message.
         message: String,
     },
+    /// PTY output bytes for a terminal surface.
+    PtyOutput {
+        /// Which surface produced the output.
+        surface_id: SurfaceId,
+        /// Raw output bytes from the PTY.
+        data: Vec<u8>,
+    },
     /// A terminal surface's process exited.
     SurfaceExited {
         /// Which surface exited.
@@ -219,6 +226,29 @@ mod tests {
                 assert_eq!(data, vec![0x1b, 0x5b, 0x41]);
             }
             other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    // --- PtyOutput round-trip ---
+
+    #[tokio::test]
+    async fn pty_output_send_and_receive() {
+        let channels = Channels::new(16);
+        let Channels { state_tx, mut state_rx, .. } = channels;
+        state_tx
+            .send(StateUpdate::PtyOutput {
+                surface_id: SurfaceId::new(7),
+                data: b"hello world".to_vec(),
+            })
+            .await
+            .expect("send should succeed");
+        let msg = state_rx.recv().await.expect("should receive message");
+        match msg {
+            StateUpdate::PtyOutput { surface_id, data } => {
+                assert_eq!(surface_id, SurfaceId::new(7));
+                assert_eq!(data, b"hello world");
+            }
+            other => panic!("expected PtyOutput, got: {other:?}"),
         }
     }
 

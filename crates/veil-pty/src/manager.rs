@@ -563,6 +563,158 @@ mod tests {
         }
     }
 
+    // --- Event bridging: PtyOutput forwarding ---
+
+    #[tokio::test]
+    async fn pty_output_sends_pty_output_state_update() {
+        let signal = ShutdownSignal::new();
+        let (state_tx, mut state_rx) = tokio::sync::mpsc::channel(64);
+        let surface_id = SurfaceId::new(10);
+
+        let (mock, handles) = MockPty::new();
+        let mock_cell = std::sync::Mutex::new(Some(mock));
+        let mut manager = PtyManager::with_factory(
+            state_tx,
+            signal.handle(),
+            Box::new(move |_config| {
+                let pty = mock_cell.lock().unwrap().take().expect("factory called more than once");
+                Ok(Box::new(pty) as Box<dyn Pty>)
+            }),
+        );
+
+        manager.spawn(surface_id, default_pty_config()).expect("spawn should succeed");
+
+        // Send output through the test handle.
+        handles.event_tx.send(PtyEvent::Output(b"hello".to_vec())).expect("send should succeed");
+
+        // Then send exit to make the bridge loop terminate.
+        handles
+            .event_tx
+            .send(PtyEvent::ChildExited { exit_code: Some(0) })
+            .expect("send should succeed");
+
+        // The bridge thread should forward output as StateUpdate::PtyOutput.
+        let update = tokio::time::timeout(std::time::Duration::from_secs(2), state_rx.recv())
+            .await
+            .expect("should receive state update within timeout")
+            .expect("channel should not be closed");
+
+        match update {
+            StateUpdate::PtyOutput { surface_id: sid, data } => {
+                assert_eq!(sid, surface_id);
+                assert_eq!(data, b"hello");
+            }
+            other => panic!("expected PtyOutput, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn multiple_output_chunks_arrive_in_order() {
+        let signal = ShutdownSignal::new();
+        let (state_tx, mut state_rx) = tokio::sync::mpsc::channel(64);
+        let surface_id = SurfaceId::new(20);
+
+        let (mock, handles) = MockPty::new();
+        let mock_cell = std::sync::Mutex::new(Some(mock));
+        let mut manager = PtyManager::with_factory(
+            state_tx,
+            signal.handle(),
+            Box::new(move |_config| {
+                let pty = mock_cell.lock().unwrap().take().expect("factory called more than once");
+                Ok(Box::new(pty) as Box<dyn Pty>)
+            }),
+        );
+
+        manager.spawn(surface_id, default_pty_config()).expect("spawn should succeed");
+
+        // Send three output chunks.
+        handles.event_tx.send(PtyEvent::Output(b"chunk1".to_vec())).expect("send should succeed");
+        handles.event_tx.send(PtyEvent::Output(b"chunk2".to_vec())).expect("send should succeed");
+        handles.event_tx.send(PtyEvent::Output(b"chunk3".to_vec())).expect("send should succeed");
+        handles
+            .event_tx
+            .send(PtyEvent::ChildExited { exit_code: Some(0) })
+            .expect("send should succeed");
+
+        let mut received_data: Vec<Vec<u8>> = Vec::new();
+        let timeout = std::time::Duration::from_secs(2);
+        // Drain all PtyOutput messages (expect 3, then SurfaceExited).
+        loop {
+            let update = tokio::time::timeout(timeout, state_rx.recv())
+                .await
+                .expect("should receive within timeout")
+                .expect("channel should not be closed");
+            match update {
+                StateUpdate::PtyOutput { data, .. } => received_data.push(data),
+                StateUpdate::SurfaceExited { .. } => break,
+                other => panic!("unexpected state update: {other:?}"),
+            }
+        }
+
+        assert_eq!(received_data.len(), 3, "should receive all 3 output chunks");
+        assert_eq!(received_data[0], b"chunk1");
+        assert_eq!(received_data[1], b"chunk2");
+        assert_eq!(received_data[2], b"chunk3");
+    }
+
+    #[tokio::test]
+    async fn output_followed_by_exit_arrives_in_order() {
+        let signal = ShutdownSignal::new();
+        let (state_tx, mut state_rx) = tokio::sync::mpsc::channel(64);
+        let surface_id = SurfaceId::new(30);
+
+        let (mock, handles) = MockPty::new();
+        let mock_cell = std::sync::Mutex::new(Some(mock));
+        let mut manager = PtyManager::with_factory(
+            state_tx,
+            signal.handle(),
+            Box::new(move |_config| {
+                let pty = mock_cell.lock().unwrap().take().expect("factory called more than once");
+                Ok(Box::new(pty) as Box<dyn Pty>)
+            }),
+        );
+
+        manager.spawn(surface_id, default_pty_config()).expect("spawn should succeed");
+
+        // Send output then exit.
+        handles
+            .event_tx
+            .send(PtyEvent::Output(b"final output".to_vec()))
+            .expect("send should succeed");
+        handles
+            .event_tx
+            .send(PtyEvent::ChildExited { exit_code: Some(42) })
+            .expect("send should succeed");
+
+        let timeout = std::time::Duration::from_secs(2);
+
+        // First message should be PtyOutput.
+        let first = tokio::time::timeout(timeout, state_rx.recv())
+            .await
+            .expect("should receive within timeout")
+            .expect("channel should not be closed");
+        match first {
+            StateUpdate::PtyOutput { surface_id: sid, data } => {
+                assert_eq!(sid, surface_id);
+                assert_eq!(data, b"final output");
+            }
+            other => panic!("expected PtyOutput first, got: {other:?}"),
+        }
+
+        // Second message should be SurfaceExited.
+        let second = tokio::time::timeout(timeout, state_rx.recv())
+            .await
+            .expect("should receive within timeout")
+            .expect("channel should not be closed");
+        match second {
+            StateUpdate::SurfaceExited { surface_id: sid, exit_code } => {
+                assert_eq!(sid, surface_id);
+                assert_eq!(exit_code, Some(42));
+            }
+            other => panic!("expected SurfaceExited second, got: {other:?}"),
+        }
+    }
+
     // --- Pty trait is object-safe ---
 
     #[test]
