@@ -9,6 +9,7 @@
 
 mod action_dispatch;
 mod bootstrap;
+mod egui_integration;
 #[allow(dead_code)]
 mod font;
 #[allow(dead_code)]
