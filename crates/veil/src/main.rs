@@ -231,6 +231,12 @@ impl ApplicationHandler for VeilApp {
                     renderer.resize(new_size.width, new_size.height);
                 }
             }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                if let Some(renderer) = &mut self.renderer {
+                    #[allow(clippy::cast_possible_truncation)]
+                    renderer.egui.ctx.set_pixels_per_point(scale_factor as f32);
+                }
+            }
             WindowEvent::RedrawRequested => {
                 self.handle_redraw(event_loop);
             }
