@@ -20,7 +20,7 @@ of whatever characters happen to land at atlas coordinates near (0, 0).
 egui-wgpu's shader (`egui.wgsl`) converts vertex positions to clip space using
 `screen_size_in_points`, which is computed as:
 
-```
+```text
 screen_size_in_points = size_in_pixels / pixels_per_point
 ```
 
