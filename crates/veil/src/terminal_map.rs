@@ -202,7 +202,8 @@ pub fn handle_surface_exit(
         app_state.workspace(ws_id).map(|ws| ws.layout.surface_ids()).unwrap_or_default();
 
     // Close the pane.
-    if app_state.close_pane(ws_id, pane_id).is_err() {
+    if let Err(e) = app_state.close_pane(ws_id, pane_id) {
+        tracing::warn!(?surface_id, ?pane_id, ?e, "close_pane failed after surface was resolved");
         return SurfaceExitOutcome::SurfaceNotFound;
     }
 
