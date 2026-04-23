@@ -405,6 +405,8 @@ impl VeilApp {
             &self.focus,
             self.window_size.0,
             self.window_size.1,
+            &mut self.terminal_map,
+            None,
         );
 
         // Run egui sidebar frame and collect output for GPU rendering.

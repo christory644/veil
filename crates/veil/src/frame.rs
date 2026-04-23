@@ -6,10 +6,12 @@ use veil_core::layout::{compute_layout, Rect};
 use veil_core::state::AppState;
 
 use crate::font::text_vertex::TextVertex;
+use crate::font_pipeline::FontPipeline;
 use crate::quad_builder::{
     build_cell_background_quads, build_cursor_quad, build_divider_quads, build_focus_border,
     CellGridParams,
 };
+use crate::terminal_map::TerminalMap;
 use crate::vertex::Vertex;
 
 // -- Default grid dimensions (until real terminal state is wired in) ----------
@@ -75,6 +77,8 @@ pub fn build_frame_geometry(
     focus: &FocusManager,
     window_width: u32,
     window_height: u32,
+    _terminal_map: &mut TerminalMap,
+    _font_pipeline: Option<&mut FontPipeline>,
 ) -> FrameGeometry {
     let empty = || FrameGeometry {
         vertices: Vec::new(),
@@ -197,7 +201,7 @@ mod tests {
     fn frame_no_workspace_empty_geometry() {
         let state = AppState::new();
         let focus = FocusManager::new();
-        let geom = build_frame_geometry(&state, &focus, 1280, 800);
+        let geom = build_frame_geometry(&state, &focus, 1280, 800, &mut TerminalMap::new(), None);
         assert!(geom.vertices.is_empty(), "no workspace should produce no vertices");
         assert!(geom.indices.is_empty(), "no workspace should produce no indices");
     }
@@ -212,7 +216,7 @@ mod tests {
         let mut focus = FocusManager::new();
         focus.focus_surface(surface_id);
 
-        let geom = build_frame_geometry(&state, &focus, 1280, 800);
+        let geom = build_frame_geometry(&state, &focus, 1280, 800, &mut TerminalMap::new(), None);
 
         // Sidebar is visible by default (250px), so terminal area starts at x=250
         // All cell background vertices should have x >= 250
@@ -237,7 +241,7 @@ mod tests {
         let mut focus = FocusManager::new();
         focus.focus_surface(surface_id);
 
-        let geom = build_frame_geometry(&state, &focus, 1280, 800);
+        let geom = build_frame_geometry(&state, &focus, 1280, 800, &mut TerminalMap::new(), None);
 
         assert!(!geom.vertices.is_empty(), "should have geometry");
         // With sidebar hidden, some vertices should start at x=0
@@ -255,7 +259,7 @@ mod tests {
         let mut focus = FocusManager::new();
         focus.focus_surface(first_surface);
 
-        let geom = build_frame_geometry(&state, &focus, 1280, 800);
+        let geom = build_frame_geometry(&state, &focus, 1280, 800, &mut TerminalMap::new(), None);
 
         // Two panes should produce more geometry than one pane alone
         // (cell backgrounds for both panes + divider + focus border)
@@ -275,7 +279,7 @@ mod tests {
         let mut focus = FocusManager::new();
         focus.focus_surface(surface_id);
 
-        let geom = build_frame_geometry(&state, &focus, 1280, 800);
+        let geom = build_frame_geometry(&state, &focus, 1280, 800, &mut TerminalMap::new(), None);
 
         // Focus border uses color [0.2, 0.5, 1.0, 0.8] per the spec.
         // Check that at least some vertices have the focus border color.
@@ -298,7 +302,7 @@ mod tests {
         let (state, _ws_id, _pane_id, _surface_id) = state_with_one_pane();
         let focus = FocusManager::new(); // no focus set
 
-        let geom = build_frame_geometry(&state, &focus, 1280, 800);
+        let geom = build_frame_geometry(&state, &focus, 1280, 800, &mut TerminalMap::new(), None);
 
         // Without focus, there should be no focus border color in the vertices
         let focus_color = [0.2, 0.5, 1.0, 0.8];
@@ -326,7 +330,8 @@ mod tests {
         let mut focus = FocusManager::new();
         focus.focus_surface(first_surface);
 
-        let geom_zoomed = build_frame_geometry(&state, &focus, 1280, 800);
+        let geom_zoomed =
+            build_frame_geometry(&state, &focus, 1280, 800, &mut TerminalMap::new(), None);
 
         // When zoomed, layout should be equivalent to a single pane filling the area.
         // No divider quads should be present.
@@ -351,7 +356,7 @@ mod tests {
         let (state, _ws_id, _pane_id, surface_id) = state_with_one_pane();
         let mut focus = FocusManager::new();
         focus.focus_surface(surface_id);
-        let geom = build_frame_geometry(&state, &focus, 1280, 800);
+        let geom = build_frame_geometry(&state, &focus, 1280, 800, &mut TerminalMap::new(), None);
         assert!(
             geom.text_vertices.is_empty(),
             "without font pipeline, text_vertices should be empty"
@@ -366,7 +371,7 @@ mod tests {
     fn frame_geometry_no_workspace_has_empty_text() {
         let state = AppState::new();
         let focus = FocusManager::new();
-        let geom = build_frame_geometry(&state, &focus, 1280, 800);
+        let geom = build_frame_geometry(&state, &focus, 1280, 800, &mut TerminalMap::new(), None);
         assert!(geom.text_vertices.is_empty());
         assert!(geom.text_indices.is_empty());
     }
@@ -408,5 +413,549 @@ mod tests {
             (result[0] - expected).abs() < 0.01,
             "cell without explicit fg should use default, got {result:?}"
         );
+    }
+
+    // ============================================================
+    // VEI-82 Unit 2: build_frame_geometry with terminal state + font pipeline
+    // ============================================================
+
+    use crate::font::loader::FontConfig;
+    use crate::font_pipeline::FontPipeline;
+    use crate::terminal_map::TerminalWriter;
+
+    /// Path to the test font fixture (Hack Regular, MIT license).
+    fn test_font_path() -> PathBuf {
+        PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/test_fixtures/test_font.ttf"))
+    }
+
+    /// Create a `FontPipeline` from the test font fixture.
+    fn test_pipeline() -> FontPipeline {
+        let config = FontConfig { path: Some(test_font_path()), size_pt: 14.0, dpi: 96.0 };
+        FontPipeline::new(&config).expect("font pipeline should initialize from test fixture")
+    }
+
+    /// Mock `TerminalWriter` that returns a configurable `CellGrid` from `render_cells()`.
+    struct CellGridMockWriter {
+        cols: u16,
+        rows: u16,
+        cell_grid: Option<veil_ghostty::CellGrid>,
+    }
+
+    impl CellGridMockWriter {
+        fn with_grid(grid: veil_ghostty::CellGrid) -> Self {
+            Self { cols: grid.cols, rows: grid.rows, cell_grid: Some(grid) }
+        }
+
+        fn without_grid(cols: u16, rows: u16) -> Self {
+            Self { cols, rows, cell_grid: None }
+        }
+    }
+
+    impl TerminalWriter for CellGridMockWriter {
+        fn write_vt(&mut self, _data: &[u8]) {}
+        fn resize(
+            &mut self,
+            cols: u16,
+            rows: u16,
+            _cell_width_px: u32,
+            _cell_height_px: u32,
+        ) -> Result<(), String> {
+            self.cols = cols;
+            self.rows = rows;
+            Ok(())
+        }
+        fn cols(&self) -> u16 {
+            self.cols
+        }
+        fn rows(&self) -> u16 {
+            self.rows
+        }
+        fn render_cells(&mut self) -> Option<veil_ghostty::CellGrid> {
+            self.cell_grid.clone()
+        }
+    }
+
+    /// Build a `CellGrid` with the given dimensions and text content.
+    /// Text fills cells left-to-right, top-to-bottom. Remaining cells are blank.
+    fn make_cell_grid(cols: u16, rows: u16, text: &str) -> veil_ghostty::CellGrid {
+        let chars: Vec<char> = text.chars().collect();
+        let mut cells = Vec::new();
+        let mut char_idx = 0;
+        for _row in 0..rows {
+            let mut row_cells = Vec::new();
+            for _col in 0..cols {
+                let cell = if char_idx < chars.len() {
+                    let ch = chars[char_idx];
+                    char_idx += 1;
+                    veil_ghostty::CellData {
+                        graphemes: vec![ch],
+                        fg_color: None,
+                        bg_color: None,
+                        bold: false,
+                    }
+                } else {
+                    veil_ghostty::CellData::default()
+                };
+                row_cells.push(cell);
+            }
+            cells.push(row_cells);
+        }
+        veil_ghostty::CellGrid {
+            cols,
+            rows,
+            cells,
+            cursor: veil_ghostty::CursorState {
+                in_viewport: true,
+                x: 0,
+                y: 0,
+                visible: true,
+                blinking: false,
+                style: veil_ghostty::CursorStyle::Block,
+                password_input: false,
+            },
+            colors: veil_ghostty::RenderColors {
+                background: veil_ghostty::Color { r: 0, g: 0, b: 0 },
+                foreground: veil_ghostty::Color { r: 255, g: 255, b: 255 },
+                cursor: None,
+            },
+        }
+    }
+
+    /// Set up a single-pane layout with a mock terminal writer that returns the given grid.
+    /// Returns (AppState, FocusManager, TerminalMap, SurfaceId).
+    fn setup_with_grid(
+        grid: veil_ghostty::CellGrid,
+    ) -> (AppState, FocusManager, TerminalMap, SurfaceId) {
+        let (state, _ws_id, _pane_id, surface_id) = state_with_one_pane();
+        let mut focus = FocusManager::new();
+        focus.focus_surface(surface_id);
+        let mut terminal_map = TerminalMap::new();
+        terminal_map.insert(surface_id, Box::new(CellGridMockWriter::with_grid(grid)));
+        (state, focus, terminal_map, surface_id)
+    }
+
+    // --- Happy path ---
+
+    #[test]
+    fn frame_geometry_with_terminal_content_has_text_quads() {
+        // "Hello" = 5 visible chars, each should produce a text quad.
+        let grid = make_cell_grid(80, 24, "Hello");
+        let (state, focus, mut terminal_map, _surface_id) = setup_with_grid(grid);
+        let mut pipeline = test_pipeline();
+
+        let geom =
+            build_frame_geometry(&state, &focus, 1280, 800, &mut terminal_map, Some(&mut pipeline));
+
+        // 5 visible chars * 4 vertices each = 20 text vertices
+        assert_eq!(
+            geom.text_vertices.len(),
+            5 * 4,
+            "5 visible chars should produce 20 text vertices, got {}",
+            geom.text_vertices.len()
+        );
+        // 5 visible chars * 6 indices each = 30 text indices
+        assert_eq!(
+            geom.text_indices.len(),
+            5 * 6,
+            "5 visible chars should produce 30 text indices, got {}",
+            geom.text_indices.len()
+        );
+    }
+
+    #[test]
+    fn frame_geometry_text_quads_have_correct_uv() {
+        // Single character 'A' -- verify UV coordinates match the font pipeline.
+        let mut grid = make_cell_grid(80, 24, "");
+        grid.cells[0][0] = veil_ghostty::CellData {
+            graphemes: vec!['A'],
+            fg_color: None,
+            bg_color: None,
+            bold: false,
+        };
+        let (state, focus, mut terminal_map, _surface_id) = setup_with_grid(grid);
+        let mut pipeline = test_pipeline();
+
+        // Pre-ensure the glyph so we know the expected UV coordinates.
+        let expected_region = pipeline.ensure_glyph('A').expect("'A' should have an atlas region");
+
+        let geom =
+            build_frame_geometry(&state, &focus, 1280, 800, &mut terminal_map, Some(&mut pipeline));
+
+        assert_eq!(geom.text_vertices.len(), 4, "single char 'A' should produce 4 text vertices");
+        // Top-left vertex UV should match (u_min, v_min)
+        let tl = &geom.text_vertices[0];
+        assert!(
+            (tl.uv[0] - expected_region.u_min).abs() < 0.001
+                && (tl.uv[1] - expected_region.v_min).abs() < 0.001,
+            "top-left UV should match atlas region: expected ({}, {}), got ({}, {})",
+            expected_region.u_min,
+            expected_region.v_min,
+            tl.uv[0],
+            tl.uv[1]
+        );
+        // Bottom-right vertex UV should match (u_max, v_max)
+        let br = &geom.text_vertices[3];
+        assert!(
+            (br.uv[0] - expected_region.u_max).abs() < 0.001
+                && (br.uv[1] - expected_region.v_max).abs() < 0.001,
+            "bottom-right UV should match atlas region: expected ({}, {}), got ({}, {})",
+            expected_region.u_max,
+            expected_region.v_max,
+            br.uv[0],
+            br.uv[1]
+        );
+    }
+
+    #[test]
+    fn frame_geometry_text_quads_use_cell_fg_color() {
+        // Cell with explicit red foreground -- text quad should use red.
+        let mut grid = make_cell_grid(80, 24, "");
+        grid.cells[0][0] = veil_ghostty::CellData {
+            graphemes: vec!['A'],
+            fg_color: Some(veil_ghostty::Color { r: 255, g: 0, b: 0 }),
+            bg_color: None,
+            bold: false,
+        };
+        let (state, focus, mut terminal_map, _surface_id) = setup_with_grid(grid);
+        let mut pipeline = test_pipeline();
+
+        let geom =
+            build_frame_geometry(&state, &focus, 1280, 800, &mut terminal_map, Some(&mut pipeline));
+
+        assert_eq!(geom.text_vertices.len(), 4, "single char should produce 4 text vertices");
+        for v in &geom.text_vertices {
+            assert!(
+                (v.color[0] - 1.0).abs() < 0.01,
+                "text vertex red channel should be 1.0, got {}",
+                v.color[0]
+            );
+            assert!(
+                v.color[1].abs() < 0.01,
+                "text vertex green channel should be 0.0, got {}",
+                v.color[1]
+            );
+            assert!(
+                v.color[2].abs() < 0.01,
+                "text vertex blue channel should be 0.0, got {}",
+                v.color[2]
+            );
+        }
+    }
+
+    #[test]
+    fn frame_geometry_text_quads_use_default_fg_when_none() {
+        // Cell with no explicit fg_color -- should use RenderColors.foreground.
+        let mut grid = make_cell_grid(80, 24, "");
+        grid.colors.foreground = veil_ghostty::Color { r: 200, g: 200, b: 200 };
+        grid.cells[0][0] = veil_ghostty::CellData {
+            graphemes: vec!['A'],
+            fg_color: None,
+            bg_color: None,
+            bold: false,
+        };
+        let (state, focus, mut terminal_map, _surface_id) = setup_with_grid(grid);
+        let mut pipeline = test_pipeline();
+
+        let geom =
+            build_frame_geometry(&state, &focus, 1280, 800, &mut terminal_map, Some(&mut pipeline));
+
+        assert_eq!(geom.text_vertices.len(), 4, "single char should produce 4 text vertices");
+        let expected_channel = 200.0 / 255.0;
+        for v in &geom.text_vertices {
+            assert!(
+                (v.color[0] - expected_channel).abs() < 0.01,
+                "text vertex should use default fg color ({expected_channel}), got {}",
+                v.color[0]
+            );
+        }
+    }
+
+    #[test]
+    fn frame_geometry_cell_bg_from_terminal_state() {
+        // Cell with explicit red background -- background quad should use red, not BG_COLOR.
+        let mut grid = make_cell_grid(80, 24, "");
+        grid.cells[0][0] = veil_ghostty::CellData {
+            graphemes: vec![],
+            fg_color: None,
+            bg_color: Some(veil_ghostty::Color { r: 255, g: 0, b: 0 }),
+            bold: false,
+        };
+        let (state, focus, mut terminal_map, _surface_id) = setup_with_grid(grid);
+        let mut pipeline = test_pipeline();
+
+        let geom =
+            build_frame_geometry(&state, &focus, 1280, 800, &mut terminal_map, Some(&mut pipeline));
+
+        // The first cell's background quad vertices (first 4 vertices) should have red color.
+        assert!(!geom.vertices.is_empty(), "should have background geometry");
+        let first_cell_color = geom.vertices[0].color;
+        assert!(
+            (first_cell_color[0] - 1.0).abs() < 0.01,
+            "cell bg red channel should be 1.0, got {}",
+            first_cell_color[0]
+        );
+        assert!(
+            first_cell_color[1].abs() < 0.01,
+            "cell bg green channel should be 0.0, got {}",
+            first_cell_color[1]
+        );
+        assert!(
+            first_cell_color[2].abs() < 0.01,
+            "cell bg blue channel should be 0.0, got {}",
+            first_cell_color[2]
+        );
+    }
+
+    #[test]
+    fn frame_geometry_uses_grid_dimensions() {
+        // Use a 40x12 grid instead of default 80x24. The number of background quads
+        // should correspond to 40*12 = 480, not 80*24 = 1920.
+        let grid = make_cell_grid(40, 12, "");
+        let (state, focus, mut terminal_map, _surface_id) = setup_with_grid(grid);
+        let mut pipeline = test_pipeline();
+
+        let geom =
+            build_frame_geometry(&state, &focus, 1280, 800, &mut terminal_map, Some(&mut pipeline));
+
+        // Background quads: 40*12 = 480 quads, each with 4 vertices = 1920 bg vertices.
+        // Plus cursor (4 vertices) + focus border (16 vertices) = 1940 total solid vertices.
+        // With default 80x24: 1920 quads * 4 = 7680 + 4 + 16 = 7700 solid vertices.
+        // If the grid is 40x12, the bg vertex count should be much less than 7700.
+        let expected_bg_verts = 40 * 12 * 4;
+        // The total will be bg_verts + cursor(4) + border(16), possibly +/- divider.
+        // Just check that it's not the default 80x24 count.
+        let default_bg_verts = 80 * 24 * 4;
+        assert_ne!(
+            geom.vertices.len(),
+            default_bg_verts + 4 + 16,
+            "vertex count should differ from default 80x24 grid"
+        );
+        // Check total includes the 40x12 bg vertex count.
+        assert!(
+            geom.vertices.len() >= expected_bg_verts,
+            "should have at least {} bg vertices for 40x12 grid, got {}",
+            expected_bg_verts,
+            geom.vertices.len()
+        );
+    }
+
+    // --- Edge cases ---
+
+    #[test]
+    fn frame_geometry_no_font_pipeline_empty_text() {
+        // With terminal data but no font pipeline, text quads should be empty.
+        let grid = make_cell_grid(80, 24, "Hello");
+        let (state, focus, mut terminal_map, _surface_id) = setup_with_grid(grid);
+
+        let geom = build_frame_geometry(
+            &state,
+            &focus,
+            1280,
+            800,
+            &mut terminal_map,
+            None, // no font pipeline
+        );
+
+        assert!(
+            geom.text_vertices.is_empty(),
+            "without font pipeline, text_vertices should be empty even with terminal data"
+        );
+        assert!(
+            geom.text_indices.is_empty(),
+            "without font pipeline, text_indices should be empty even with terminal data"
+        );
+    }
+
+    #[test]
+    fn frame_geometry_no_terminal_data_empty_text() {
+        // TerminalMap has no entry for the surface -- fallback to defaults.
+        let (state, _ws_id, _pane_id, surface_id) = state_with_one_pane();
+        let mut focus = FocusManager::new();
+        focus.focus_surface(surface_id);
+        let mut terminal_map = TerminalMap::new(); // empty -- no terminal for surface
+        let mut pipeline = test_pipeline();
+
+        let geom =
+            build_frame_geometry(&state, &focus, 1280, 800, &mut terminal_map, Some(&mut pipeline));
+
+        assert!(geom.text_vertices.is_empty(), "without terminal data, text quads should be empty");
+        assert!(
+            geom.text_indices.is_empty(),
+            "without terminal data, text indices should be empty"
+        );
+        // Background quads should still use DEFAULT_COLS x DEFAULT_ROWS.
+        let expected_bg_verts = (DEFAULT_COLS as usize) * (DEFAULT_ROWS as usize) * 4;
+        assert!(
+            geom.vertices.len() >= expected_bg_verts,
+            "without terminal data, should use default 80x24 grid ({} bg verts), got {}",
+            expected_bg_verts,
+            geom.vertices.len()
+        );
+    }
+
+    #[test]
+    fn frame_geometry_render_cells_returns_none_fallback() {
+        // TerminalWriter exists but render_cells() returns None.
+        let (state, _ws_id, _pane_id, surface_id) = state_with_one_pane();
+        let mut focus = FocusManager::new();
+        focus.focus_surface(surface_id);
+        let mut terminal_map = TerminalMap::new();
+        terminal_map.insert(surface_id, Box::new(CellGridMockWriter::without_grid(80, 24)));
+        let mut pipeline = test_pipeline();
+
+        let geom =
+            build_frame_geometry(&state, &focus, 1280, 800, &mut terminal_map, Some(&mut pipeline));
+
+        assert!(
+            geom.text_vertices.is_empty(),
+            "when render_cells() returns None, text quads should be empty"
+        );
+        // Background should fall back to DEFAULT_COLS x DEFAULT_ROWS.
+        let expected_bg_verts = (DEFAULT_COLS as usize) * (DEFAULT_ROWS as usize) * 4;
+        assert!(
+            geom.vertices.len() >= expected_bg_verts,
+            "when render_cells() returns None, should use default grid dimensions"
+        );
+    }
+
+    #[test]
+    fn frame_geometry_empty_graphemes_skipped() {
+        // All cells have empty graphemes -- no text quads.
+        let grid = make_cell_grid(80, 24, ""); // all blank cells
+        let (state, focus, mut terminal_map, _surface_id) = setup_with_grid(grid);
+        let mut pipeline = test_pipeline();
+
+        let geom =
+            build_frame_geometry(&state, &focus, 1280, 800, &mut terminal_map, Some(&mut pipeline));
+
+        assert!(
+            geom.text_vertices.is_empty(),
+            "cells with empty graphemes should produce no text quads"
+        );
+        assert!(
+            geom.text_indices.is_empty(),
+            "cells with empty graphemes should produce no text indices"
+        );
+    }
+
+    #[test]
+    fn frame_geometry_space_chars_skipped() {
+        // Cells containing only spaces should produce no text quads.
+        let grid = make_cell_grid(80, 24, "     "); // 5 spaces
+        let (state, focus, mut terminal_map, _surface_id) = setup_with_grid(grid);
+        let mut pipeline = test_pipeline();
+
+        let geom =
+            build_frame_geometry(&state, &focus, 1280, 800, &mut terminal_map, Some(&mut pipeline));
+
+        assert!(geom.text_vertices.is_empty(), "space characters should produce no text quads");
+        assert!(geom.text_indices.is_empty(), "space characters should produce no text indices");
+    }
+
+    #[test]
+    fn frame_geometry_control_chars_skipped() {
+        // Cells containing control characters should produce no text quads.
+        let mut grid = make_cell_grid(80, 24, "");
+        grid.cells[0][0] = veil_ghostty::CellData {
+            graphemes: vec!['\0'],
+            fg_color: None,
+            bg_color: None,
+            bold: false,
+        };
+        grid.cells[0][1] = veil_ghostty::CellData {
+            graphemes: vec!['\n'],
+            fg_color: None,
+            bg_color: None,
+            bold: false,
+        };
+        let (state, focus, mut terminal_map, _surface_id) = setup_with_grid(grid);
+        let mut pipeline = test_pipeline();
+
+        let geom =
+            build_frame_geometry(&state, &focus, 1280, 800, &mut terminal_map, Some(&mut pipeline));
+
+        assert!(geom.text_vertices.is_empty(), "control characters should produce no text quads");
+        assert!(geom.text_indices.is_empty(), "control characters should produce no text indices");
+    }
+
+    #[test]
+    fn frame_geometry_cursor_position_from_grid() {
+        // Terminal state has cursor at (5, 3). Verify cursor quad is at that position.
+        let mut grid = make_cell_grid(80, 24, "");
+        grid.cursor.x = 5;
+        grid.cursor.y = 3;
+        grid.cursor.visible = true;
+        let (state, focus, mut terminal_map, _surface_id) = setup_with_grid(grid);
+
+        let geom = build_frame_geometry(&state, &focus, 1280, 800, &mut terminal_map, None);
+
+        // Find cursor quad by looking for CURSOR_COLOR vertices.
+        let cursor_color = [0.9, 0.9, 0.9, 1.0];
+        let cursor_verts: Vec<_> = geom
+            .vertices
+            .iter()
+            .filter(|v| {
+                (v.color[0] - cursor_color[0]).abs() < 0.01
+                    && (v.color[1] - cursor_color[1]).abs() < 0.01
+                    && (v.color[2] - cursor_color[2]).abs() < 0.01
+                    && (v.color[3] - cursor_color[3]).abs() < 0.01
+            })
+            .collect();
+        assert_eq!(
+            cursor_verts.len(),
+            4,
+            "should have exactly 4 cursor vertices, got {}",
+            cursor_verts.len()
+        );
+
+        // The cursor's top-left vertex should NOT be at the default (0, 0) position
+        // relative to the pane. Sidebar is 250px, so pane starts at x=250.
+        // Cursor at col=5, row=3 means the cursor quad is offset from the pane origin.
+        // With an 80x24 grid on a (1280-250)x800 pane:
+        //   cell_width = (1280-250) / 80 = 1030/80 = 12.875
+        //   cell_height = 800 / 24 = 33.333...
+        //   cursor_x = 250 + 5 * 12.875 = 250 + 64.375 = 314.375
+        //   cursor_y = 0 + 3 * 33.333 = 100.0
+        let top_left = cursor_verts
+            .iter()
+            .min_by(|a, b| {
+                a.position[0]
+                    .partial_cmp(&b.position[0])
+                    .unwrap()
+                    .then(a.position[1].partial_cmp(&b.position[1]).unwrap())
+            })
+            .unwrap();
+        // With default cursor at (0,0), cursor_x would be 250.0 and cursor_y would be 0.0.
+        // With cursor at (5,3), both should be offset.
+        assert!(
+            top_left.position[0] > 260.0,
+            "cursor at col=5 should be offset from pane origin (x={})",
+            top_left.position[0]
+        );
+        assert!(
+            top_left.position[1] > 50.0,
+            "cursor at row=3 should be offset from pane origin (y={})",
+            top_left.position[1]
+        );
+    }
+
+    #[test]
+    fn frame_geometry_cursor_hidden_no_cursor_quad() {
+        // When cursor.visible is false, no cursor quad should be generated.
+        let mut grid = make_cell_grid(80, 24, "");
+        grid.cursor.visible = false;
+        let (state, focus, mut terminal_map, _surface_id) = setup_with_grid(grid);
+
+        let geom = build_frame_geometry(&state, &focus, 1280, 800, &mut terminal_map, None);
+
+        // Look for cursor-colored vertices. With visible=false, there should be none.
+        let cursor_color = [0.9, 0.9, 0.9, 1.0];
+        let has_cursor = geom.vertices.iter().any(|v| {
+            (v.color[0] - cursor_color[0]).abs() < 0.01
+                && (v.color[1] - cursor_color[1]).abs() < 0.01
+                && (v.color[2] - cursor_color[2]).abs() < 0.01
+                && (v.color[3] - cursor_color[3]).abs() < 0.01
+        });
+        assert!(!has_cursor, "when cursor.visible is false, no cursor quad should be generated");
     }
 }
