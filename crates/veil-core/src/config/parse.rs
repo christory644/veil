@@ -75,6 +75,14 @@ pub fn validate_config(config: AppConfig) -> (AppConfig, Vec<ConfigWarning>) {
         config.terminal.scrollback_lines = 1;
     }
 
+    if config.updates.check_interval_hours == 0 {
+        warnings.push(ConfigWarning {
+            field: "updates.check_interval_hours".to_string(),
+            message: "updates.check_interval_hours is 0, set to 1".to_string(),
+        });
+        config.updates.check_interval_hours = 1;
+    }
+
     (config, warnings)
 }
 

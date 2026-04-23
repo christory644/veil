@@ -19,4 +19,5 @@ pub mod osc_parse;
 pub mod pr_checker;
 pub mod session;
 pub mod state;
+pub mod update;
 pub mod workspace;

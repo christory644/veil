@@ -18,6 +18,8 @@ pub struct AppConfig {
     pub keybindings: KeybindingsConfig,
     /// Ghostty integration settings.
     pub ghostty: GhosttyConfig,
+    /// Update check settings.
+    pub updates: UpdatesConfig,
 }
 
 /// Theme preference.
@@ -194,4 +196,21 @@ pub struct KeybindingsConfig {
 pub struct GhosttyConfig {
     /// Path to Ghostty config file.
     pub config_path: Option<String>,
+}
+
+/// `[updates]` section.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdatesConfig {
+    /// Whether to check for updates on startup. Default: true.
+    pub check_on_startup: bool,
+    /// Minimum interval between update checks, in hours. Default: 24.
+    /// Prevents excessive API calls when Veil is launched frequently.
+    pub check_interval_hours: u32,
+}
+
+impl Default for UpdatesConfig {
+    fn default() -> Self {
+        Self { check_on_startup: true, check_interval_hours: 24 }
+    }
 }

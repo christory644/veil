@@ -22,7 +22,7 @@ pub use self::diff::ConfigDelta;
 pub use self::discovery::{discover_config_path, load_config, load_or_default, primary_config_dir};
 pub use self::model::{
     AppConfig, ConversationsConfig, DefaultTab, FontWeight, GeneralConfig, GhosttyConfig,
-    KeybindingsConfig, PersistenceMode, SidebarConfig, TerminalConfig, ThemeMode,
+    KeybindingsConfig, PersistenceMode, SidebarConfig, TerminalConfig, ThemeMode, UpdatesConfig,
 };
 pub use self::parse::{parse_config, validate_config, ConfigWarning};
 pub use self::watcher::{ConfigEvent, ConfigWatcher};

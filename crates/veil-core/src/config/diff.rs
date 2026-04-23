@@ -23,6 +23,8 @@ pub struct ConfigDelta {
     pub adapters_changed: bool,
     /// Ghostty config path changed.
     pub ghostty_path_changed: bool,
+    /// Updates settings changed.
+    pub updates_changed: bool,
 }
 
 impl ConfigDelta {
@@ -36,6 +38,7 @@ impl ConfigDelta {
             && !self.keybindings_changed
             && !self.adapters_changed
             && !self.ghostty_path_changed
+            && !self.updates_changed
     }
 
     /// Compute the delta between an old and new config.
@@ -51,6 +54,7 @@ impl ConfigDelta {
             keybindings_changed: old.keybindings != new.keybindings,
             adapters_changed: old.conversations != new.conversations,
             ghostty_path_changed: old.ghostty != new.ghostty,
+            updates_changed: old.updates != new.updates,
         }
     }
 }

@@ -53,6 +53,8 @@ pub enum StateUpdate {
         /// The ID of the error to dismiss.
         error_id: ErrorId,
     },
+    /// An update is available.
+    UpdateAvailable(crate::update::UpdateNotification),
 }
 
 /// Commands sent from the UI thread to background actors.
