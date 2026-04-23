@@ -5,6 +5,7 @@
 
 mod connection;
 mod dispatcher;
+mod error_conversion;
 mod handlers;
 pub mod rpc;
 pub mod server;

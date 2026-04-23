@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 
 use crate::config::{AppConfig, ConfigDelta, ConfigWarning};
+use crate::error::{ErrorId, ErrorReport};
 use crate::session::SessionEntry;
 use crate::workspace::{SurfaceId, WorkspaceId};
 
@@ -44,6 +45,13 @@ pub enum StateUpdate {
         actor_name: String,
         /// Error message.
         message: String,
+    },
+    /// A structured error occurred that should be displayed to the user.
+    ErrorOccurred(ErrorReport),
+    /// The user dismissed an error.
+    ErrorDismissed {
+        /// The ID of the error to dismiss.
+        error_id: ErrorId,
     },
 }
 

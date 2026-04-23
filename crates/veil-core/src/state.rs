@@ -6,9 +6,19 @@
 use chrono::Utc;
 use std::path::PathBuf;
 
+use crate::error::{ErrorId, ErrorReport};
 use crate::notification::{Notification, NotificationId, NotificationSource, NotificationStore};
 use crate::session::SessionEntry;
 use crate::workspace::{PaneId, SplitDirection, SurfaceId, Workspace, WorkspaceError, WorkspaceId};
+
+/// An error tracked in AppState, with an assigned ID.
+#[derive(Debug, Clone)]
+pub struct TrackedError {
+    /// Unique identifier for this error.
+    pub id: ErrorId,
+    /// The error report.
+    pub report: ErrorReport,
+}
 
 /// Which tab is active in the sidebar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -68,6 +78,8 @@ pub struct AppState {
     pub notifications: NotificationStore,
     /// Sidebar display state.
     pub sidebar: SidebarState,
+    /// Active errors being displayed to the user.
+    pub errors: Vec<TrackedError>,
     next_id: u64,
 }
 
@@ -84,6 +96,7 @@ impl AppState {
                 active_tab: SidebarTab::Workspaces,
                 width_px: 250,
             },
+            errors: Vec::new(),
             next_id: 1,
         }
     }
@@ -323,6 +336,35 @@ impl AppState {
     /// Get the latest notification for a workspace.
     pub fn latest_notification(&self, workspace_id: WorkspaceId) -> Option<&Notification> {
         self.notifications.latest_for_workspace(workspace_id)
+    }
+
+    /// Track a new error. Returns the assigned ErrorId.
+    pub fn add_error(&mut self, _report: ErrorReport) -> ErrorId {
+        // Stub: returns a dummy ID and does not actually store the error.
+        ErrorId::new(0)
+    }
+
+    /// Dismiss (remove) an error by its ID. Returns true if found.
+    pub fn dismiss_error(&mut self, _id: ErrorId) -> bool {
+        // Stub: always returns false.
+        false
+    }
+
+    /// Get all active errors.
+    pub fn active_errors(&self) -> &[TrackedError] {
+        &self.errors
+    }
+
+    /// Get errors associated with a specific pane.
+    pub fn errors_for_pane(&self, _pane_id: PaneId) -> Vec<&TrackedError> {
+        // Stub: returns empty vec.
+        Vec::new()
+    }
+
+    /// Get errors not associated with any pane (global errors).
+    pub fn global_errors(&self) -> Vec<&TrackedError> {
+        // Stub: returns empty vec.
+        Vec::new()
     }
 }
 
@@ -1151,5 +1193,309 @@ mod notification_integration_tests {
         let mut state = AppState::new();
         let ws_id = state.create_workspace("ws".to_string(), PathBuf::from("/tmp"));
         assert!(state.latest_notification(ws_id).is_none());
+    }
+}
+
+// ============================================================
+// VEI-20: Error tracking in AppState
+// ============================================================
+
+#[cfg(test)]
+mod error_tracking_tests {
+    use super::*;
+    use crate::error::{ErrorComponent, ErrorId, ErrorReport, ErrorSeverity, RecoveryAction};
+
+    fn make_error_report(msg: &str) -> ErrorReport {
+        ErrorReport::new(ErrorSeverity::Error, ErrorComponent::Config, msg)
+    }
+
+    fn make_pane_error(msg: &str, pane_id: PaneId) -> ErrorReport {
+        ErrorReport::new(ErrorSeverity::Error, ErrorComponent::Terminal, msg).with_pane_id(pane_id)
+    }
+
+    fn make_global_error(msg: &str) -> ErrorReport {
+        ErrorReport::new(ErrorSeverity::Warning, ErrorComponent::System, msg)
+    }
+
+    // --- new state ---
+
+    #[test]
+    fn new_state_has_no_errors() {
+        let state = AppState::new();
+        assert!(state.errors.is_empty());
+        assert!(state.active_errors().is_empty());
+    }
+
+    // --- add_error ---
+
+    #[test]
+    fn add_error_returns_unique_id() {
+        let mut state = AppState::new();
+        let id1 = state.add_error(make_error_report("error 1"));
+        let id2 = state.add_error(make_error_report("error 2"));
+        assert_ne!(id1, id2, "each add_error should return a unique ID");
+    }
+
+    #[test]
+    fn add_error_increases_error_count() {
+        let mut state = AppState::new();
+        assert_eq!(state.active_errors().len(), 0);
+        state.add_error(make_error_report("error 1"));
+        assert_eq!(state.active_errors().len(), 1);
+        state.add_error(make_error_report("error 2"));
+        assert_eq!(state.active_errors().len(), 2);
+    }
+
+    #[test]
+    fn add_error_preserves_report_fields() {
+        let mut state = AppState::new();
+        let report = ErrorReport::new(ErrorSeverity::Fatal, ErrorComponent::Pty, "process crashed")
+            .with_detail("segfault")
+            .with_suggestion("restart")
+            .with_recovery_actions(vec![RecoveryAction::Close]);
+
+        let id = state.add_error(report);
+        let tracked = state.active_errors().iter().find(|e| e.id == id);
+        assert!(tracked.is_some(), "error should be in active_errors");
+        let tracked = tracked.unwrap();
+        assert_eq!(tracked.report.severity, ErrorSeverity::Fatal);
+        assert_eq!(tracked.report.component, ErrorComponent::Pty);
+        assert_eq!(tracked.report.message, "process crashed");
+        assert_eq!(tracked.report.detail.as_deref(), Some("segfault"));
+        assert_eq!(tracked.report.suggestion.as_deref(), Some("restart"));
+        assert_eq!(tracked.report.recovery_actions, vec![RecoveryAction::Close]);
+    }
+
+    // --- dismiss_error ---
+
+    #[test]
+    fn dismiss_error_removes_it() {
+        let mut state = AppState::new();
+        let id = state.add_error(make_error_report("to dismiss"));
+        state.dismiss_error(id);
+        assert!(
+            state.active_errors().iter().all(|e| e.id != id),
+            "dismissed error should be gone from active_errors"
+        );
+    }
+
+    #[test]
+    fn dismiss_error_returns_true() {
+        let mut state = AppState::new();
+        let id = state.add_error(make_error_report("to dismiss"));
+        let result = state.dismiss_error(id);
+        assert!(result, "dismiss_error should return true when error exists");
+    }
+
+    #[test]
+    fn dismiss_nonexistent_error_returns_false() {
+        let mut state = AppState::new();
+        let result = state.dismiss_error(ErrorId::new(999));
+        assert!(!result, "dismiss_error should return false for unknown ID");
+    }
+
+    #[test]
+    fn dismiss_error_does_not_affect_others() {
+        let mut state = AppState::new();
+        let id1 = state.add_error(make_error_report("keep this"));
+        let id2 = state.add_error(make_error_report("dismiss this"));
+        let id3 = state.add_error(make_error_report("keep this too"));
+        state.dismiss_error(id2);
+        assert_eq!(state.active_errors().len(), 2);
+        assert!(state.active_errors().iter().any(|e| e.id == id1));
+        assert!(state.active_errors().iter().any(|e| e.id == id3));
+    }
+
+    // --- errors_for_pane ---
+
+    #[test]
+    fn errors_for_pane_filters_correctly() {
+        let mut state = AppState::new();
+        let pane_a = PaneId::new(10);
+        let pane_b = PaneId::new(20);
+        state.add_error(make_pane_error("error A1", pane_a));
+        state.add_error(make_pane_error("error A2", pane_a));
+        state.add_error(make_pane_error("error B1", pane_b));
+        state.add_error(make_global_error("global error"));
+
+        let pane_a_errors = state.errors_for_pane(pane_a);
+        assert_eq!(pane_a_errors.len(), 2, "should have 2 errors for pane_a");
+        for e in &pane_a_errors {
+            assert_eq!(e.report.pane_id, Some(pane_a));
+        }
+    }
+
+    #[test]
+    fn errors_for_pane_empty_when_no_match() {
+        let mut state = AppState::new();
+        state.add_error(make_global_error("global only"));
+        let result = state.errors_for_pane(PaneId::new(999));
+        assert!(result.is_empty(), "should return empty vec for pane with no errors");
+    }
+
+    // --- global_errors ---
+
+    #[test]
+    fn global_errors_filters_correctly() {
+        let mut state = AppState::new();
+        let pane = PaneId::new(10);
+        state.add_error(make_global_error("global 1"));
+        state.add_error(make_global_error("global 2"));
+        state.add_error(make_pane_error("pane error", pane));
+
+        let globals = state.global_errors();
+        assert_eq!(globals.len(), 2, "should have 2 global errors");
+        for e in &globals {
+            assert!(e.report.pane_id.is_none());
+        }
+    }
+
+    #[test]
+    fn global_errors_excludes_pane_errors() {
+        let mut state = AppState::new();
+        let pane = PaneId::new(10);
+        state.add_error(make_pane_error("pane error 1", pane));
+        state.add_error(make_pane_error("pane error 2", pane));
+
+        let globals = state.global_errors();
+        assert!(globals.is_empty(), "global_errors should exclude all pane-associated errors");
+    }
+
+    // --- error IDs share sequence with other IDs ---
+
+    #[test]
+    fn error_ids_share_sequence_with_other_ids() {
+        let mut state = AppState::new();
+        // Create a workspace (consumes some IDs from next_id)
+        let _ws_id = state.create_workspace("ws".to_string(), PathBuf::from("/tmp"));
+        let next_before = state.next_id;
+        let error_id = state.add_error(make_error_report("test error"));
+        // The error ID should come from the same next_id() sequence.
+        // If next_id was N before add_error, the error_id should be N.
+        assert_eq!(
+            error_id.as_u64(),
+            next_before,
+            "error ID should come from the global next_id sequence"
+        );
+    }
+}
+
+#[cfg(test)]
+mod error_channel_tests {
+    use crate::error::{ErrorComponent, ErrorId, ErrorReport, ErrorSeverity};
+    use crate::message::{Channels, StateUpdate};
+
+    #[tokio::test]
+    async fn state_update_error_occurred_round_trip() {
+        let channels = Channels::new(16);
+        let Channels { state_tx, mut state_rx, .. } = channels;
+
+        let report = ErrorReport::new(ErrorSeverity::Error, ErrorComponent::Config, "test error");
+
+        state_tx.send(StateUpdate::ErrorOccurred(report)).await.expect("send should succeed");
+
+        let msg = state_rx.recv().await.expect("should receive message");
+        match msg {
+            StateUpdate::ErrorOccurred(r) => {
+                assert_eq!(r.component, ErrorComponent::Config);
+            }
+            other => panic!("expected ErrorOccurred, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn state_update_error_dismissed_round_trip() {
+        let channels = Channels::new(16);
+        let Channels { state_tx, mut state_rx, .. } = channels;
+
+        state_tx
+            .send(StateUpdate::ErrorDismissed { error_id: ErrorId::new(42) })
+            .await
+            .expect("send should succeed");
+
+        let msg = state_rx.recv().await.expect("should receive message");
+        match msg {
+            StateUpdate::ErrorDismissed { error_id } => {
+                assert_eq!(error_id, ErrorId::new(42));
+            }
+            other => panic!("expected ErrorDismissed, got: {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod error_tracking_proptests {
+    use super::*;
+    use crate::error::{ErrorComponent, ErrorId, ErrorReport, ErrorSeverity};
+    use proptest::prelude::*;
+
+    /// Operation enum for driving arbitrary add/dismiss sequences.
+    #[derive(Debug, Clone)]
+    enum ErrorOp {
+        Add,
+        Dismiss(usize),
+    }
+
+    fn arb_error_op() -> impl Strategy<Value = ErrorOp> {
+        prop_oneof![Just(ErrorOp::Add), (0..20usize).prop_map(ErrorOp::Dismiss),]
+    }
+
+    proptest! {
+        /// After random add/dismiss sequences: no duplicate IDs in active_errors,
+        /// and active_errors count matches additions minus successful dismissals.
+        #[test]
+        fn add_dismiss_invariants(
+            ops in proptest::collection::vec(arb_error_op(), 0..50)
+        ) {
+            let mut state = AppState::new();
+            let mut added_ids: Vec<ErrorId> = Vec::new();
+            let mut successful_dismissals = 0usize;
+
+            for op in &ops {
+                match op {
+                    ErrorOp::Add => {
+                        let report = ErrorReport::new(
+                            ErrorSeverity::Error,
+                            ErrorComponent::Config,
+                            "test",
+                        );
+                        let id = state.add_error(report);
+                        added_ids.push(id);
+                    }
+                    ErrorOp::Dismiss(idx) => {
+                        if !added_ids.is_empty() {
+                            let target_idx = idx % added_ids.len();
+                            let target_id = added_ids[target_idx];
+                            if state.dismiss_error(target_id) {
+                                successful_dismissals += 1;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Invariant 1: no duplicate IDs in active_errors
+            let active = state.active_errors();
+            let mut seen_ids = std::collections::HashSet::new();
+            for tracked in active {
+                prop_assert!(
+                    seen_ids.insert(tracked.id),
+                    "duplicate error ID {:?} in active_errors",
+                    tracked.id,
+                );
+            }
+
+            // Invariant 2: count matches additions minus successful dismissals
+            let expected_count = added_ids.len() - successful_dismissals;
+            prop_assert_eq!(
+                active.len(),
+                expected_count,
+                "active_errors count should be {} (added) - {} (dismissed) = {}, got {}",
+                added_ids.len(),
+                successful_dismissals,
+                expected_count,
+                active.len(),
+            );
+        }
     }
 }
