@@ -233,7 +233,7 @@ impl ApplicationHandler for VeilApp {
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 if let Some(renderer) = &mut self.renderer {
-                    #[allow(clippy::cast_possible_truncation)]
+                    #[allow(clippy::cast_possible_truncation)] // display DPI fits in f32
                     renderer.egui.ctx.set_pixels_per_point(scale_factor as f32);
                 }
             }

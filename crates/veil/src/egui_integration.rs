@@ -182,32 +182,34 @@ impl EguiIntegration {
 
     /// Create a headless `EguiIntegration` with a specific scale factor.
     ///
-    /// Mirrors what `EguiIntegration::new()` does: initialize the egui
-    /// context with the given `native_pixels_per_point` so that
-    /// `ctx.pixels_per_point()` returns the correct value from the first frame.
+    /// Runs a seed frame with viewport info so that `ctx.pixels_per_point()`
+    /// returns the correct value immediately. This is necessary because
+    /// `set_pixels_per_point()` only takes effect after the next `run_ui()`.
     fn new_headless_with_scale(native_pixels_per_point: f32) -> Self {
         let ctx = egui::Context::default();
-
-        // Seed the context with the correct native_pixels_per_point by running
-        // an initial frame that includes viewport info. This mirrors what the
-        // production constructor does via `State::new()` + `set_pixels_per_point()`.
-        let viewport_info = egui::ViewportInfo {
-            native_pixels_per_point: Some(native_pixels_per_point),
-            ..Default::default()
-        };
+        let mut raw_input = Self::default_raw_input();
         let mut viewports = egui::ViewportIdMap::default();
-        viewports.insert(egui::ViewportId::ROOT, viewport_info);
-        let seed_input = egui::RawInput {
-            viewports,
+        viewports.insert(
+            egui::ViewportId::ROOT,
+            egui::ViewportInfo {
+                native_pixels_per_point: Some(native_pixels_per_point),
+                ..Default::default()
+            },
+        );
+        raw_input.viewports = viewports;
+        let _ = ctx.run_ui(raw_input, |_ui| {});
+        Self { ctx, winit_state: None, wgpu_renderer: None }
+    }
+
+    /// Build a default `RawInput` with a 1280x800 screen rect.
+    fn default_raw_input() -> egui::RawInput {
+        egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
                 egui::Vec2::new(1280.0, 800.0),
             )),
             ..Default::default()
-        };
-        let _ = ctx.run_ui(seed_input, |_ui| {});
-
-        Self { ctx, winit_state: None, wgpu_renderer: None }
+        }
     }
 
     /// Run a single egui frame with the sidebar UI using synthetic input.
@@ -219,13 +221,7 @@ impl EguiIntegration {
         &self,
         app_state: &veil_core::state::AppState,
     ) -> (veil_ui::sidebar::SidebarResponse, egui::FullOutput) {
-        let raw_input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::Vec2::new(1280.0, 800.0),
-            )),
-            ..Default::default()
-        };
+        let raw_input = Self::default_raw_input();
 
         let mut sidebar_response = veil_ui::sidebar::SidebarResponse::default();
         let full_output = self.ctx.run_ui(raw_input, |ui| {
@@ -237,8 +233,8 @@ impl EguiIntegration {
 
     /// Run a single egui frame with custom `RawInput`.
     ///
-    /// Useful for tests that need to set `native_pixels_per_point` or
-    /// `max_texture_side` in the viewport info.
+    /// Useful for tests that need to control `native_pixels_per_point` or
+    /// `max_texture_side`.
     fn run_frame_with_raw_input(&self, raw_input: egui::RawInput) -> egui::FullOutput {
         self.ctx.run_ui(raw_input, |_ui| {})
     }
@@ -576,37 +572,20 @@ mod tests {
     fn max_texture_side_propagates_through_raw_input() {
         // Unit 4: When max_texture_side is set in RawInput, the context
         // should respect it for font atlas sizing. The production code
-        // should pass device.limits().max_texture_dimension_2d.
+        // passes device.limits().max_texture_dimension_2d.
         let integration = EguiIntegration::new_headless();
 
         let max_texture = 8192_usize;
-        let raw_input = egui::RawInput {
-            max_texture_side: Some(max_texture),
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::Vec2::new(1280.0, 800.0),
-            )),
-            ..Default::default()
-        };
+        let mut raw_input = EguiIntegration::default_raw_input();
+        raw_input.max_texture_side = Some(max_texture);
 
-        let _output = integration.run_frame_with_raw_input(raw_input);
+        // First frame: egui creates the font atlas within the limit.
+        let output = integration.run_frame_with_raw_input(raw_input);
 
-        // After processing a frame with max_texture_side, the context should
-        // have recorded it. We verify by checking that font texture allocations
-        // don't exceed this limit.
-        let output = integration.run_frame_with_raw_input(egui::RawInput {
-            max_texture_side: Some(max_texture),
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::Vec2::new(1280.0, 800.0),
-            )),
-            ..Default::default()
-        });
-
-        // The font atlas texture should exist and be within limits.
+        // The font atlas texture upload should still occur with the limit set.
         assert!(
-            !output.textures_delta.set.is_empty() || output.textures_delta.free.is_empty(),
-            "frame with max_texture_side should still produce valid output"
+            !output.textures_delta.set.is_empty(),
+            "first frame with max_texture_side should produce font atlas texture upload"
         );
     }
 
