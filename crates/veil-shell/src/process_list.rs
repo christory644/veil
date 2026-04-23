@@ -172,6 +172,19 @@ mod imp {
         /// Padding: bytes 268..352 (remaining fields).
         _pad1: [u8; 84],
     }
+
+    // Compile-time assertions: verify struct sizes and field offsets match
+    // the macOS aarch64 kernel ABI. If the kernel layout ever changes or
+    // these structs are compiled on an unsupported architecture, these
+    // assertions will fail at compile time rather than silently reading
+    // garbage data at runtime.
+    const _: () = {
+        assert!(std::mem::size_of::<ExternProc>() == 296);
+        assert!(std::mem::size_of::<Eproc>() == 352);
+        assert!(std::mem::offset_of!(ExternProc, p_pid) == 40);
+        assert!(std::mem::offset_of!(ExternProc, p_comm) == 243);
+        assert!(std::mem::offset_of!(Eproc, e_ppid) == 264);
+    };
 }
 
 // ── Linux implementation ───────────────────────────────────────────────
@@ -232,7 +245,7 @@ mod imp {
         let name = content[comm_start + 1..comm_end].to_string();
 
         // Fields after the closing paren: " state PPID ..."
-        let rest = &content[comm_end + 2..]; // skip ") "
+        let rest = content.get(comm_end + 2..)?; // skip ") "
         let mut fields = rest.split_whitespace();
         let _state = fields.next()?;
         let ppid: u32 = fields.next()?.parse().ok()?;
