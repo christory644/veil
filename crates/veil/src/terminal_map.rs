@@ -84,7 +84,7 @@ impl TerminalMap {
         self.terminals.get(&surface_id).map(AsRef::as_ref)
     }
 
-    /// Get a mutable reference to a terminal.
+    /// Get a mutable reference to a terminal writer behind its `Box`.
     pub fn get_mut(&mut self, surface_id: SurfaceId) -> Option<&mut Box<dyn TerminalWriter>> {
         self.terminals.get_mut(&surface_id)
     }
@@ -119,74 +119,119 @@ pub fn compute_pane_cells(
 ///
 /// For `PtyOutput`, calls `write_vt` on the correct terminal.
 /// For `SurfaceExited`, removes the terminal from the map.
-/// Returns `true` if the update was handled (recognized variant).
+///
+/// Returns `true` if the update was a terminal-related variant
+/// (`PtyOutput` or `SurfaceExited`), regardless of whether the
+/// surface was present in the map. Returns `false` for all other
+/// `StateUpdate` variants.
 pub fn process_state_update(
     update: &veil_core::message::StateUpdate,
     terminal_map: &mut TerminalMap,
 ) -> bool {
     match update {
         veil_core::message::StateUpdate::PtyOutput { surface_id, data } => {
-            terminal_map.write_vt(*surface_id, data);
+            if !terminal_map.write_vt(*surface_id, data) {
+                tracing::debug!(?surface_id, "PtyOutput for unknown surface, ignoring");
+            }
             true
         }
         veil_core::message::StateUpdate::SurfaceExited { surface_id, .. } => {
-            terminal_map.remove(*surface_id);
+            if terminal_map.remove(*surface_id).is_none() {
+                tracing::debug!(?surface_id, "SurfaceExited for unknown surface, ignoring");
+            }
             true
         }
         _ => false,
     }
 }
 
+/// Outcome of handling a surface exit in the workspace layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceExitOutcome {
+    /// The surface was not found in any workspace.
+    SurfaceNotFound,
+    /// The surface was the only pane; workspace left intact.
+    SinglePaneRetained,
+    /// The pane was closed and focus was shifted to the given surface.
+    PaneClosedFocusShifted(SurfaceId),
+    /// The pane was closed but focus was already on a different surface.
+    PaneClosedFocusUnchanged,
+}
+
 /// Handle surface exit in `AppState`: close the pane if the workspace has more
-/// than one, otherwise leave it.  Returns the `SurfaceId` that should receive
-/// focus after the close, if any.
+/// than one, otherwise leave it. If the exited surface was focused, shift focus
+/// to a sibling.
 pub fn handle_surface_exit(
     surface_id: SurfaceId,
     app_state: &mut veil_core::state::AppState,
     focus: &mut veil_core::focus::FocusManager,
-) -> Option<SurfaceId> {
+) -> SurfaceExitOutcome {
     // Find the workspace containing this surface.
-    let ws_id = app_state
+    let Some(ws_id) = app_state
         .workspaces
         .iter()
         .find(|ws| ws.layout.surface_ids().contains(&surface_id))
-        .map(|ws| ws.id)?;
+        .map(|ws| ws.id)
+    else {
+        return SurfaceExitOutcome::SurfaceNotFound;
+    };
 
-    let ws = app_state.workspace(ws_id)?;
-    let pane_count = ws.layout.pane_count();
+    let Some(ws) = app_state.workspace(ws_id) else {
+        return SurfaceExitOutcome::SurfaceNotFound;
+    };
 
     // If this is the only pane, leave the workspace intact.
-    if pane_count <= 1 {
-        return None;
+    if ws.layout.pane_count() <= 1 {
+        return SurfaceExitOutcome::SinglePaneRetained;
     }
 
     // Find the pane_id for this surface.
-    let pane_id = app_state.workspace(ws_id)?.pane_id_for_surface(surface_id)?;
+    let Some(pane_id) =
+        app_state.workspace(ws_id).and_then(|ws| ws.pane_id_for_surface(surface_id))
+    else {
+        return SurfaceExitOutcome::SurfaceNotFound;
+    };
 
     // Gather surfaces before closing so we can pick a new focus target.
-    let surfaces_before = app_state.workspace(ws_id)?.layout.surface_ids();
+    let surfaces_before =
+        app_state.workspace(ws_id).map(|ws| ws.layout.surface_ids()).unwrap_or_default();
 
     // Close the pane.
-    app_state.close_pane(ws_id, pane_id).ok()?;
-
-    // Pick a new focus target from the remaining surfaces.
-    let surfaces_after = app_state.workspace(ws_id)?.layout.surface_ids();
-
-    let was_focused = focus.focused_surface() == Some(surface_id);
-
-    if was_focused {
-        // Pick the surface that occupied the same position, or the last one.
-        let pos = surfaces_before.iter().position(|s| *s == surface_id).unwrap_or(0);
-        let idx = pos.min(surfaces_after.len().saturating_sub(1));
-        let new_focus = surfaces_after[idx];
-        focus.focus_surface(new_focus);
-        Some(new_focus)
-    } else {
-        // Focus wasn't on the exited surface; return the remaining surface
-        // that still has focus (no change needed), but still return Some
-        // to indicate a pane was closed.
-        Some(surfaces_after[0])
+    if app_state.close_pane(ws_id, pane_id).is_err() {
+        return SurfaceExitOutcome::SurfaceNotFound;
     }
+
+    let surfaces_after =
+        app_state.workspace(ws_id).map(|ws| ws.layout.surface_ids()).unwrap_or_default();
+
+    if focus.focused_surface() == Some(surface_id) {
+        let new_focus = pick_focus_replacement(&surfaces_before, &surfaces_after, surface_id);
+        if let Some(s) = new_focus {
+            focus.focus_surface(s);
+            SurfaceExitOutcome::PaneClosedFocusShifted(s)
+        } else {
+            SurfaceExitOutcome::PaneClosedFocusUnchanged
+        }
+    } else {
+        SurfaceExitOutcome::PaneClosedFocusUnchanged
+    }
+}
+
+/// Pick a replacement focus target after a surface is removed from the layout.
+///
+/// Prefers the surface at the same position in the original list; falls back
+/// to the last surface in the remaining list.
+fn pick_focus_replacement(
+    surfaces_before: &[SurfaceId],
+    surfaces_after: &[SurfaceId],
+    closed: SurfaceId,
+) -> Option<SurfaceId> {
+    if surfaces_after.is_empty() {
+        return None;
+    }
+    let pos = surfaces_before.iter().position(|s| *s == closed).unwrap_or(0);
+    let idx = pos.min(surfaces_after.len().saturating_sub(1));
+    Some(surfaces_after[idx])
 }
 
 #[cfg(test)]
@@ -608,15 +653,16 @@ mod tests {
 
         // Focus on surface1, then surface2 exits.
         focus.focus_surface(surface1);
-        let new_focus = handle_surface_exit(surface2, &mut state, &mut focus);
+        let outcome = handle_surface_exit(surface2, &mut state, &mut focus);
 
         let pane_count_after = state.workspace(ws_id).unwrap().layout.pane_count();
         assert_eq!(pane_count_after, 1, "exited pane should be removed from layout");
-        // Focus should remain on surface1 (or shift to it).
-        assert!(
-            new_focus.is_some() || focus.focused_surface() == Some(surface1),
-            "focus should be on the remaining surface"
+        assert_eq!(
+            outcome,
+            SurfaceExitOutcome::PaneClosedFocusUnchanged,
+            "focus was on surface1, not the exited surface2"
         );
+        assert_eq!(focus.focused_surface(), Some(surface1), "focus should remain on surface1");
     }
 
     #[test]
@@ -628,14 +674,18 @@ mod tests {
         focus.focus_surface(surface);
 
         let ws_count_before = state.workspaces.len();
-        let _new_focus = handle_surface_exit(surface, &mut state, &mut focus);
+        let outcome = handle_surface_exit(surface, &mut state, &mut focus);
 
+        assert_eq!(
+            outcome,
+            SurfaceExitOutcome::SinglePaneRetained,
+            "single pane exit should retain the workspace"
+        );
         assert_eq!(
             state.workspaces.len(),
             ws_count_before,
             "workspace should not be removed when single pane exits"
         );
-        // The pane remains in the tree (shows "[exited]" indicator in the future).
         assert!(
             state.workspace(ws_id).is_some(),
             "workspace should still exist after single pane exit"
@@ -649,10 +699,11 @@ mod tests {
         let _ws_id = state.create_workspace("ws".to_string(), PathBuf::from("/tmp"));
 
         // An unknown surface exits -- should not panic.
-        let new_focus = handle_surface_exit(SurfaceId::new(99999), &mut state, &mut focus);
-        assert!(
-            new_focus.is_none(),
-            "exit of unknown surface should return None (no focus change)"
+        let outcome = handle_surface_exit(SurfaceId::new(99999), &mut state, &mut focus);
+        assert_eq!(
+            outcome,
+            SurfaceExitOutcome::SurfaceNotFound,
+            "exit of unknown surface should return SurfaceNotFound"
         );
     }
 
@@ -664,14 +715,15 @@ mod tests {
         focus.focus_surface(surface2);
         assert_eq!(focus.focused_surface(), Some(surface2));
 
-        let new_focus = handle_surface_exit(surface2, &mut state, &mut focus);
+        let outcome = handle_surface_exit(surface2, &mut state, &mut focus);
 
         // After exiting the focused surface, focus should shift to the remaining surface.
         assert_eq!(
-            new_focus,
-            Some(surface1),
+            outcome,
+            SurfaceExitOutcome::PaneClosedFocusShifted(surface1),
             "focus should shift to the remaining surface after focused pane exits"
         );
+        assert_eq!(focus.focused_surface(), Some(surface1));
     }
 
     #[test]
@@ -680,9 +732,13 @@ mod tests {
 
         // Focus on surface1, surface2 exits.
         focus.focus_surface(surface1);
-        let _new_focus = handle_surface_exit(surface2, &mut state, &mut focus);
+        let outcome = handle_surface_exit(surface2, &mut state, &mut focus);
 
-        // Focus should remain on surface1.
+        assert_eq!(
+            outcome,
+            SurfaceExitOutcome::PaneClosedFocusUnchanged,
+            "non-focused surface exit should not change focus"
+        );
         assert_eq!(
             focus.focused_surface(),
             Some(surface1),
