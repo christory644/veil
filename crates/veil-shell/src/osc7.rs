@@ -46,17 +46,91 @@ pub enum Osc7Error {
 /// The path component is percent-decoded (e.g., `%20` becomes a space).
 /// On POSIX, the path is used directly. On Windows, the path is
 /// converted from `/C:/Users/...` to `C:\Users\...` format.
-pub fn parse_osc7(_payload: &str) -> Result<Osc7Report, Osc7Error> {
-    todo!()
+pub fn parse_osc7(payload: &str) -> Result<Osc7Report, Osc7Error> {
+    // Strip the "7;" prefix.
+    let Some(uri) = payload.strip_prefix("7;") else {
+        return Err(Osc7Error::NotOsc7);
+    };
+
+    // Empty URI after prefix means no path at all.
+    if uri.is_empty() {
+        return Err(Osc7Error::EmptyPath);
+    }
+
+    // Check for "scheme://" pattern and validate it's "file".
+    let (scheme, after_scheme) = match uri.find("://") {
+        Some(pos) => (&uri[..pos], &uri[pos + 3..]),
+        None => return Err(Osc7Error::NotOsc7),
+    };
+
+    if scheme != "file" {
+        return Err(Osc7Error::UnsupportedScheme { scheme: scheme.to_string() });
+    }
+
+    // Split hostname from path. The hostname is everything before the
+    // first '/' in the authority section. If there is no '/', the entire
+    // remainder is the hostname with an empty path.
+    let (hostname, raw_path) = match after_scheme.find('/') {
+        Some(pos) => (&after_scheme[..pos], &after_scheme[pos..]),
+        None => (after_scheme, ""),
+    };
+
+    // Percent-decode the path portion.
+    let decoded_path = percent_decode(raw_path)?;
+
+    if decoded_path.is_empty() {
+        return Err(Osc7Error::EmptyPath);
+    }
+
+    Ok(Osc7Report { hostname: hostname.to_string(), path: PathBuf::from(decoded_path) })
 }
 
 /// Percent-decode a URI path component.
 ///
 /// Decodes `%XX` sequences where `XX` is a two-digit hex value.
 /// Invalid sequences (e.g., `%GG`, truncated `%X`) are returned as errors.
-#[allow(dead_code)]
-fn percent_decode(_input: &str) -> Result<String, Osc7Error> {
-    todo!()
+fn percent_decode(input: &str) -> Result<String, Osc7Error> {
+    let mut output = Vec::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            // Need at least two more hex digits after '%'.
+            if i + 2 >= bytes.len() {
+                return Err(Osc7Error::InvalidEncoding {
+                    detail: format!("truncated percent-encoding at byte offset {i}"),
+                });
+            }
+            let hi = bytes[i + 1];
+            let lo = bytes[i + 2];
+            let high = hex_digit(hi).ok_or_else(|| Osc7Error::InvalidEncoding {
+                detail: format!("invalid hex digit '{}' at byte offset {}", hi as char, i + 1,),
+            })?;
+            let low = hex_digit(lo).ok_or_else(|| Osc7Error::InvalidEncoding {
+                detail: format!("invalid hex digit '{}' at byte offset {}", lo as char, i + 2,),
+            })?;
+            output.push((high << 4) | low);
+            i += 3;
+        } else {
+            output.push(bytes[i]);
+            i += 1;
+        }
+    }
+
+    String::from_utf8(output).map_err(|e| Osc7Error::InvalidEncoding {
+        detail: format!("invalid UTF-8 after decoding: {e}"),
+    })
+}
+
+/// Convert an ASCII hex digit to its numeric value, or `None`.
+fn hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
