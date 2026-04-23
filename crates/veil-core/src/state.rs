@@ -6,6 +6,7 @@
 use chrono::Utc;
 use std::path::PathBuf;
 
+use crate::config::AppConfig;
 use crate::error::{ErrorId, ErrorReport};
 use crate::notification::{Notification, NotificationId, NotificationSource, NotificationStore};
 use crate::session::SessionEntry;
@@ -99,6 +100,14 @@ impl AppState {
             errors: Vec::new(),
             next_id: 1,
         }
+    }
+
+    /// Apply configuration values to the current state.
+    ///
+    /// Updates sidebar visibility, width, and default tab from the config.
+    /// Called at startup (before first frame) and on config hot-reload.
+    pub fn apply_config(&mut self, _config: &AppConfig) {
+        // Stub: does nothing so tests compile but fail on assertions.
     }
 
     /// Generate the next unique ID.
@@ -1420,6 +1429,192 @@ mod error_channel_tests {
             }
             other => panic!("expected ErrorDismissed, got: {other:?}"),
         }
+    }
+}
+
+// ============================================================
+// VEI-79: apply_config — config-to-state application
+// ============================================================
+
+#[cfg(test)]
+mod apply_config_tests {
+    use super::*;
+    use crate::config::{AppConfig, DefaultTab};
+
+    #[test]
+    fn apply_config_sets_sidebar_width() {
+        let mut state = AppState::new();
+        let mut config = AppConfig::default();
+        config.sidebar.width = 400;
+
+        state.apply_config(&config);
+
+        assert_eq!(
+            state.sidebar.width_px, 400,
+            "apply_config should set sidebar width from config"
+        );
+    }
+
+    #[test]
+    fn apply_config_sets_sidebar_visibility() {
+        let mut state = AppState::new();
+        let mut config = AppConfig::default();
+        config.sidebar.visible = false;
+
+        state.apply_config(&config);
+
+        assert!(!state.sidebar.visible, "apply_config should set sidebar visibility from config");
+    }
+
+    #[test]
+    fn apply_config_sets_active_tab_from_default_tab_workspaces() {
+        let mut state = AppState::new();
+        // Start with Conversations to verify it changes
+        state.sidebar.active_tab = SidebarTab::Conversations;
+        let mut config = AppConfig::default();
+        config.sidebar.default_tab = DefaultTab::Workspaces;
+
+        state.apply_config(&config);
+
+        assert_eq!(
+            state.sidebar.active_tab,
+            SidebarTab::Workspaces,
+            "apply_config should map DefaultTab::Workspaces to SidebarTab::Workspaces"
+        );
+    }
+
+    #[test]
+    fn apply_config_sets_active_tab_from_default_tab_conversations() {
+        let mut state = AppState::new();
+        let mut config = AppConfig::default();
+        config.sidebar.default_tab = DefaultTab::Conversations;
+
+        state.apply_config(&config);
+
+        assert_eq!(
+            state.sidebar.active_tab,
+            SidebarTab::Conversations,
+            "apply_config should map DefaultTab::Conversations to SidebarTab::Conversations"
+        );
+    }
+
+    #[test]
+    fn apply_config_with_defaults_matches_new_state() {
+        let fresh = AppState::new();
+        let mut state = AppState::new();
+        // Mutate state to verify apply_config restores default-equivalent values
+        state.sidebar.width_px = 999;
+        state.sidebar.visible = false;
+        state.sidebar.active_tab = SidebarTab::Conversations;
+
+        let config = AppConfig::default();
+        state.apply_config(&config);
+
+        assert_eq!(
+            state.sidebar.width_px, fresh.sidebar.width_px,
+            "default config should produce same sidebar width as AppState::new()"
+        );
+        assert_eq!(
+            state.sidebar.visible, fresh.sidebar.visible,
+            "default config should produce same sidebar visibility as AppState::new()"
+        );
+        assert_eq!(
+            state.sidebar.active_tab, fresh.sidebar.active_tab,
+            "default config should produce same sidebar tab as AppState::new()"
+        );
+    }
+
+    #[test]
+    fn apply_config_with_non_default_values_overrides_state() {
+        let mut state = AppState::new();
+        let mut config = AppConfig::default();
+        config.sidebar.width = 350;
+        config.sidebar.visible = false;
+        config.sidebar.default_tab = DefaultTab::Conversations;
+
+        state.apply_config(&config);
+
+        assert_eq!(state.sidebar.width_px, 350);
+        assert!(!state.sidebar.visible);
+        assert_eq!(state.sidebar.active_tab, SidebarTab::Conversations);
+    }
+
+    #[test]
+    fn apply_config_called_twice_updates_state_each_time() {
+        let mut state = AppState::new();
+
+        let mut config1 = AppConfig::default();
+        config1.sidebar.width = 300;
+        config1.sidebar.visible = false;
+        state.apply_config(&config1);
+        assert_eq!(state.sidebar.width_px, 300);
+        assert!(!state.sidebar.visible);
+
+        let mut config2 = AppConfig::default();
+        config2.sidebar.width = 500;
+        config2.sidebar.visible = true;
+        config2.sidebar.default_tab = DefaultTab::Conversations;
+        state.apply_config(&config2);
+        assert_eq!(state.sidebar.width_px, 500);
+        assert!(state.sidebar.visible);
+        assert_eq!(state.sidebar.active_tab, SidebarTab::Conversations);
+    }
+
+    #[test]
+    fn apply_config_does_not_reset_workspaces() {
+        let mut state = AppState::new();
+        let ws_id = state.create_workspace("test-ws".to_string(), PathBuf::from("/tmp"));
+
+        let config = AppConfig::default();
+        state.apply_config(&config);
+
+        assert_eq!(state.workspaces.len(), 1, "apply_config should not clear workspaces");
+        assert!(state.workspace(ws_id).is_some(), "workspace should still exist");
+        assert_eq!(state.workspace(ws_id).unwrap().name, "test-ws");
+    }
+
+    #[test]
+    fn apply_config_does_not_reset_conversations() {
+        use crate::session::{AgentKind, SessionEntry, SessionId, SessionStatus};
+        use chrono::Utc;
+
+        let mut state = AppState::new();
+        let session = SessionEntry {
+            id: SessionId::new("s1"),
+            agent: AgentKind::ClaudeCode,
+            title: "test session".to_string(),
+            working_dir: PathBuf::from("/tmp"),
+            branch: None,
+            pr_number: None,
+            pr_url: None,
+            plan_content: None,
+            status: SessionStatus::Completed,
+            started_at: Utc::now(),
+            ended_at: None,
+            indexed_at: Utc::now(),
+        };
+        state.update_conversations(vec![session]);
+
+        let config = AppConfig::default();
+        state.apply_config(&config);
+
+        assert_eq!(
+            state.conversations.sessions.len(),
+            1,
+            "apply_config should not clear conversations"
+        );
+    }
+
+    #[test]
+    fn apply_config_does_not_reset_notifications() {
+        let mut state = AppState::new();
+        let ws_id = state.create_workspace("ws".to_string(), PathBuf::from("/tmp"));
+        state.add_notification(ws_id, "hello".to_string());
+
+        let config = AppConfig::default();
+        state.apply_config(&config);
+
+        assert_eq!(state.notifications.len(), 1, "apply_config should not clear notifications");
     }
 }
 

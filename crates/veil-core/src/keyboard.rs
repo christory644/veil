@@ -280,6 +280,33 @@ impl Default for KeybindingRegistry {
     }
 }
 
+/// Parse a keybinding string like "ctrl+shift+w" or "cmd+b" into a `KeyInput`.
+///
+/// Format: `modifier+modifier+key`
+/// Modifiers: `ctrl`, `shift`, `alt`, `cmd`/`logo`/`super`
+/// Keys: single characters (a-z, 0-9, symbols) or named keys (enter, tab, escape, f1-f12, etc.)
+///
+/// Returns `None` if the string is empty or unparseable.
+pub fn parse_keybinding(_s: &str) -> Option<KeyInput> {
+    // Stub: always returns None so tests compile but fail on assertions.
+    None
+}
+
+/// Apply keybindings from config to the registry.
+///
+/// For each non-None field in `KeybindingsConfig`, parses the keybinding
+/// string and rebinds the corresponding action. Unknown/unparseable strings
+/// are logged as warnings and skipped.
+///
+/// Returns a list of warnings for keybinding strings that could not be parsed.
+pub fn apply_keybindings_config(
+    _registry: &mut KeybindingRegistry,
+    _config: &crate::config::KeybindingsConfig,
+) -> Vec<String> {
+    // Stub: does nothing, returns empty vec so tests compile but fail on assertions.
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -594,5 +621,342 @@ mod tests {
         let has_rename =
             registry.all_bindings().iter().any(|b| b.action == KeyAction::RenameWorkspace);
         assert!(!has_rename, "RenameWorkspace should have no default binding");
+    }
+}
+
+// ============================================================
+// VEI-79: parse_keybinding — string-to-KeyInput parsing
+// ============================================================
+
+#[cfg(test)]
+mod parse_keybinding_tests {
+    use super::*;
+
+    // --- Basic modifier+character combos ---
+
+    #[test]
+    fn parse_ctrl_shift_w() {
+        let result = parse_keybinding("ctrl+shift+w");
+        assert!(result.is_some(), "ctrl+shift+w should parse");
+        let ki = result.unwrap();
+        assert_eq!(ki.key, Key::Character('w'));
+        assert!(ki.modifiers.ctrl, "ctrl should be set");
+        assert!(ki.modifiers.shift, "shift should be set");
+        assert!(!ki.modifiers.alt, "alt should not be set");
+        assert!(!ki.modifiers.logo, "logo should not be set");
+    }
+
+    #[test]
+    fn parse_cmd_b() {
+        let result = parse_keybinding("cmd+b");
+        assert!(result.is_some(), "cmd+b should parse");
+        let ki = result.unwrap();
+        assert_eq!(ki.key, Key::Character('b'));
+        assert!(ki.modifiers.logo, "cmd should map to logo modifier");
+        assert!(!ki.modifiers.ctrl);
+        assert!(!ki.modifiers.shift);
+        assert!(!ki.modifiers.alt);
+    }
+
+    #[test]
+    fn parse_logo_b_same_as_cmd_b() {
+        let cmd = parse_keybinding("cmd+b").expect("cmd+b should parse");
+        let logo = parse_keybinding("logo+b").expect("logo+b should parse");
+        assert_eq!(cmd, logo, "cmd+b and logo+b should produce the same KeyInput");
+    }
+
+    #[test]
+    fn parse_super_b_same_as_cmd_b() {
+        let cmd = parse_keybinding("cmd+b").expect("cmd+b should parse");
+        let sup = parse_keybinding("super+b").expect("super+b should parse");
+        assert_eq!(cmd, sup, "cmd+b and super+b should produce the same KeyInput");
+    }
+
+    #[test]
+    fn parse_alt_n() {
+        let result = parse_keybinding("alt+n");
+        assert!(result.is_some(), "alt+n should parse");
+        let ki = result.unwrap();
+        assert_eq!(ki.key, Key::Character('n'));
+        assert!(ki.modifiers.alt, "alt should be set");
+        assert!(!ki.modifiers.ctrl);
+        assert!(!ki.modifiers.shift);
+        assert!(!ki.modifiers.logo);
+    }
+
+    // --- Named keys ---
+
+    #[test]
+    fn parse_ctrl_shift_enter() {
+        let result = parse_keybinding("ctrl+shift+enter");
+        assert!(result.is_some(), "ctrl+shift+enter should parse");
+        let ki = result.unwrap();
+        assert_eq!(ki.key, Key::Named("Enter".to_string()));
+        assert!(ki.modifiers.ctrl);
+        assert!(ki.modifiers.shift);
+    }
+
+    #[test]
+    fn parse_f1_no_modifiers() {
+        let result = parse_keybinding("f1");
+        assert!(result.is_some(), "f1 should parse");
+        let ki = result.unwrap();
+        assert_eq!(ki.key, Key::Named("F1".to_string()));
+        assert_eq!(ki.modifiers, Modifiers::default());
+    }
+
+    #[test]
+    fn parse_ctrl_f5() {
+        let result = parse_keybinding("ctrl+f5");
+        assert!(result.is_some(), "ctrl+f5 should parse");
+        let ki = result.unwrap();
+        assert_eq!(ki.key, Key::Named("F5".to_string()));
+        assert!(ki.modifiers.ctrl);
+    }
+
+    #[test]
+    fn parse_escape() {
+        let result = parse_keybinding("escape");
+        assert!(result.is_some(), "escape should parse");
+        let ki = result.unwrap();
+        assert_eq!(ki.key, Key::Named("Escape".to_string()));
+        assert_eq!(ki.modifiers, Modifiers::default());
+    }
+
+    #[test]
+    fn parse_tab() {
+        let result = parse_keybinding("tab");
+        assert!(result.is_some(), "tab should parse");
+        let ki = result.unwrap();
+        assert_eq!(ki.key, Key::Named("Tab".to_string()));
+        assert_eq!(ki.modifiers, Modifiers::default());
+    }
+
+    #[test]
+    fn parse_space() {
+        let result = parse_keybinding("space");
+        assert!(result.is_some(), "space should parse");
+        let ki = result.unwrap();
+        assert_eq!(ki.key, Key::Named("Space".to_string()));
+    }
+
+    #[test]
+    fn parse_backspace() {
+        let result = parse_keybinding("backspace");
+        assert!(result.is_some(), "backspace should parse");
+        let ki = result.unwrap();
+        assert_eq!(ki.key, Key::Named("Backspace".to_string()));
+    }
+
+    #[test]
+    fn parse_delete() {
+        let result = parse_keybinding("delete");
+        assert!(result.is_some(), "delete should parse");
+        let ki = result.unwrap();
+        assert_eq!(ki.key, Key::Named("Delete".to_string()));
+    }
+
+    #[test]
+    fn parse_arrow_keys() {
+        for (name, expected) in
+            [("up", "Up"), ("down", "Down"), ("left", "Left"), ("right", "Right")]
+        {
+            let result = parse_keybinding(name);
+            assert!(result.is_some(), "{name} should parse");
+            assert_eq!(result.unwrap().key, Key::Named(expected.to_string()));
+        }
+    }
+
+    #[test]
+    fn parse_home_end() {
+        let home = parse_keybinding("home").expect("home should parse");
+        assert_eq!(home.key, Key::Named("Home".to_string()));
+        let end = parse_keybinding("end").expect("end should parse");
+        assert_eq!(end.key, Key::Named("End".to_string()));
+    }
+
+    #[test]
+    fn parse_pageup_pagedown() {
+        let pgup = parse_keybinding("pageup").expect("pageup should parse");
+        assert_eq!(pgup.key, Key::Named("PageUp".to_string()));
+        let pgdn = parse_keybinding("pagedown").expect("pagedown should parse");
+        assert_eq!(pgdn.key, Key::Named("PageDown".to_string()));
+    }
+
+    // --- Case insensitivity ---
+
+    #[test]
+    fn parse_uppercase_char_normalized_to_lowercase() {
+        let result = parse_keybinding("ctrl+shift+B");
+        assert!(result.is_some(), "ctrl+shift+B should parse");
+        let ki = result.unwrap();
+        assert_eq!(
+            ki.key,
+            Key::Character('b'),
+            "uppercase character should be normalized to lowercase"
+        );
+        assert!(ki.modifiers.ctrl);
+        assert!(ki.modifiers.shift);
+    }
+
+    // --- Edge cases and invalid input ---
+
+    #[test]
+    fn parse_empty_string_returns_none() {
+        assert!(parse_keybinding("").is_none(), "empty string should return None");
+    }
+
+    #[test]
+    fn parse_trailing_plus_returns_none() {
+        assert!(parse_keybinding("ctrl+").is_none(), "trailing plus should return None");
+    }
+
+    #[test]
+    fn parse_leading_plus_returns_none() {
+        assert!(parse_keybinding("+b").is_none(), "leading plus should return None");
+    }
+
+    #[test]
+    fn parse_duplicate_modifier_still_valid() {
+        let result = parse_keybinding("ctrl+ctrl+b");
+        assert!(result.is_some(), "duplicate modifier should still parse");
+        let ki = result.unwrap();
+        assert_eq!(ki.key, Key::Character('b'));
+        assert!(ki.modifiers.ctrl);
+    }
+
+    #[test]
+    fn parse_invalid_single_word_returns_none() {
+        // "invalid" is not a known key name and has no '+' separator
+        assert!(parse_keybinding("invalid").is_none(), "unknown single word should return None");
+    }
+}
+
+// ============================================================
+// VEI-79: apply_keybindings_config — config-to-registry binding
+// ============================================================
+
+#[cfg(test)]
+mod apply_keybindings_config_tests {
+    use super::*;
+    use crate::config::KeybindingsConfig;
+
+    #[test]
+    fn default_config_produces_no_warnings_and_no_changes() {
+        let mut registry = KeybindingRegistry::with_defaults();
+        let binding_count_before = registry.all_bindings().len();
+        let config = KeybindingsConfig::default(); // all fields None
+
+        let warnings = apply_keybindings_config(&mut registry, &config);
+
+        assert!(warnings.is_empty(), "default config should produce no warnings");
+        assert_eq!(
+            registry.all_bindings().len(),
+            binding_count_before,
+            "default config should not change binding count"
+        );
+    }
+
+    #[test]
+    fn setting_toggle_sidebar_overrides_binding() {
+        let mut registry = KeybindingRegistry::with_defaults();
+        let config = KeybindingsConfig {
+            toggle_sidebar: Some("ctrl+b".to_string()),
+            ..KeybindingsConfig::default()
+        };
+
+        let warnings = apply_keybindings_config(&mut registry, &config);
+        assert!(warnings.is_empty(), "valid keybinding should produce no warnings");
+
+        // The new binding should work
+        let new_input = KeyInput {
+            key: Key::Character('b'),
+            modifiers: Modifiers { ctrl: true, ..Default::default() },
+        };
+        assert_eq!(
+            registry.lookup(&new_input),
+            Some(&KeyAction::ToggleSidebar),
+            "ctrl+b should now be bound to ToggleSidebar"
+        );
+    }
+
+    #[test]
+    fn unparseable_string_produces_warning_and_does_not_crash() {
+        let mut registry = KeybindingRegistry::with_defaults();
+        let config = KeybindingsConfig {
+            toggle_sidebar: Some("+++garbage+++".to_string()),
+            ..KeybindingsConfig::default()
+        };
+
+        let warnings = apply_keybindings_config(&mut registry, &config);
+
+        assert!(!warnings.is_empty(), "unparseable keybinding should produce a warning");
+    }
+
+    #[test]
+    fn setting_multiple_fields_overrides_each_binding() {
+        let mut registry = KeybindingRegistry::with_defaults();
+        let config = KeybindingsConfig {
+            toggle_sidebar: Some("ctrl+b".to_string()),
+            new_workspace: Some("ctrl+n".to_string()),
+            split_horizontal: Some("ctrl+d".to_string()),
+            ..KeybindingsConfig::default()
+        };
+
+        let warnings = apply_keybindings_config(&mut registry, &config);
+        assert!(warnings.is_empty(), "all valid keybindings should produce no warnings");
+
+        let ctrl_b = KeyInput {
+            key: Key::Character('b'),
+            modifiers: Modifiers { ctrl: true, ..Default::default() },
+        };
+        let ctrl_n = KeyInput {
+            key: Key::Character('n'),
+            modifiers: Modifiers { ctrl: true, ..Default::default() },
+        };
+        let ctrl_d = KeyInput {
+            key: Key::Character('d'),
+            modifiers: Modifiers { ctrl: true, ..Default::default() },
+        };
+
+        assert_eq!(registry.lookup(&ctrl_b), Some(&KeyAction::ToggleSidebar));
+        assert_eq!(registry.lookup(&ctrl_n), Some(&KeyAction::CreateWorkspace));
+        assert_eq!(registry.lookup(&ctrl_d), Some(&KeyAction::SplitHorizontal));
+    }
+
+    #[test]
+    fn unset_fields_leave_defaults_untouched() {
+        let defaults = KeybindingRegistry::with_defaults();
+        let mut registry = KeybindingRegistry::with_defaults();
+
+        // Only set toggle_sidebar, leave everything else as None
+        let config = KeybindingsConfig {
+            toggle_sidebar: Some("ctrl+b".to_string()),
+            ..KeybindingsConfig::default()
+        };
+
+        let _ = apply_keybindings_config(&mut registry, &config);
+
+        // The default Logo+N -> CreateWorkspace binding should still work
+        let logo_n = KeyInput {
+            key: Key::Character('n'),
+            modifiers: Modifiers { logo: true, ..Default::default() },
+        };
+        assert_eq!(
+            registry.lookup(&logo_n),
+            defaults.lookup(&logo_n),
+            "unset config fields should leave default bindings untouched"
+        );
+
+        // Ctrl+Shift+W -> SwitchToWorkspacesTab default should still work
+        let ctrl_shift_w = KeyInput {
+            key: Key::Character('w'),
+            modifiers: Modifiers { ctrl: true, shift: true, ..Default::default() },
+        };
+        assert_eq!(
+            registry.lookup(&ctrl_shift_w),
+            defaults.lookup(&ctrl_shift_w),
+            "unset config fields should leave default bindings untouched"
+        );
     }
 }
