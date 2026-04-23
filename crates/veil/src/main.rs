@@ -137,6 +137,8 @@ impl ApplicationHandler for VeilApp {
         self.window = Some(window);
 
         // Initialize font pipeline for glyph rasterization (CPU-side only).
+        // TODO: resolve font from terminal.font_family config + system fonts.
+        // For now, use the bundled test fixture (compile-time path).
         let font_config = crate::font::loader::FontConfig {
             path: Some(std::path::PathBuf::from(concat!(
                 env!("CARGO_MANIFEST_DIR"),
